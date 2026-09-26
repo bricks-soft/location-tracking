@@ -1,0 +1,24 @@
+# node
+node_modules
+dist
+
+# Android library
+android/build
+android/.gradle
+android/.kotlin
+**/local.properties
+
+# Example app
+example/node_modules
+example/www/vendor
+example/android/.gradle
+example/android/.kotlin
+example/android/build
+example/android/app/build
+example/android/app/src/main/assets/public
+example/android/capacitor-cordova-android-plugins
+
+# IDE / OS
+.DS_Store
+*.iml
+.idea

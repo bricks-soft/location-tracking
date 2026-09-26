@@ -1,0 +1,50 @@
+{
+  "name": "@bricks-soft/capacitor-location-tracking",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Background location tracking for Capacitor with GMS/HMS fused location, geofencing, HTTP sync and heartbeat audit records.",
+  "main": "dist/plugin.cjs.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/esm/index.d.ts",
+  "unpkg": "dist/plugin.js",
+  "files": [
+    "android/src/main/",
+    "android/build.gradle",
+    "android/consumer-rules.pro",
+    "dist/"
+  ],
+  "author": "Bricks Soft",
+  "license": "UNLICENSED",
+  "keywords": [
+    "capacitor",
+    "plugin",
+    "native",
+    "geolocation",
+    "background",
+    "location",
+    "geofencing"
+  ],
+  "scripts": {
+    "clean": "rimraf ./dist",
+    "build": "npm run clean && tsc && rollup -c rollup.config.mjs",
+    "test": "node --test \"test/**/*.mjs\"",
+    "docgen": "docgen --api LocationTrackingPlugin --output-readme README.md --output-json dist/docs.json",
+    "watch": "tsc --watch"
+  },
+  "devDependencies": {
+    "@capacitor/android": "8.5.2",
+    "@capacitor/core": "8.5.2",
+    "@capacitor/docgen": "^0.3.1",
+    "rimraf": "^6.1.3",
+    "rollup": "^4.53.2",
+    "typescript": "~5.9.3"
+  },
+  "peerDependencies": {
+    "@capacitor/core": ">=8.0.0"
+  },
+  "capacitor": {
+    "android": {
+      "src": "android"
+    }
+  }
+}

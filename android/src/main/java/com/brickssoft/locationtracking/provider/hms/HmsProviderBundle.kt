@@ -1,59 +1,55 @@
-// STUB — owned by Unit 5 (HMS). Replace this implementation.
 package com.brickssoft.locationtracking.provider.hms
 
 import android.content.Context
-import com.brickssoft.locationtracking.model.DesiredAccuracy
+import com.brickssoft.locationtracking.core.Logger
 import com.brickssoft.locationtracking.model.ProviderKind
-import com.brickssoft.locationtracking.model.TrackedLocation
 import com.brickssoft.locationtracking.provider.ActivityBackend
 import com.brickssoft.locationtracking.provider.GeofenceBackend
 import com.brickssoft.locationtracking.provider.LocationBackend
-import com.brickssoft.locationtracking.provider.LocationListener
-import com.brickssoft.locationtracking.provider.LocationRequestSpec
-import com.brickssoft.locationtracking.provider.OsGeofence
 import com.brickssoft.locationtracking.provider.ProviderBundle
+import com.huawei.hms.api.ConnectionResult
+import com.huawei.hms.api.HuaweiApiAvailability
 
-/** Created reflectively via its public (Context) constructor. Stub: unavailable, no-op backends. */
-class HmsProviderBundle(@Suppress("unused") private val context: Context) : ProviderBundle {
+/**
+ * HMS (Huawei Location Kit) backends. Created reflectively through the public `(Context)` constructor, only after
+ * the HMS SDK class was found on the classpath. Construction touches no HMS API; each backend is created on first
+ * use and then reused, so listener and registration state survives repeated `location()`/`activity()`/`geofence()`
+ * calls.
+ *
+ * @param availabilityCheck returns an HMS `ConnectionResult` code for the device; injectable for tests.
+ */
+class HmsProviderBundle @JvmOverloads constructor(
+    context: Context,
+    private val availabilityCheck: (Context) -> Int = { ctx ->
+        HuaweiApiAvailability.getInstance().isHuaweiMobileServicesAvailable(ctx)
+    },
+) : ProviderBundle {
+    private val appContext: Context = context.applicationContext ?: context
+
     override val kind: ProviderKind = ProviderKind.HMS
 
-    override fun isAvailable(): Boolean = false
+    private val locationBackend by lazy { HmsLocationBackend(appContext) }
+    private val activityBackend by lazy { HmsActivityBackend(appContext) }
+    private val geofenceBackend by lazy { HmsGeofenceBackend(appContext) }
 
-    override fun location(): LocationBackend = NoopLocation
+    /** True if HMS Core reports SUCCESS; any failure (including a missing SDK class) counts as unavailable. */
+    override fun isAvailable(): Boolean =
+        try {
+            val result = availabilityCheck(appContext)
+            if (result != ConnectionResult.SUCCESS) Logger.d(TAG, "HMS Core unavailable: result $result")
+            result == ConnectionResult.SUCCESS
+        } catch (t: Throwable) {
+            Logger.w(TAG, "HMS availability check failed", t)
+            false
+        }
 
-    override fun activity(): ActivityBackend = NoopActivity
+    override fun location(): LocationBackend = locationBackend
 
-    override fun geofence(): GeofenceBackend = NoopGeofence
+    override fun activity(): ActivityBackend = activityBackend
 
-    private object NoopLocation : LocationBackend {
-        override val kind = ProviderKind.HMS
+    override fun geofence(): GeofenceBackend = geofenceBackend
 
-        override fun requestUpdates(spec: LocationRequestSpec, listener: LocationListener) = Unit
-
-        override fun removeUpdates(listener: LocationListener) = Unit
-
-        override suspend fun getLastLocation(): TrackedLocation? = null
-
-        override suspend fun getCurrentLocation(accuracy: DesiredAccuracy, timeoutMs: Long): TrackedLocation? = null
-    }
-
-    private object NoopActivity : ActivityBackend {
-        override val kind = ProviderKind.HMS
-        override val isSupported = false
-
-        override fun start(intervalMs: Long): Boolean = false
-
-        override fun stop() = Unit
-    }
-
-    private object NoopGeofence : GeofenceBackend {
-        override val kind = ProviderKind.HMS
-        override val supportsDwell = false
-
-        override suspend fun add(regions: List<OsGeofence>) = Unit
-
-        override suspend fun remove(ids: List<String>) = Unit
-
-        override suspend fun removeAll() = Unit
+    private companion object {
+        const val TAG = "LT.HmsBundle"
     }
 }

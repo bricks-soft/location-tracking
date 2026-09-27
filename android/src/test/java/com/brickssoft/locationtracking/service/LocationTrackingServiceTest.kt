@@ -156,6 +156,11 @@ class LocationTrackingServiceTest {
         assertEquals(Service.START_NOT_STICKY, result)
         assertTrue(shadowOf(service).isStoppedBySelf)
         assertTrue(env.logged(LogLevel.ERROR, "startForeground failed"))
+
+        // The engine had been told the start succeeded; it must learn that it did not.
+        env.runPending()
+        assertEquals(listOf("onServiceStartFailed"), env.engine.calls)
+        assertTrue(env.engine.serviceStartFailures.single().startsWith("SecurityException"))
     }
 
     @Test

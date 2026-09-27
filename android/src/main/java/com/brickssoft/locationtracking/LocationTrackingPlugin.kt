@@ -10,6 +10,7 @@ import com.brickssoft.locationtracking.bridge.PluginPermissionHost
 import com.brickssoft.locationtracking.core.Components
 import com.brickssoft.locationtracking.core.Logger
 import com.brickssoft.locationtracking.core.Subscription
+import com.brickssoft.locationtracking.permission.CurrentActivityTracker
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -60,6 +61,9 @@ class LocationTrackingPlugin : Plugin() {
 
     override fun load() {
         components = Components.get(context)
+        // The Activity is already created when plugins load, so the permission manager's lifecycle tracker would
+        // only learn about it at its next lifecycle event; seed it for rationale checks in checkPermissions().
+        activity?.let { CurrentActivityTracker.attach(context).remember(it) }
         handlers = PluginHandlers(
             ComponentServices(components),
             activityProvider = { PluginPermissionHost.usableActivity(this) },

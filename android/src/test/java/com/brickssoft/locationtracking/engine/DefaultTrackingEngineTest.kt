@@ -12,6 +12,7 @@ import com.brickssoft.locationtracking.model.ActivitySample
 import com.brickssoft.locationtracking.model.ActivityType
 import com.brickssoft.locationtracking.model.DesiredAccuracy
 import com.brickssoft.locationtracking.model.LocationProviderSetting
+import com.brickssoft.locationtracking.model.PermissionLevel
 import com.brickssoft.locationtracking.model.ProviderKind
 import com.brickssoft.locationtracking.model.RecordEvent
 import com.brickssoft.locationtracking.model.TrackedLocation
@@ -712,26 +713,91 @@ class DefaultTrackingEngineTest {
     }
 
     @Test
-    fun `restore keeps tracking enabled when the service is refused and retries it later`() = runTest {
-        configStore.runtimeFlow.value = RuntimeState(enabled = true)
+    fun `restore stops with service_start_failed when the service is refused`() = runTest {
+        configStore.runtimeFlow.value = RuntimeState(enabled = true, lastLocation = origin)
         service.startResult = false
         val engine = newEngine()
 
         engine.restore("restore")
         runCurrent()
 
-        assertTrue(configStore.runtime.value.enabled)
-        assertEquals(listOf("tracking_start:restore", "motionchange:false"), records())
-        assertEquals(1, heartbeat.startCalls)
-        assertTrue(locationBackend.isRequesting)
+        assertFalse(configStore.runtime.value.enabled)
+        assertEquals(listOf("tracking_stop:service_start_failed"), records())
+        assertSame(origin, recordSink.records.single().location)
+        assertEquals(listOf(TrackingEvent.EnabledChange(false)), events.events)
+        assertFalse(locationBackend.isRequesting)
+        assertEquals(1, heartbeat.stopCalls)
 
-        service.startResult = true
-        engine.restore("restore") // e.g. the next heartbeat alarm
+        engine.restore("restore") // a later heartbeat alarm: nothing left to restore
+        runCurrent()
+        assertEquals(1, recordSink.records.size)
+    }
+
+    @Test
+    fun `restore of a running session stops when the service is refused again`() = runTest {
+        val engine = newEngine()
+        started(engine)
+        service.isRunning = false
+        service.startResult = false
+
+        engine.restore("restore")
         runCurrent()
 
-        assertEquals(2, service.startCalls)
-        assertTrue(service.isRunning)
-        assertEquals(2, recordSink.records.size)
+        assertEquals("tracking_stop:service_start_failed", records().last())
+        assertFalse(configStore.runtime.value.enabled)
+        assertFalse(locationBackend.isRequesting)
+    }
+
+    @Test
+    fun `onServiceStartFailed stops a running session with an audit record`() = runTest {
+        val engine = newEngine()
+        started(engine)
+
+        engine.onServiceStartFailed("SecurityException: background start")
+        runCurrent()
+
+        assertEquals("tracking_stop:service_start_failed", records().last())
+        assertFalse(configStore.runtime.value.enabled)
+        assertFalse(locationBackend.isRequesting)
+        assertEquals(TrackingEvent.EnabledChange(false), events.events.last())
+    }
+
+    @Test
+    fun `onServiceStartFailed does nothing when tracking is not enabled`() = runTest {
+        val engine = newEngine()
+
+        engine.onServiceStartFailed("SecurityException")
+        runCurrent()
+
+        assertTrue(recordSink.records.isEmpty())
+        assertTrue(events.events.isEmpty())
+    }
+
+    @Test
+    fun `geofences are registered again when location services come back`() = runTest {
+        val engine = newEngine()
+        started(engine)
+        assertEquals(1, geofences.startedModes.size)
+
+        events.emit(TrackingEvent.ProviderChange(Fixtures.providerState(enabled = false, gps = false)))
+        runCurrent()
+        assertEquals(1, geofences.startedModes.size)
+
+        events.emit(TrackingEvent.ProviderChange(Fixtures.providerState(enabled = true)))
+        runCurrent()
+        assertEquals(listOf(TrackingMode.LOCATION, TrackingMode.LOCATION), geofences.startedModes.toList())
+
+        // Same availability and permission: nothing to do.
+        events.emit(TrackingEvent.ProviderChange(Fixtures.providerState(enabled = true, network = false)))
+        runCurrent()
+        assertEquals(2, geofences.startedModes.size)
+
+        // Permission upgraded to "always": register again so background geofences fire.
+        events.emit(TrackingEvent.ProviderChange(Fixtures.providerState(permission = PermissionLevel.WHEN_IN_USE)))
+        runCurrent()
+        events.emit(TrackingEvent.ProviderChange(Fixtures.providerState(permission = PermissionLevel.ALWAYS)))
+        runCurrent()
+        assertEquals(4, geofences.startedModes.size)
     }
 
     @Test

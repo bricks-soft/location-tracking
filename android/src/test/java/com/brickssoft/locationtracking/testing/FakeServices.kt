@@ -287,6 +287,12 @@ class FakeTrackingEngine(
         call("onTerminate") {}
     }
 
+    val serviceStartFailures = CopyOnWriteArrayList<String>()
+
+    override suspend fun onServiceStartFailed(error: String) {
+        call("onServiceStartFailed") { serviceStartFailures += error }
+    }
+
     override suspend fun onActivitySamples(samples: List<ActivitySample>) {
         call("onActivitySamples") { activitySamples += samples }
     }

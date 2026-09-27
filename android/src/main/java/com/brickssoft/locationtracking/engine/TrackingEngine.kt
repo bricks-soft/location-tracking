@@ -28,4 +28,12 @@ interface TrackingEngine : ActivitySink {
 
     /** Task removed. */
     suspend fun onTerminate()
+
+    /**
+     * The foreground service could not enter the foreground after `ServiceController.start()` had returned true,
+     * for example a start from the background on Android 12+ without an exemption, or on Android 14+ with only
+     * while-in-use location permission. While tracking is enabled this stops it with the `tracking_stop` reason
+     * `service_start_failed`, so the server sees why the audit trail ends.
+     */
+    suspend fun onServiceStartFailed(error: String) = Unit
 }

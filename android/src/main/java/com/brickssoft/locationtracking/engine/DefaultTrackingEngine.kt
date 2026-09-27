@@ -19,6 +19,8 @@ import com.brickssoft.locationtracking.heartbeat.HeartbeatScheduler
 import com.brickssoft.locationtracking.http.HttpSyncer
 import com.brickssoft.locationtracking.model.ActivitySample
 import com.brickssoft.locationtracking.model.ActivityType
+import com.brickssoft.locationtracking.model.PermissionLevel
+import com.brickssoft.locationtracking.model.ProviderState
 import com.brickssoft.locationtracking.model.Record
 import com.brickssoft.locationtracking.model.RecordEvent
 import com.brickssoft.locationtracking.model.TrackedLocation
@@ -149,6 +151,12 @@ class DefaultTrackingEngine(
 
     override suspend fun restore(reason: String) = serialized { restoreLocked(reason) }
 
+    override suspend fun onServiceStartFailed(error: String) = serialized {
+        if (session == null && !runtime.enabled) return@serialized
+        Logger.w(TAG, "the foreground service failed to start ($error); stopping tracking")
+        stopLocked(REASON_SERVICE_START_FAILED)
+    }
+
     override suspend fun onTerminate() = serialized {
         when {
             !config.app.stopOnTerminate -> Logger.i(TAG, "task removed: stopOnTerminate is false; tracking continues")
@@ -211,7 +219,10 @@ class DefaultTrackingEngine(
         if (session != null) {
             if (!serviceController.isRunning) {
                 Logger.w(TAG, "restore($reason): tracking runs but the foreground service does not; restarting it")
-                if (!startService()) Logger.w(TAG, "restore($reason): the foreground service was refused again")
+                if (!startService()) {
+                    Logger.w(TAG, "restore($reason): the foreground service was refused; stopping tracking")
+                    stopLocked(REASON_SERVICE_START_FAILED)
+                }
             }
             return
         }
@@ -226,8 +237,11 @@ class DefaultTrackingEngine(
             it.copy(enabled = true, trackingMode = mode, isMoving = false, trackingStartedAt = startedAt)
         }
         if (!startService()) {
-            // Keep enabled: the heartbeat alarm calls restore() again, which retries the service.
-            Logger.w(TAG, "restore($reason): the foreground service was refused; tracking stays enabled and is retried")
+            // Without the foreground service Android throttles background location and the heartbeat alarms would
+            // keep retrying; end the session with an explicit audit record instead.
+            Logger.w(TAG, "restore($reason): the foreground service was refused; stopping tracking")
+            stopLocked(REASON_SERVICE_START_FAILED)
+            return
         }
         val s = activate(mode, reason)
         if (mode == TrackingMode.LOCATION) launchInitialFix(s)
@@ -508,8 +522,28 @@ class DefaultTrackingEngine(
     }
 
     private fun onEvent(s: Session, event: TrackingEvent) {
-        if (event !is TrackingEvent.Heartbeat) return
-        scope.launch { mutex.withLock { fireDueTimers(s) } }
+        when (event) {
+            is TrackingEvent.Heartbeat -> scope.launch { mutex.withLock { fireDueTimers(s) } }
+            is TrackingEvent.ProviderChange -> scope.launch { mutex.withLock { onProviderChange(s, event.state) } }
+            else -> Unit
+        }
+    }
+
+    /**
+     * GMS and HMS drop every registered geofence when location services are switched off, and geofences registered
+     * without background permission may not fire. Registering all stored geofences again when location comes back
+     * (or the permission level changes) keeps geofence audit records flowing. Re-adding the same ids is idempotent.
+     */
+    private suspend fun onProviderChange(s: Session, state: ProviderState) {
+        if (session !== s) return
+        val wasEnabled = s.providerEnabled
+        val oldPermission = s.providerPermission
+        s.providerEnabled = state.enabled
+        s.providerPermission = state.permission
+        if (!state.enabled) return
+        if (wasEnabled == true && oldPermission == state.permission) return
+        Logger.i(TAG, "location provider available again (${state.permission.wire}); re-registering geofences")
+        guarded("geofences.onTrackingStarted") { geofences.onTrackingStarted(s.mode) }
     }
 
     private suspend fun handleFix(s: Session, raw: TrackedLocation) {
@@ -761,6 +795,10 @@ class DefaultTrackingEngine(
         var initialFixJob: Job? = null
         var geofenceWatchJob: Job? = null
         var eventSubscription: Subscription? = null
+
+        /** Last provider state seen through `ProviderChange` events (null until the first event of this session). */
+        var providerEnabled: Boolean? = null
+        var providerPermission: PermissionLevel? = null
     }
 
     private companion object {
@@ -774,6 +812,7 @@ class DefaultTrackingEngine(
         const val REASON_STOP_AFTER_ELAPSED = "stop_after_elapsed"
         const val REASON_TERMINATE = "terminate"
         const val REASON_PERMISSION_DENIED = "permission_denied"
+        const val REASON_SERVICE_START_FAILED = "service_start_failed"
 
         /** `device.checkProviderState` reason after the backend changed. */
         const val PROVIDER_CHECK_REASON = "reselect"

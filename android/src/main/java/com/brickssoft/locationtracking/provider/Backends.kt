@@ -23,14 +23,19 @@ fun interface LocationListener {
 interface LocationBackend {
     val kind: ProviderKind
 
-    /** Supports multiple listeners; requesting again with the same listener replaces its request. */
+    /**
+     * Supports multiple listeners; requesting again with the same listener replaces its request. A `distanceFilterM`
+     * of 0 means no distance filter (the engine applies its own elastic filter). Never throws: failures such as a
+     * missing permission are logged and the listener receives nothing.
+     */
     fun requestUpdates(spec: LocationRequestSpec, listener: LocationListener)
 
     fun removeUpdates(listener: LocationListener)
 
+    /** The OS's cached last location. Implementations may throw `TrackingException(PERMISSION_DENIED)`; callers catch. */
     suspend fun getLastLocation(): TrackedLocation?
 
-    /** Returns null on timeout. */
+    /** Returns null on timeout. @throws com.brickssoft.locationtracking.core.TrackingException PERMISSION_DENIED */
     suspend fun getCurrentLocation(accuracy: DesiredAccuracy, timeoutMs: Long): TrackedLocation?
 }
 

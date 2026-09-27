@@ -53,7 +53,14 @@ class LocationTrackingService : Service() {
         }
         val deps = deps()
         val config = deps?.configStore?.config?.value?.notification ?: NotificationConfig()
-        if (!enterForeground(config) || deps == null) {
+        val failure = enterForeground(config)
+        if (failure != null || deps == null) {
+            // start() already returned true to the engine; tell it, so tracking ends with an audit record instead
+            // of looking enabled while no location can be collected in the background.
+            if (failure != null && deps != null) {
+                val error = "${failure.javaClass.simpleName}: ${failure.message}"
+                deps.launchEngine(TAG, "onServiceStartFailed") { onServiceStartFailed(error) }
+            }
             stopSelf(startId)
             return START_NOT_STICKY
         }
@@ -107,8 +114,8 @@ class LocationTrackingService : Service() {
         }
     }
 
-    /** Calls `startForeground` with the configured notification (or the default one). Never throws. */
-    private fun enterForeground(config: NotificationConfig): Boolean = try {
+    /** Calls `startForeground` with the configured notification (or the default one). Returns the failure, never throws. */
+    private fun enterForeground(config: NotificationConfig): Exception? = try {
         val notification = NotificationFactory(this).buildSafely(config)
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
@@ -117,10 +124,10 @@ class LocationTrackingService : Service() {
         }
         ServiceCompat.startForeground(this, Constants.NOTIFICATION_ID, notification, type)
         synchronized(lock) { shownConfig = config }
-        true
+        null
     } catch (e: Exception) {
         Logger.e(TAG, "startForeground failed; stopping the service", e)
-        false
+        e
     }
 
     /** Re-posts the notification whenever the notification config changes. */

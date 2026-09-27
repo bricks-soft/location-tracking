@@ -1,5 +1,7 @@
-// SCAFFOLD (working): scenario() registration, requirements and dry run. Owned by Unit 7 (e2e-kit) from round 2 on;
-// the device-facing pieces it calls (Adb, detectDevice, CrashScanner, Artifacts, MockBackOffice) are stubs until then.
+// scenario() registration, requirements, dry run and the per-scenario wiring (Unit 7): device detection once per
+// process, the crash scanner, artifacts on failure, and the shared mock back office.
+import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
+import { basename } from 'node:path';
 import { after, test, type TestContext } from 'node:test';
 import { Adb } from './adb.ts';
 import { AppUnderTest } from './app.ts';
@@ -10,7 +12,7 @@ import type { E2eCommands } from './commands.ts';
 import { CrashScanner } from './crash.ts';
 import { detectDevice, type DeviceProfile } from './device.ts';
 import { appIdFor, readEnv, type E2eEnv } from './env.ts';
-import { pluginTestConfig, type PluginTestConfigOptions } from './fixtures.ts';
+import { deepMerge, pluginTestConfig, type PluginTestConfigOptions } from './fixtures.ts';
 
 export interface ScenarioRequirements {
   /** needs `adb root` (userdebug image): kill -9, setting the clock */
@@ -48,8 +50,14 @@ export interface ScenarioContext {
   /** `<E2E_ARTIFACTS_DIR>/<id>`, collected automatically when the scenario fails */
   readonly artifacts: Artifacts;
   readonly t: TestContext;
-  /** aborted when the scenario times out */
+  /** aborted when the scenario times out (the kit's own timer at `timeoutMs`) or node:test cancels the test */
   readonly signal: AbortSignal;
+  /**
+   * Registers [fn] to run when the scenario ends: after the body, the crash check and artifact collection, before the
+   * next scenario starts, also after a failure or a timeout. Teardowns run in reverse registration order; a failing
+   * teardown fails a scenario that otherwise passed (and is only logged when the scenario already failed).
+   */
+  onTeardown(fn: () => Promise<void> | void): void;
   /** The test process's shared back office on E2E_BACKEND_PORT: started on first use, reset at every scenario start. */
   backOffice(): Promise<MockBackOffice>;
   /** pluginTestConfig() with `url` defaulting to the back office's `/locations` and `persistence.extras.scenario = id`. */
@@ -67,6 +75,22 @@ export interface RegisteredScenario {
 }
 
 export const DEFAULT_SCENARIO_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * Time node:test allows after the scenario's own timeout for artifact collection and teardowns (a bugreport can take
+ * up to 15 minutes, so E2E_BUGREPORT=1 gets more).
+ */
+export function teardownGraceMs(env: E2eEnv): number {
+  return env.bugreport ? 20 * 60_000 : 3 * 60_000;
+}
+
+/** Thrown into a scenario that exceeds its `timeoutMs`. */
+export class ScenarioTimeoutError extends Error {
+  constructor(id: string, timeoutMs: number) {
+    super(`scenario ${id} timed out after ${Math.round(timeoutMs / 1000)} s`);
+    this.name = 'ScenarioTimeoutError';
+  }
+}
 
 const ID_PATTERN = /^(P-[LHP]\d{2}|F-\d{2})$/;
 const registered: RegisteredScenario[] = [];
@@ -109,22 +133,72 @@ export function unmetRequirement(requires: ScenarioRequirements | undefined, dev
 
 let sharedAdb: Adb | undefined;
 let sharedDevice: Promise<DeviceProfile> | undefined;
+let deviceAttempts = 0;
+/** A failed device detection is retried by the next scenario, at most this many attempts per test process. */
+const MAX_DEVICE_ATTEMPTS = 2;
+let runLog: WriteStream | undefined;
 let sharedOffice: MockBackOffice | undefined;
 let officeStarting: Promise<MockBackOffice> | undefined;
 let afterHookInstalled = false;
+/** id of the scenario that is running (prefix of the run-wide back office log lines) */
+let currentScenarioId: string | undefined;
+
+/** Path of the run-wide back office log: every request of every scenario of the run, appended by each test file. */
+export function runBackOfficeLogPath(env: E2eEnv): string {
+  return `${env.artifactsDir}/_run/backoffice.log`;
+}
+
+/** Appends lines to [runBackOfficeLogPath] through one buffered stream; a failure to write never fails a scenario. */
+function runLogSink(env: E2eEnv): (line: string) => void {
+  return (line) => {
+    try {
+      if (!runLog) {
+        mkdirSync(`${env.artifactsDir}/_run`, { recursive: true });
+        runLog = createWriteStream(runBackOfficeLogPath(env), { flags: 'a' });
+        runLog.on('error', () => {
+          runLog = undefined;
+        });
+      }
+      runLog.write(`[${currentScenarioId ?? '-'}] ${line}\n`);
+    } catch {
+      // the log is a convenience; the per-scenario backoffice.log artifact does not depend on it
+    }
+  };
+}
 
 function adbFor(env: E2eEnv): Adb {
   sharedAdb ??= new Adb({ serial: env.serial, adbPath: env.adbPath });
   return sharedAdb;
 }
 
+function deviceFor(adb: Adb): Promise<DeviceProfile> {
+  if (!sharedDevice) {
+    deviceAttempts += 1;
+    const attempt = detectDevice(adb);
+    sharedDevice = attempt;
+    attempt.catch(() => {
+      if (deviceAttempts < MAX_DEVICE_ATTEMPTS && sharedDevice === attempt) sharedDevice = undefined;
+    });
+  }
+  return sharedDevice;
+}
+
 function backOfficeFor(env: E2eEnv): Promise<MockBackOffice> {
-  officeStarting ??= (async () => {
-    const office = new MockBackOffice({ port: env.backendPort });
-    await office.start();
-    sharedOffice = office;
-    return office;
-  })();
+  if (!officeStarting) {
+    const starting = (async () => {
+      const log = runLogSink(env);
+      const office = new MockBackOffice({ port: env.backendPort, log });
+      await office.start();
+      log(`# ${new Date().toISOString()} mock back office started on port ${office.port} by ${basename(process.argv[1] ?? '?')} (pid ${process.pid})`);
+      sharedOffice = office;
+      return office;
+    })();
+    officeStarting = starting;
+    // A failed start (e.g. the port is briefly taken) is retried by the next call.
+    starting.catch(() => {
+      if (officeStarting === starting) officeStarting = undefined;
+    });
+  }
   return officeStarting;
 }
 
@@ -133,6 +207,9 @@ function installAfterHook(): void {
   afterHookInstalled = true;
   after(async () => {
     if (sharedOffice) await sharedOffice.stop();
+    const log = runLog;
+    runLog = undefined;
+    if (log) await new Promise<void>((resolve) => log.end(() => resolve()));
   });
 }
 
@@ -143,8 +220,10 @@ function installAfterHook(): void {
  * - `E2E_DRY_RUN=1`: prints `DRY-RUN <id> | <title> | requires: ... | timeout ...` and registers a skipped test; no
  *   device, no back office.
  * - Otherwise: skips `long` scenarios unless E2E_INCLUDE_LONG=1 and scenarios whose requirements the device does not
- *   meet; resets the shared back office; marks the crash scanner; runs [fn]; then asserts no app crash (unless
- *   `allowCrash`). On failure it collects artifacts and rethrows.
+ *   meet; resets the shared back office; marks the crash scanner; runs [fn] with the kit's own timer at `timeoutMs`
+ *   (node:test's timeout is `timeoutMs` + [teardownGraceMs], so artifacts and teardowns still run after a timeout); then
+ *   asserts no app crash (unless `allowCrash`). On failure it collects artifacts and rethrows. Teardowns
+ *   ([ScenarioContext.onTeardown]) and closing the WebView connection always run before the test ends.
  */
 export function scenario(id: string, title: string, fn: ScenarioFn, options: ScenarioOptions = {}): void {
   if (!ID_PATTERN.test(id) || !catalogueEntry(id)) {
@@ -163,7 +242,7 @@ export function scenario(id: string, title: string, fn: ScenarioFn, options: Sce
     return;
   }
   installAfterHook();
-  test(name, { timeout: timeoutMs }, (t) => runScenario(t, id, title, fn, options, env));
+  test(name, { timeout: timeoutMs + teardownGraceMs(env) }, (t) => runScenario(t, id, title, fn, options, env, timeoutMs));
 }
 
 async function runScenario(
@@ -173,6 +252,7 @@ async function runScenario(
   fn: ScenarioFn,
   options: ScenarioOptions,
   env: E2eEnv,
+  timeoutMs: number,
 ): Promise<void> {
   const requires = options.requires;
   if (requires?.long && !env.includeLong) {
@@ -180,8 +260,7 @@ async function runScenario(
     return;
   }
   const adb = adbFor(env);
-  sharedDevice ??= detectDevice(adb);
-  const device = await sharedDevice;
+  const device = await deviceFor(adb);
   const unmet = unmetRequirement(requires, device);
   if (unmet) {
     t.skip(unmet);
@@ -199,9 +278,12 @@ async function runScenario(
     bugreport: env.bugreport,
   });
   if (sharedOffice) sharedOffice.reset();
+  currentScenarioId = id;
   await crashes.mark();
 
   const started = Date.now();
+  const timeoutController = new AbortController();
+  const teardowns: Array<() => Promise<void> | void> = [];
   const ctx: ScenarioContext = {
     id,
     title,
@@ -214,26 +296,63 @@ async function runScenario(
     crashes,
     artifacts,
     t,
-    signal: t.signal,
+    signal: AbortSignal.any([t.signal, timeoutController.signal]),
+    onTeardown: (teardown) => {
+      teardowns.push(teardown);
+    },
     backOffice: () => backOfficeFor(env),
     testConfig: async (config) => {
       const url = config?.url ?? (await backOfficeFor(env)).url('/locations');
-      const patch = { persistence: { extras: { scenario: id } }, ...(config?.patch ?? {}) };
-      return pluginTestConfig({ ...config, url, patch });
+      const merged = pluginTestConfig({ ...config, url });
+      // persistence.extras.scenario = id, unless the patch sets that key itself.
+      const persistence = (merged['persistence'] ?? {}) as Record<string, unknown>;
+      const extras = (persistence['extras'] ?? {}) as Record<string, unknown>;
+      return deepMerge(merged, { persistence: { ...persistence, extras: { scenario: id, ...extras } } });
     },
     log: (message) => t.diagnostic(`[+${((Date.now() - started) / 1000).toFixed(1)}s] ${message}`),
   };
 
+  let failure: unknown;
+  let failed = false;
+  let timer: NodeJS.Timeout | undefined;
   try {
-    await fn(ctx);
+    const body = fn(ctx);
+    // The body keeps running after a timeout (it cannot be cancelled); its late rejection must not be unhandled.
+    body.catch(() => {});
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new ScenarioTimeoutError(id, timeoutMs);
+        timeoutController.abort(error);
+        reject(error);
+      }, timeoutMs);
+    });
+    await Promise.race([body, timeout]);
+    clearTimeout(timer);
     if (!options.allowCrash) await crashes.assertNoCrash();
   } catch (error) {
+    clearTimeout(timer);
+    failure = error;
+    failed = true;
     try {
       await artifacts.collect(error instanceof Error ? error.message : String(error));
       t.diagnostic(`artifacts: ${artifacts.dir}`);
     } catch (collectError) {
       t.diagnostic(`artifact collection failed: ${String(collectError)}`);
     }
-    throw error;
   }
+  currentScenarioId = undefined;
+  for (const teardown of teardowns.reverse()) {
+    try {
+      await teardown();
+    } catch (error) {
+      t.diagnostic(`teardown failed: ${error instanceof Error ? error.message : String(error)}`);
+      if (!failed) {
+        failure = error;
+        failed = true;
+      }
+    }
+  }
+  // An open WebView connection would keep the test process alive after the last scenario.
+  await app.dispose();
+  if (failed) throw failure;
 }

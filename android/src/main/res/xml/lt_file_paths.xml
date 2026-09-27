@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <files-path name="lt_logs" path="location-tracking-logs/" />
+    <cache-path name="lt_logs_cache" path="location-tracking-logs/" />
+</paths>

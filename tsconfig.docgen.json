@@ -1,0 +1,15 @@
+{
+  "//": "Only for @capacitor/docgen 0.3.1, which bundles TypeScript 4.2: an explicit ES lib (and no DOM lib) so return types resolve and the plugin's Location/PermissionStatus types are not shadowed by the DOM ones.",
+  "compilerOptions": {
+    "strict": true,
+    "target": "es2017",
+    "module": "esnext",
+    "moduleResolution": "node",
+    "lib": [
+      "lib.es2017.d.ts"
+    ]
+  },
+  "files": [
+    "src/index.ts"
+  ]
+}

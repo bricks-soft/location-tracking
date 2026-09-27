@@ -1,0 +1,106 @@
+ext {
+    junitVersion = project.hasProperty('junitVersion') ? rootProject.ext.junitVersion : '4.13.2'
+    androidxAppCompatVersion = project.hasProperty('androidxAppCompatVersion') ? rootProject.ext.androidxAppCompatVersion : '1.7.1'
+    androidxCoreKTXVersion = project.hasProperty('androidxCoreKTXVersion') ? rootProject.ext.androidxCoreKTXVersion : '1.17.0'
+    playServicesLocationVersion = project.hasProperty('playServicesLocationVersion') ? rootProject.ext.playServicesLocationVersion : '21.3.0'
+    hmsLocationVersion = project.hasProperty('hmsLocationVersion') ? rootProject.ext.hmsLocationVersion : '6.12.0.300'
+    kotlinxCoroutinesVersion = project.hasProperty('kotlinxCoroutinesVersion') ? rootProject.ext.kotlinxCoroutinesVersion : '1.10.2'
+    okhttpVersion = '4.12.0'
+}
+
+buildscript {
+    ext.kotlin_version = project.hasProperty('kotlin_version') ? rootProject.ext.kotlin_version : '2.2.20'
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.13.0'
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+    }
+}
+
+apply plugin: 'com.android.library'
+if (project.extensions.findByName('kotlin') == null) {
+    apply plugin: 'kotlin-android'
+}
+
+// Which location SDKs are packaged into the app: -PlocationTracking.providers=gms,hms (default: gms).
+// The plugin always compiles against both (compileOnly) and selects one at runtime via reflection.
+def ltProviders = (project.findProperty('locationTracking.providers') ?: 'gms').toString()
+    .split(',').collect { it.trim().toLowerCase() }.findAll { it && it != 'none' }.toSet()
+
+android {
+    namespace = 'com.brickssoft.locationtracking'
+    compileSdk = project.hasProperty('compileSdkVersion') ? rootProject.ext.compileSdkVersion : 36
+    resourcePrefix 'lt_'
+    defaultConfig {
+        minSdkVersion project.hasProperty('minSdkVersion') ? rootProject.ext.minSdkVersion : 24
+        targetSdkVersion project.hasProperty('targetSdkVersion') ? rootProject.ext.targetSdkVersion : 36
+        consumerProguardFiles 'consumer-rules.pro'
+        buildConfigField 'String', 'PLUGIN_VERSION', '"0.1.0"'
+        buildConfigField 'String', 'PACKAGED_PROVIDERS', "\"${ltProviders.join(',')}\""
+    }
+    buildFeatures {
+        buildConfig = true
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+    lint {
+        abortOnError = false
+    }
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+            returnDefaultValues = true
+            all {
+                maxHeapSize = '1024m'
+                maxParallelForks = 1
+                jvmArgs '-XX:+UseSerialGC', '-XX:+EnableDynamicAgentLoading'
+                testLogging {
+                    events 'failed'
+                    exceptionFormat 'full'
+                }
+            }
+        }
+    }
+}
+
+kotlin {
+    jvmToolchain(21)
+}
+
+repositories {
+    google()
+    mavenCentral()
+    maven { url = 'https://developer.huawei.com/repo/' }
+}
+
+dependencies {
+    implementation project(':capacitor-android')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.core:core-ktx:$androidxCoreKTXVersion"
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:$kotlinxCoroutinesVersion"
+    implementation "com.squareup.okhttp3:okhttp:$okhttpVersion"
+
+    compileOnly "com.google.android.gms:play-services-location:$playServicesLocationVersion"
+    compileOnly "com.huawei.hms:location:$hmsLocationVersion"
+    if (ltProviders.contains('gms')) implementation "com.google.android.gms:play-services-location:$playServicesLocationVersion"
+    if (ltProviders.contains('hms')) implementation "com.huawei.hms:location:$hmsLocationVersion"
+
+    testImplementation "junit:junit:$junitVersion"
+    testImplementation 'org.robolectric:robolectric:4.16.1'
+    testImplementation 'androidx.test:core-ktx:1.7.0'
+    testImplementation 'io.mockk:mockk:1.14.6'
+    testImplementation "org.jetbrains.kotlinx:kotlinx-coroutines-test:$kotlinxCoroutinesVersion"
+    testImplementation "com.squareup.okhttp3:mockwebserver:$okhttpVersion"
+    testImplementation "com.google.android.gms:play-services-location:$playServicesLocationVersion"
+    testImplementation "com.huawei.hms:location:$hmsLocationVersion"
+}

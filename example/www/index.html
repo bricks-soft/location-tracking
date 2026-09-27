@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <title>LT Example</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-row">
+        <h1>LocationTracking <span class="muted">example</span></h1>
+        <span id="platform" class="chip" title="Capacitor platform">platform: ?</span>
+      </div>
+      <div id="state-chips" class="chips" aria-live="polite">
+        <span class="chip" data-chip="ready">ready: no</span>
+        <span class="chip" data-chip="enabled">enabled: ?</span>
+        <span class="chip" data-chip="mode">mode: ?</span>
+        <span class="chip" data-chip="moving">moving: ?</span>
+        <span class="chip" data-chip="backend">backend: ?</span>
+      </div>
+      <nav class="section-nav" aria-label="Sections">
+        <a href="#state">State</a>
+        <a href="#setup">Config</a>
+        <a href="#tracking">Tracking</a>
+        <a href="#position">Position</a>
+        <a href="#odometer">Odometer</a>
+        <a href="#records">Records</a>
+        <a href="#geofences">Geofences</a>
+        <a href="#heartbeat">Heartbeat</a>
+        <a href="#device">Device</a>
+        <a href="#permissions">Permissions</a>
+        <a href="#logs">Logs</a>
+        <a href="#events">Events</a>
+      </nav>
+    </header>
+
+    <div id="fatal" class="banner error" hidden></div>
+
+    <main>
+      <!-- ============================== STATE ============================== -->
+      <section id="state" class="card">
+        <h2>State</h2>
+        <dl id="state-grid" class="kv">
+          <div><dt>enabled</dt><dd data-state="enabled">–</dd></div>
+          <div><dt>trackingMode</dt><dd data-state="trackingMode">–</dd></div>
+          <div><dt>isMoving</dt><dd data-state="isMoving">–</dd></div>
+          <div><dt>odometer</dt><dd data-state="odometer">–</dd></div>
+          <div><dt>backend</dt><dd data-state="backend">–</dd></div>
+          <div><dt>lastRecordAt</dt><dd data-state="lastRecordAt">–</dd></div>
+          <div><dt>locationProvider</dt><dd data-state="locationProvider">–</dd></div>
+          <div><dt>http.url</dt><dd data-state="url">–</dd></div>
+          <div><dt>heartbeat</dt><dd data-state="heartbeat">–</dd></div>
+        </dl>
+        <details>
+          <summary>Full config (from the last State)</summary>
+          <pre id="state-config" class="code">No State received yet. Press ready or getState.</pre>
+        </details>
+      </section>
+
+      <!-- ============================== CONFIG ============================== -->
+      <section id="setup" class="card">
+        <h2>Config and lifecycle</h2>
+        <p class="hint">
+          The fields below build the <code>config</code> passed to <code>ready</code>, <code>setConfig</code> and
+          <code>reset</code>. They are remembered on this device.
+        </p>
+        <div class="form-grid">
+          <label class="wide">http.url
+            <input id="cfg-url" type="url" inputmode="url" autocomplete="off" data-persist
+                   placeholder="https://your-server.example/locations" />
+          </label>
+          <label>http.params.device_id
+            <input id="cfg-device-id" type="text" autocomplete="off" data-persist />
+          </label>
+          <label>locationProvider
+            <select id="cfg-provider" data-persist>
+              <option value="auto" selected>auto (GMS, else HMS, else Android)</option>
+              <option value="gms">gms</option>
+              <option value="hms">hms</option>
+              <option value="android">android (LocationManager)</option>
+            </select>
+          </label>
+          <label>heartbeat.minInterval (s)
+            <input id="cfg-hb-min" type="number" min="60" step="1" value="180" inputmode="numeric" data-persist />
+          </label>
+          <label>heartbeat.maxInterval (s)
+            <input id="cfg-hb-max" type="number" min="60" step="1" value="300" inputmode="numeric" data-persist />
+          </label>
+          <label>notification.title
+            <input id="cfg-notif-title" type="text" value="LT Example" data-persist />
+          </label>
+          <label>notification.text
+            <input id="cfg-notif-text" type="text" value="Location tracking is active" data-persist />
+          </label>
+          <label>geolocation.desiredAccuracy
+            <select id="cfg-accuracy" data-persist>
+              <option value="high" selected>high</option>
+              <option value="balanced">balanced</option>
+              <option value="low">low</option>
+              <option value="passive">passive</option>
+            </select>
+          </label>
+          <label>geolocation.distanceFilter (m)
+            <input id="cfg-distance" type="number" min="0" step="1" value="10" inputmode="numeric" data-persist />
+          </label>
+          <label>logger.logLevel
+            <select id="cfg-loglevel" data-persist>
+              <option value="off">off</option>
+              <option value="error">error</option>
+              <option value="warn">warn</option>
+              <option value="info">info</option>
+              <option value="debug" selected>debug</option>
+              <option value="verbose">verbose</option>
+            </select>
+          </label>
+        </div>
+        <div class="checks">
+          <label><input id="cfg-hb-enabled" type="checkbox" checked data-persist /> heartbeat.enabled</label>
+          <label><input id="cfg-autosync" type="checkbox" checked data-persist /> http.autoSync</label>
+          <label><input id="cfg-batch" type="checkbox" data-persist /> http.batchSync</label>
+          <label><input id="cfg-stop-on-terminate" type="checkbox" checked data-persist /> app.stopOnTerminate</label>
+          <label><input id="cfg-start-on-boot" type="checkbox" data-persist /> app.startOnBoot</label>
+          <label><input id="cfg-actions" type="checkbox" data-persist /> notification actions (Ping, Stop)</label>
+          <label><input id="cfg-reset" type="checkbox" checked data-persist /> ready: <code>reset</code></label>
+          <label><input id="cfg-autoready" type="checkbox" checked data-persist /> call ready() on launch</label>
+        </div>
+        <label class="block">Extra config (JSON, deep-merged over the fields above; for example
+          <code>{"http":{"headers":{"X-Api-Key":"..."}}}</code>)
+          <textarea id="cfg-extra" rows="3" spellcheck="false" data-persist placeholder="{}"></textarea>
+        </label>
+        <div class="actions">
+          <button data-action="ready" data-method="ready" class="primary">ready</button>
+          <button data-action="setConfig" data-method="setConfig">setConfig</button>
+          <button data-action="reset" data-method="reset">reset</button>
+          <button data-action="getState" data-method="getState">getState</button>
+          <button data-action="showConfig" class="secondary">Show built config</button>
+        </div>
+      </section>
+
+      <!-- ============================== TRACKING ============================== -->
+      <section id="tracking" class="card">
+        <h2>Tracking</h2>
+        <div class="actions">
+          <button data-action="start" data-method="start" class="primary">start</button>
+          <button data-action="startGeofences" data-method="startGeofences">startGeofences</button>
+          <button data-action="stop" data-method="stop" class="danger">stop</button>
+        </div>
+        <div class="actions">
+          <button data-action="changePaceMoving" data-method="changePace">changePace(moving)</button>
+          <button data-action="changePaceStationary" data-method="changePace">changePace(stationary)</button>
+        </div>
+      </section>
+
+      <!-- ============================== POSITION ============================== -->
+      <section id="position" class="card">
+        <h2>Position</h2>
+        <div class="form-grid">
+          <label>desiredAccuracy
+            <select id="pos-accuracy">
+              <option value="high" selected>high</option>
+              <option value="balanced">balanced</option>
+              <option value="low">low</option>
+              <option value="passive">passive</option>
+            </select>
+          </label>
+          <label>samples
+            <input id="pos-samples" type="number" min="1" step="1" value="3" inputmode="numeric" />
+          </label>
+          <label>watch interval (ms)
+            <input id="watch-interval" type="number" min="0" step="100" value="1000" inputmode="numeric" />
+          </label>
+        </div>
+        <div class="checks">
+          <label><input id="pos-persist" type="checkbox" checked /> persist (getCurrentPosition)</label>
+          <label><input id="watch-persist" type="checkbox" /> persist (watchPosition)</label>
+        </div>
+        <div class="actions">
+          <button data-action="getCurrentPosition" data-method="getCurrentPosition" class="primary">getCurrentPosition</button>
+          <button data-action="watchPosition" data-method="watchPosition">watchPosition</button>
+          <button data-action="clearWatch" data-method="clearWatch">clearWatch</button>
+        </div>
+        <label class="block">Active watches
+          <select id="watch-ids"><option value="">(none)</option></select>
+        </label>
+      </section>
+
+      <!-- ============================== ODOMETER ============================== -->
+      <section id="odometer" class="card">
+        <h2>Odometer</h2>
+        <div class="form-grid">
+          <label>value (m)
+            <input id="odo-value" type="number" min="0" step="1" value="0" inputmode="decimal" />
+          </label>
+        </div>
+        <div class="actions">
+          <button data-action="getOdometer" data-method="getOdometer">getOdometer</button>
+          <button data-action="setOdometer" data-method="setOdometer">setOdometer</button>
+          <button data-action="resetOdometer" data-method="resetOdometer">resetOdometer</button>
+        </div>
+      </section>
+
+      <!-- ============================== RECORDS ============================== -->
+      <section id="records" class="card">
+        <h2>Records (queue)</h2>
+        <div class="form-grid">
+          <label>getLocations limit
+            <input id="rec-limit" type="number" min="1" step="1" value="20" inputmode="numeric" />
+          </label>
+          <label class="wide">uuid (destroyLocation)
+            <input id="rec-uuid" type="text" autocomplete="off" placeholder="tap a row below to fill" />
+          </label>
+        </div>
+        <div class="actions">
+          <button data-action="getLocations" data-method="getLocations">getLocations</button>
+          <button data-action="getCount" data-method="getCount">getCount</button>
+          <button data-action="insertLocation" data-method="insertLocation">insertLocation</button>
+          <button data-action="sync" data-method="sync" class="primary">sync</button>
+          <button data-action="destroyLocation" data-method="destroyLocation" class="danger">destroyLocation</button>
+          <button data-action="destroyLocations" data-method="destroyLocations" class="danger">destroyLocations</button>
+        </div>
+        <div class="table-wrap">
+          <table id="records-table" class="data" hidden>
+            <thead><tr><th>event</th><th>recorded_at</th><th>coords</th><th>uuid</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ============================== GEOFENCES ============================== -->
+      <section id="geofences" class="card">
+        <h2>Geofences</h2>
+        <p class="hint">Leave latitude and longitude empty to use the current position.</p>
+        <div class="form-grid">
+          <label>identifier
+            <input id="geo-id" type="text" value="home" autocomplete="off" data-persist />
+          </label>
+          <label>radius / half side (m)
+            <input id="geo-radius" type="number" min="1" step="1" value="200" inputmode="numeric" data-persist />
+          </label>
+          <label>latitude
+            <input id="geo-lat" type="number" step="any" inputmode="decimal" placeholder="current" />
+          </label>
+          <label>longitude
+            <input id="geo-lng" type="number" step="any" inputmode="decimal" placeholder="current" />
+          </label>
+        </div>
+        <div class="checks">
+          <label><input id="geo-dwell" type="checkbox" /> notifyOnDwell (loiteringDelay 30 s)</label>
+        </div>
+        <div class="actions">
+          <button data-action="useCurrentPosition" class="secondary">Use current position</button>
+          <button data-action="addCircle" data-method="addGeofence" class="primary">Add circle</button>
+          <button data-action="addPolygon" data-method="addGeofence">Add polygon (square)</button>
+          <button data-action="addBoth" data-method="addGeofences">addGeofences (circle + square)</button>
+        </div>
+        <div class="actions">
+          <button data-action="getGeofences" data-method="getGeofences">getGeofences</button>
+          <button data-action="getGeofence" data-method="getGeofence">getGeofence</button>
+          <button data-action="geofenceExists" data-method="geofenceExists">geofenceExists</button>
+          <button data-action="removeGeofence" data-method="removeGeofence" class="danger">removeGeofence</button>
+          <button data-action="removeGeofences" data-method="removeGeofences" class="danger">removeGeofences (all)</button>
+        </div>
+        <ul id="geofence-list" class="list"></ul>
+      </section>
+
+      <!-- ============================== HEARTBEAT ============================== -->
+      <section id="heartbeat" class="card">
+        <h2>Heartbeat</h2>
+        <div class="checks">
+          <label><input id="hb-auto" type="checkbox" checked data-persist /> auto-refresh every 10 s while visible</label>
+        </div>
+        <div class="actions">
+          <button data-action="getHeartbeatStatus" data-method="getHeartbeatStatus" class="primary">getHeartbeatStatus</button>
+        </div>
+        <p id="hb-summary" class="summary">No status yet.</p>
+        <dl id="hb-grid" class="kv"></dl>
+        <p id="hb-error" class="hint error-text" hidden></p>
+      </section>
+
+      <!-- ============================== DEVICE ============================== -->
+      <section id="device" class="card">
+        <h2>Device, battery and settings</h2>
+        <div class="actions">
+          <button data-action="getProviderState" data-method="getProviderState">getProviderState</button>
+          <button data-action="isPowerSaveMode" data-method="isPowerSaveMode">isPowerSaveMode</button>
+          <button data-action="getDeviceInfo" data-method="getDeviceInfo">getDeviceInfo</button>
+          <button data-action="getSensors" data-method="getSensors">getSensors</button>
+        </div>
+        <h3>Battery optimization</h3>
+        <div class="actions">
+          <button data-action="getBatteryOptimizationStatus" data-method="getBatteryOptimizationStatus">getBatteryOptimizationStatus</button>
+          <button data-action="openBatteryOptimizationSettings" data-method="openBatteryOptimizationSettings">openBatteryOptimizationSettings</button>
+        </div>
+        <h3>Phone maker power manager</h3>
+        <div class="actions">
+          <button data-action="getPowerManagerInfo" data-method="getPowerManagerInfo">getPowerManagerInfo</button>
+          <button data-action="openPowerManagerSettings" data-method="openPowerManagerSettings">openPowerManagerSettings</button>
+        </div>
+        <h3>System settings</h3>
+        <div class="actions">
+          <button data-action="openLocationSettings" data-method="openLocationSettings">openLocationSettings</button>
+          <button data-action="openAppSettings" data-method="openAppSettings">openAppSettings</button>
+        </div>
+      </section>
+
+      <!-- ============================== PERMISSIONS ============================== -->
+      <section id="permissions" class="card">
+        <h2>Permissions</h2>
+        <div class="checks">
+          <label><input type="checkbox" name="perm" value="location" checked /> location</label>
+          <label><input type="checkbox" name="perm" value="notifications" checked /> notifications</label>
+          <label><input type="checkbox" name="perm" value="activityRecognition" checked /> activityRecognition</label>
+          <label><input type="checkbox" name="perm" value="backgroundLocation" /> backgroundLocation</label>
+        </div>
+        <div class="actions">
+          <button data-action="checkPermissions" data-method="checkPermissions">checkPermissions</button>
+          <button data-action="requestPermissions" data-method="requestPermissions" class="primary">requestPermissions (checked)</button>
+          <button data-action="requestAllPermissions" data-method="requestPermissions">requestPermissions (all four)</button>
+        </div>
+        <div id="perm-chips" class="chips"></div>
+      </section>
+
+      <!-- ============================== LOGS ============================== -->
+      <section id="logs" class="card">
+        <h2>Plugin log</h2>
+        <div class="form-grid">
+          <label>level
+            <select id="log-level">
+              <option value="error">error</option>
+              <option value="warn">warn</option>
+              <option value="info" selected>info</option>
+              <option value="debug">debug</option>
+              <option value="verbose">verbose</option>
+            </select>
+          </label>
+          <label class="wide">message
+            <input id="log-message" type="text" value="Hello from the example app" />
+          </label>
+          <label>getLog limit
+            <input id="log-limit" type="number" min="1" step="1" value="200" inputmode="numeric" />
+          </label>
+          <label>getLog order
+            <select id="log-order">
+              <option value="desc" selected>desc (newest first)</option>
+              <option value="asc">asc</option>
+            </select>
+          </label>
+          <label class="wide">uploadLog url
+            <input id="log-upload-url" type="url" inputmode="url" autocomplete="off" data-persist
+                   placeholder="https://your-server.example/logs" />
+          </label>
+          <label class="wide">emailLog address
+            <input id="log-email" type="email" inputmode="email" autocomplete="off" data-persist
+                   placeholder="you@example.com" />
+          </label>
+        </div>
+        <div class="actions">
+          <button data-action="log" data-method="log">log</button>
+          <button data-action="getLog" data-method="getLog">getLog</button>
+          <button data-action="uploadLog" data-method="uploadLog">uploadLog</button>
+          <button data-action="emailLog" data-method="emailLog">emailLog</button>
+          <button data-action="destroyLog" data-method="destroyLog" class="danger">destroyLog</button>
+        </div>
+      </section>
+
+      <!-- ============================== EVENTS ============================== -->
+      <section id="events" class="card">
+        <h2>Events <span id="event-total" class="muted">(0)</span></h2>
+        <p class="hint">All 13 plugin events plus <code>watchPosition</code> callbacks, newest first. The last 200 are kept.</p>
+        <div class="form-grid">
+          <label>show
+            <select id="event-filter"><option value="">all events</option></select>
+          </label>
+        </div>
+        <div class="actions">
+          <button data-action="subscribeAll" data-method="addListener">Subscribe to all 13 events</button>
+          <button data-action="removeAllListeners" data-method="removeAllListeners" class="danger">removeAllListeners</button>
+          <button data-action="clearEvents" class="secondary">Clear log</button>
+        </div>
+        <p id="listener-status" class="hint">Listeners: not subscribed.</p>
+        <div id="event-counts" class="chips"></div>
+        <ol id="event-log" class="event-log"></ol>
+      </section>
+    </main>
+
+    <!-- ============================== OUTPUT DOCK ============================== -->
+    <aside id="dock" class="dock" aria-live="polite">
+      <div class="dock-head">
+        <span id="output-status" class="badge">idle</span>
+        <strong id="output-label">Output</strong>
+        <span id="output-time" class="muted"></span>
+        <button id="dock-toggle" class="icon" type="button" aria-expanded="false" title="Expand or collapse">expand</button>
+      </div>
+      <pre id="output" class="code">Tap a button. Results and errors (code + message) appear here.</pre>
+    </aside>
+
+    <script src="vendor/capacitor.js"></script>
+    <script src="vendor/plugin.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

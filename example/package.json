@@ -1,0 +1,18 @@
+{
+  "name": "capacitor-location-tracking-example",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Example app for @bricks-soft/capacitor-location-tracking",
+  "scripts": {
+    "copy-vendor": "node scripts/copy-vendor.mjs",
+    "sync": "npm run copy-vendor && cap sync android"
+  },
+  "dependencies": {
+    "@bricks-soft/capacitor-location-tracking": "file:..",
+    "@capacitor/android": "8.5.2",
+    "@capacitor/core": "8.5.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.2"
+  }
+}

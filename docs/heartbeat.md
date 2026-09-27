@@ -59,9 +59,11 @@ heartbeat: {
   pruned like every other record (`persistence.maxDaysToPersist`, `maxRecordsToPersist`).
 - **Watchdog.** If tracking is on but the foreground service is not running when a heartbeat alarm wakes the app (for
   example, the process was killed), the plugin first creates the heartbeat if it is due, then restores tracking and
-  records `tracking_start` with reason `restore`. **On Android 12+ a heartbeat alarm may restart the foreground
-  service from the background only if it is an exact alarm**, which means only for an app that is exempt from battery
-  optimization (see [below](#how-it-is-scheduled)); on Android 14+ it also needs "Allow all the time" location. When
+  records `tracking_start` with reason `restore`. **On Android 12+ a heartbeat alarm can restart the foreground
+  service from the background only for an app that is exempt from battery optimization**: Android lists that exemption
+  among the exemptions from its background-start restrictions, while the backup alarm of a non-exempt app is inexact and
+  carries no foreground-service allowance (see [below](#how-it-is-scheduled)). On Android 14+ it also needs "Allow all
+  the time" location. When
   Android refuses, the plugin records `tracking_stop` with reason `service_start_failed`, and tracking stays off until
   the app calls `start()` again (for example the next time the user opens it).
 - **JavaScript.** The app gets a `heartbeat` event (`{ location }`) while its WebView is alive.
@@ -110,7 +112,7 @@ for example overnight on a table.
 | App **force-stopped** (Settings → Force stop) | **None until the app is opened again** | Android cancels the app's alarms, and a stopped app doesn't even receive `BOOT_COMPLETED`. When the app is opened and calls `ready()`, tracking resumes (`tracking_start`, reason `restore`). |
 | Battery usage set to **"Restricted"** (Android 12+) | **None until the app is opened again** | Background work is blocked. |
 | **Phone makers' task killers** (Huawei PowerGenie, Xiaomi, Oppo, Vivo, Samsung) kill the process, app **exempt** | A gap, then heartbeats again | If the killer leaves the app's alarms alone, the next heartbeat alarm creates a heartbeat and restores tracking (`tracking_start`, reason `restore`). Some killers also block alarms: then nothing until the app is opened again. |
-| **Phone makers' task killers**, app **not exempt** (Android 12+) | **One more heartbeat, then none until the app calls `start()` again** | The backup alarm can still wake the app and create a heartbeat, but Android doesn't let an inexact alarm restart the foreground service. The plugin records `tracking_stop` with reason `service_start_failed`. Allow the app in the phone maker's power manager, see [below](#phone-makers-power-managers). |
+| **Phone makers' task killers**, app **not exempt** (Android 12+) | **One more heartbeat, then none until the app calls `start()` again** | The backup alarm can still wake the app and create a heartbeat, but Android 12+ does not let a non-exempt app restart its foreground service from the background (the inexact backup alarm carries no foreground-service allowance). The plugin records `tracking_stop` with reason `service_start_failed`. Allow the app in the phone maker's power manager, see [below](#phone-makers-power-managers). |
 | **Phone off** or battery empty | **None while off** | After boot, tracking resumes (`tracking_start`, reason `boot`) only with `app.startOnBoot: true`. On Android 14+ it also needs "Allow all the time" location, otherwise a `tracking_stop` with reason `service_start_failed` follows. With `startOnBoot: false`, tracking is off after the reboot (no `tracking_stop` is recorded). |
 | App **updated** | A short gap | With `app.startOnBoot: true`, tracking resumes (`tracking_start`, reason `package_replaced`). With `false`, tracking is off after the update, without a `tracking_stop`. |
 | **Location permission removed** | **None until the app is opened again** | Android kills the app when a permission is revoked. When the plugin runs again, it records a `providerchange`, and if location permission is gone completely, a `tracking_stop` with reason `permission_denied`. |

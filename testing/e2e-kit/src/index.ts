@@ -4,6 +4,7 @@ export * from './env.ts';
 export * from './catalogue.ts';
 export * from './util.ts';
 export * from './adb.ts';
+export * from './logcat.ts';
 export * from './webview.ts';
 export * from './commands.ts';
 export * from './backoffice.ts';

@@ -1,4 +1,4 @@
-// STUB — owned by Unit 7 (e2e-kit). Standalone mock back office for agents and curl:
+// Unit 7 (e2e-kit). Standalone mock back office for agents and curl:
 //   npm run backoffice -- [--port 8787] [--host 0.0.0.0]
 // Serves the endpoints of docs/e2e/architecture.md §7 until SIGINT/SIGTERM and logs one line per request.
 import { parseArgs } from 'node:util';

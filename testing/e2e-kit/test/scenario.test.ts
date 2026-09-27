@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+import { FakeAdb } from './helpers/fake-adb.ts';
 import {
   APP_IDS,
   CATALOGUE,
@@ -18,7 +22,7 @@ function runFixture(name: string, env: Record<string, string>) {
   const childEnv: NodeJS.ProcessEnv = { ...process.env, ...env };
   // A nested runner that inherits NODE_TEST_CONTEXT reports to its parent in a binary format instead of TAP.
   delete childEnv['NODE_TEST_CONTEXT'];
-  return spawnSync(process.execPath, ['--test', '--test-reporter=tap', file], { encoding: 'utf8', env: childEnv });
+  return spawnSync(process.execPath, ['--test', '--test-reporter=tap', file], { encoding: 'utf8', env: childEnv, timeout: 120_000 });
 }
 
 test('dry run registers and lists scenarios without running them', () => {
@@ -68,4 +72,55 @@ test('requirements are described and checked', () => {
   assert.match(unmetRequirement({ root: true }, device) ?? '', /adb root/);
   assert.match(unmetRequirement({ api: 31 }, device) ?? '', /API >= 31/);
   assert.match(unmetRequirement({ gms: false }, device) ?? '', /without Google Play/);
+});
+
+test('a device run: requirement skips, shared back office, artifacts on failure, run log, clean exit', () => {
+  const fake = new FakeAdb([
+    { match: '^shell getprop sys\\.boot_completed', stdout: '1\n1\n' },
+    { match: '^shell pm path android$', stdout: 'package:/system/framework/framework-res.apk\n' },
+    { match: '^root$', stdout: 'adbd cannot run as root in production builds\n', code: 1 },
+    {
+      match: '^shell getprop$',
+      stdout: '[ro.build.version.sdk]: [34]\n[ro.kernel.qemu]: [1]\n[ro.product.model]: [sdk_gphone64_x86_64]\n[ro.product.cpu.abi]: [x86_64]\n',
+    },
+    { match: '^shell pm list packages -e com\\.google\\.android\\.gms$', stdout: 'package:com.google.android.gms\n' },
+    { match: '^shell id -u$', stdout: '2000\n' },
+    { match: '^shell date \\+%s%N$', stdout: `${Date.now()}000000\n` },
+  ]);
+  const artifacts = mkdtempSync(join(tmpdir(), 'e2e-artifacts-'));
+  try {
+    const port = String(20_000 + Math.floor(Math.random() * 20_000));
+    const run = runFixture('device-suite.ts', { E2E_ADB: fake.path, E2E_ARTIFACTS_DIR: artifacts, E2E_BACKEND_PORT: port, E2E_INCLUDE_LONG: '' });
+    const output = run.stdout + run.stderr;
+    assert.equal(run.error, undefined, 'the test process must exit by itself');
+    assert.notEqual(run.status, 0, output);
+    assert.match(run.stdout, /ok \d+ - P-H04 .*# SKIP long scenario: set E2E_INCLUDE_LONG=1/);
+    assert.match(run.stdout, /ok \d+ - P-L03 .*# SKIP needs adb root/);
+    assert.match(run.stdout, /\nok \d+ - P-L02 passes/);
+    assert.match(run.stdout, /not ok \d+ - P-L01 fails and collects artifacts/);
+    assert.match(output, /boom from P-L01/);
+    assert.match(readFileSync(join(artifacts, 'P-L01', 'reason.txt'), 'utf8'), /boom from P-L01/);
+    for (const name of ['logcat.txt', 'crash.txt', 'dumpsys-location.txt', 'dumpsys-alarm.txt', 'backoffice.log', 'records.json']) {
+      assert.ok(existsSync(join(artifacts, 'P-L01', name)), `${name} collected`);
+    }
+    assert.ok(!existsSync(join(artifacts, 'P-L02')), 'no artifacts for a passing scenario');
+    // the kit's own timeout: artifacts collected, teardowns run in reverse order, the process still exits
+    assert.match(run.stdout, /not ok \d+ - P-L04 times out/);
+    assert.match(output, /scenario P-L04 timed out after 2 s/);
+    assert.match(readFileSync(join(artifacts, 'P-L04', 'reason.txt'), 'utf8'), /timed out/);
+    assert.equal(readFileSync(join(artifacts, 'P-L04-teardown.txt'), 'utf8'), 'second');
+    // a failing teardown fails a scenario whose body passed
+    assert.match(run.stdout, /not ok \d+ - P-L05 a failing teardown/);
+    assert.match(output, /teardown boom/);
+    const runLog = readFileSync(join(artifacts, '_run', 'backoffice.log'), 'utf8');
+    assert.match(runLog, /mock back office started on port \d+ by device-suite\.ts/);
+    assert.match(runLog, /\[P-L02\] \S+ #\d+ GET \/__health -> 200/);
+    // P-L01 marked the crash scanner and collected artifacts through adb
+    const lines = fake.commandLines();
+    assert.ok(lines.includes('logcat -d -v threadtime -v UTC -v year -b crash -b main -b system'));
+    assert.ok(lines.includes('exec-out screencap -p'));
+  } finally {
+    fake.cleanup();
+    rmSync(artifacts, { recursive: true, force: true });
+  }
 });

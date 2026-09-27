@@ -137,7 +137,7 @@ class Components private constructor(context: Context) {
     }
 
     // U8
-    val serviceController: ServiceController by lazy { DefaultServiceController(this.context, configStore, events) }
+    val serviceController: ServiceController by lazy { DefaultServiceController(this.context, configStore, events, clock) }
 
     // U7
     val engine: TrackingEngine by lazy {

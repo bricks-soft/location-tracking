@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- PremiseMonitor foreground-service notification (fake companion plugin of the field-force example). -->
+<resources>
+    <string name="pm_channel_name">Premise monitor</string>
+    <string name="pm_notification_title">Inside premise %1$s</string>
+    <string name="pm_notification_title_unknown">Inside premise</string>
+    <string name="pm_notification_text">Your presence at this premise is being audited</string>
+</resources>

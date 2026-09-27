@@ -10,7 +10,7 @@ uploads happen, retries, response handling and JWT refresh.
 - [Record variants](#record-variants)
 - [Body shapes: single, batch, `rootProperty`, `params`](#body-shapes)
 - [Templates](#templates)
-- [When uploads happen](#when-uploads-happen)
+- [When uploads happen](#when-uploads-happen), including [live location with `syncInterval`](#live-location-with-syncinterval)
 - [Response handling and retries](#response-handling-and-retries)
 - [Time fields: `timestamp`, `recorded_at`, `sent_at`](#time-fields)
 - [JWT refresh](#jwt-refresh)
@@ -23,7 +23,9 @@ uploads happen, retries, response handling and JWT refresh.
 2. The record is written to an on-device SQLite queue **first**.
 3. An uploader sends queued records to `http.url`, oldest first. A record is deleted from the queue only after the
    server has answered `2xx`.
-4. JavaScript listeners get the same record shape, without `sent_at`.
+4. JavaScript listeners get the same record shape, without `sent_at`. Native listeners of the
+   [companion API](../README.md#companion-plugins-native-api) get every queued record in this shape too
+   (`LocationTrackingListener.onRecord`), when it is queued, not when it is uploaded.
 
 Nothing is uploaded while `http.url` is not set (an invalid `http.url`, one that is not an `http(s)` URL, counts as
 not set and is logged as an error). Records then just stay queued until they are pruned.
@@ -192,22 +194,28 @@ record, but they don't count as tracking activity: they don't restart the heartb
 This is an audit record, created while tracking is on when no other record was created for `heartbeat.minInterval`
 seconds (default 180). See [heartbeat.md](heartbeat.md).
 
-- `coords` and `timestamp` are the **last known** location, so `timestamp` can be much older than `recorded_at`. In
-  the example below, the phone is stationary and no new fix has been accepted for 23 minutes. (While stationary, the
-  plugin keeps the last known location up to date from its low-power fixes, but no records are created for them.)
+- `coords` and `timestamp` are the **last known** location: the last fix the plugin accepted. `timestamp` is when
+  that fix was acquired, so it can be much older than `recorded_at`. While the phone is stationary, GPS is off and
+  the plugin requests no fixes of its own; a fix changes only when the phone moves again or when a passive fix (one
+  that another app requested) is accepted. In the example below, the phone has been stationary for 23 minutes.
 - `recorded_at` is when the heartbeat was created, and `sent_at` when it was uploaded.
 - `is_moving`, `odometer`, `activity` and `battery` are current values.
-- `heartbeat` (optional) says how the plugin schedules heartbeats on this phone, so the server knows which cadence
-  to expect. Older plugin versions don't send it.
+- `heartbeat` (optional) says how the plugin schedules the **next** heartbeat on this phone, so the server knows which
+  gap to expect. Plugin versions before round 2 don't send it, and only `heartbeat` records have it.
 
   | Key | Type | Meaning |
   |---|---|---|
-  | `strategy` | `'exact'` \| `'listener_with_backup'` \| `'idle_paced'` | How the next heartbeat is scheduled (see [heartbeat.md](heartbeat.md)). `idle_paced` means Doze spaces heartbeats about 9 minutes apart. |
+  | `strategy` | `'exact'` \| `'listener_with_backup'` \| `'idle_paced'` | How the next heartbeat is scheduled (see [heartbeat.md](heartbeat.md#how-it-is-scheduled)). `idle_paced` means the phone is in Doze without the battery exemption, and heartbeats are about 9 minutes apart. Never `disabled`. |
   | `min_interval` | number (s) | `heartbeat.minInterval` when the heartbeat was created. |
   | `max_interval` | number (s) | `heartbeat.maxInterval` when the heartbeat was created. |
-  | `next_at` | string \| null | When the next heartbeat is expected (ISO-8601 UTC), or `null` if unknown. |
-  | `battery_exempt` | boolean | The app is exempt from battery optimization. |
-  | `device_idle` | boolean | The phone was in deep Doze. |
+  | `next_at` | string \| null | When the next heartbeat will be due if no other record is created (ISO-8601 UTC): `recorded_at + min_interval`, or, for `idle_paced`, the time of the backup alarm (at least 9 minutes after the previous one fired). `null` if unknown. Any other record created before then moves the next heartbeat later. |
+  | `battery_exempt` | boolean | The app was exempt from battery optimization when the heartbeat was created. |
+  | `device_idle` | boolean | The phone was in deep Doze when the heartbeat was created. |
+
+  How to use it to tell an expected gap from a failure, and to show a device as online:
+  [heartbeat.md, Heartbeat metadata](heartbeat.md#heartbeat-metadata). In short: with `battery_exempt: true` the next
+  record should arrive within `max_interval`; with `battery_exempt: false` and `device_idle: true`, a gap of about 9
+  (up to 11) minutes is normal.
 
 ```json
 {
@@ -623,8 +631,14 @@ access that is not a captive portal, and not blocked for the app by Doze or Data
    queued normal records go out together with it. The exception: on a cellular connection with
    `disableAutoSyncOnCellular: true`, only the priority records are sent.
 2. **Otherwise (only normal records queued)**, the pass drains the whole queue only if `autoSync` is on (default), the
-   connection is not cellular with `disableAutoSyncOnCellular: true`, and the queue holds at least `autoSyncThreshold`
-   records (default `0`, which uploads every record right away; `N` waits until at least `N` records are queued).
+   connection is not cellular with `disableAutoSyncOnCellular: true`, and the queue is **due**:
+   - with `http.syncInterval` `0` (default): the queue holds at least `autoSyncThreshold` records (default `0`, which
+     uploads every record right away; `N` waits until at least `N` records are queued);
+   - with `http.syncInterval` above `0`: the **oldest** queued normal record is at least `syncInterval` seconds old
+     (now − its `recorded_at`; a negative age, after the clock was set back, counts as due), or `autoSyncThreshold` is
+     above `0` and the queue holds at least that many records. See
+     [Live location with `syncInterval`](#live-location-with-syncinterval).
+
    With `autoSync: false`, normal records wait for the next priority record (for example the next heartbeat) or a
    manual `sync()`.
 3. **A pass stops at the first failed request**, and the records behind it wait for the next pass. One exception
@@ -635,15 +649,18 @@ access that is not a captive portal, and not blocked for the app by Doze or Data
 4. Only one upload runs at a time (automatic passes and `sync()` included), so a record is never in two requests at
    once. Triggers that arrive during a pass cause exactly one more pass.
 
-**When a pass runs.** There is no retry timer. A pass is triggered:
+**When a pass runs.** There is no retry timer for failed uploads. A pass is triggered:
 
 - whenever a record is inserted, including every heartbeat (so each heartbeat also retries the queue) and records
   added with `insertLocation()`;
 - when the network comes back, including when Doze or Data Saver stops blocking the app. The plugin watches the
   network only after tracking has been started (or resumed) in the app's process;
 - when tracking starts (the `tracking_start` record is itself an insert);
+- with `http.syncInterval` above `0`, by the `syncInterval` timer: while tracking is on and a normal record is queued
+  but not yet due, a check is scheduled for `oldest.recorded_at + syncInterval` (see below). There is no such timer
+  while tracking is off, and it does not repeat failed uploads: once the queue is due, the triggers above retry it;
 - when the app calls `sync()`, which uploads the whole queue regardless of `autoSync`, `autoSyncThreshold`,
-  `disableAutoSyncOnCellular` and the reported connectivity.
+  `syncInterval`, `disableAutoSyncOnCellular` and the reported connectivity.
 
 While tracking is off, nothing creates records by itself, so queued records wait until the app calls `sync()`, a
 record is inserted, or tracking starts again.
@@ -651,6 +668,40 @@ record is inserted, or tracking starts again.
 The plugin emits one `http` event (`{ success, status, responseText, uuids }`) **per HTTP request**. A `401` that
 triggers a token refresh and a retry therefore produces two `http` events. The token refresh request itself produces
 an `authorization` event, not an `http` event.
+
+### Live location with `syncInterval`
+
+`http.syncInterval` (seconds, default `0` = off) limits how old the newest position on the server can be, while
+sending one request per interval instead of one per record. It works only with `autoSync: true`. The field-force
+example uses `syncInterval: 300`, `batchSync: true`, `maxBatchSize: 100`.
+
+Timeline of a moving phone with `syncInterval: 300`, `batchSync: true`, `heartbeat.minInterval: 180`, and a
+`location` record about every 10 s:
+
+| Time | On the phone | Upload |
+|---|---|---|
+| 10:00:00 | `motionchange` (`is_moving: true`) is queued. It is the oldest queued normal record. | – |
+| 10:00:10 … 10:04:50 | 29 `location` records are queued. | – |
+| 10:05:00 | The timer fires: the oldest record is 300 s old. | One request with 30 records. `sent_at − recorded_at` is 300 s for the oldest and 10 s for the newest. |
+| 10:05:10 | The next `location` is queued; it is now the oldest. | Next upload at 10:10:10. |
+| 10:12:00 | The phone has stopped: `motionchange` (`is_moving: false`) is queued. | – |
+| 10:15:00 | No record for 180 s: a `heartbeat` is created. It is a priority record. | At once: the heartbeat and every queued record since 10:10:20, in one pass. |
+
+What this means for the server:
+
+- The newest position the server has is at most about `syncInterval` seconds old while the phone moves (plus the
+  time of the upload, and later when the phone is offline). While the phone is stationary, heartbeats arrive every
+  `minInterval` seconds and carry the last position.
+- For normal records, `sent_at − recorded_at` up to `syncInterval` is expected. More than that means late delivery
+  (offline, Doze, server errors).
+- Audit records (`heartbeat`, `tracking_start`, `tracking_stop`, `providerchange`) are never held back by
+  `syncInterval`.
+- `autoSyncThreshold` above `0` uploads earlier when the queue reaches that many records.
+- The timer runs in the tracking process. Doze can delay it; the next heartbeat uploads the queue anyway.
+
+<!-- verify after merge: unit 4 (http) — the timeline matches the implementation (timer at oldest.recorded_at + syncInterval, whole queue in batches of maxBatchSize) -->
+
+Failed uploads are handled the same way with or without `syncInterval` (next section).
 
 ## Response handling and retries
 
@@ -680,7 +731,7 @@ There is no maximum number of attempts. A record leaves the queue only after a `
 |---|---|---|
 | `timestamp` | Location provider (fix time) | How fresh the position is. For heartbeats it can be old: the device is stationary, or has no new fix. |
 | `recorded_at` | Device wall clock | When the record was created. Use it for gap detection. |
-| `sent_at` | Device wall clock | When the request was built. `sent_at - recorded_at` is how long the record waited in the queue: a large value means late delivery (offline, Doze, server errors). |
+| `sent_at` | Device wall clock | When the request was built. `sent_at - recorded_at` is how long the record waited in the queue. Up to `http.syncInterval` is expected for normal records; more than that (or more than a few seconds for audit records) means late delivery (offline, Doze, server errors). |
 | `elapsed_realtime_ms` | Monotonic, since boot | The real time between two records with the same `boot_count`, even if the user changed the wall clock. |
 | `boot_count` | Boot counter | A change means the phone rebooted between two records (`elapsed_realtime_ms` restarted from 0). |
 
@@ -791,4 +842,6 @@ If your server rejects a refresh token for good, the plugin cannot recover by it
 - Answer `2xx` for records you will never accept, so they aren't retried for days.
 - Keep `event`, `reason`, `recorded_at`, `sent_at`, `elapsed_realtime_ms` and `boot_count`. You need them for auditing.
 - Treat `heartbeat` coordinates as "last known position", not as a fresh fix: compare `timestamp` with `recorded_at`.
+- Use the heartbeat's `heartbeat` object to decide which gap to expect next
+  ([heartbeat.md](heartbeat.md#heartbeat-metadata)).
 - Implement the gap audit described in [heartbeat.md](heartbeat.md#server-side-audit).

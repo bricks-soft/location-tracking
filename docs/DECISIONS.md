@@ -9,6 +9,9 @@ Each entry says **what** was decided and **why**. Entries are grouped by who dec
 4. [Decisions taken inside each work unit](#4-decisions-taken-inside-each-work-unit).
 5. [Requests that were not implemented, and known limitations](#5-open-requests-and-known-limitations).
 
+Parts 1–5 are round 1 (the first pull request, #1). [Round 2](#round-2-field-force-audit-companion-api-and-avd-tests)
+(field-force audit, companion API and emulator tests) follows the same structure in R2.1–R2.5.
+
 "Record" below means one row in the local SQLite queue, which is also one object in an HTTP upload body
 (see [wire-format.md](wire-format.md)). Line references point at the files as merged.
 
@@ -224,3 +227,95 @@ Known limitations (details in [heartbeat.md](heartbeat.md) and the README):
 - Heartbeats are about 9 minutes apart in deep idle when the app is **not** battery-exempt. No heartbeats at all after a force stop, a "Restricted" battery setting, the phone being off, or a phone-maker task killer: the server sees a gap, which is the correct audit result.
 - On Android 12+, when an app that is **not** battery-exempt is killed, Android may refuse to restart its foreground service from the background (the backup heartbeat alarm is inexact and carries no foreground-service exemption). The plugin then records `tracking_stop` with reason `service_start_failed`, and the user must open the app so it can call `start()` again. Battery-exempt apps, restarts after boot and after an app update are allowed to restart the service.
 - iOS is not implemented.
+
+---
+
+## Round 2: field-force audit, companion API and AVD tests
+
+Round 2 started after the owner merged pull request #1 into `master`. It is delivered as one new pull request into
+`master`. Its contract is [docs/e2e/architecture.md](e2e/architecture.md); where it differs from
+[architecture.md](architecture.md), the round-2 contract wins. The owner's words are quoted exactly, including
+typing errors.
+
+### R2.1 Decisions made by the product owner
+
+| # | Topic | Decision |
+|---|---|---|
+| R2-Q1 | Main use | "auto start location tracking when the app starts and auto stop at 2AM (so we need to prevent possible crashes of ForegroundServiceDidNotStartInTime - see example of the issue in https://github.com/transistorsoft/capacitor-background-geolocation/blob/master/CHANGELOG.md)" |
+| R2-Q2 | Battery and audit | "As the tracking is expected to run +12 hours every day, we want to be battery efficient as possible without loosing the audit trial." |
+| R2-Q3 | What the back office needs | "the tracking is an audit for a moving field force worker. The back-office need to know the user live location and see his tracked route. They need to know the user device details, battery status, if tracking is online or not. Also, the tracked route will be used to calculate the total travel time and distance." |
+| R2-Q4 | Companion plugin | "(derived by another Capactitor plugin, but location tracking features should come from here) In some optional cases, the user gets into a specific premise where we want to validate he stays inside this premise and audit his existence there - the audit are the same audit events we use but saved thru the other plugin flow - so the other plugin needs to listen to all audit events. This other plugin also monitor to enter and exist from the premise. (we assumed a circual geofence circle is enough here)." |
+| R2-Q5 | Example app and tests | "I want to have another example app configured for this setup. Use a fake PremiseMonitor plugin in this app to simulate the other plugin. Then write tests that will run on AVD to do e2e testing for those flows." Edge cases to cover: "changing permissions, changing provider, phone going to deep sleep, phone restarted, ...etc". "If something can't be automated and needs manual steps, please write a testing runbook that will be executed by an AI agent, manaul steps are manually exeucted by it and auomated steps are triggered by it." |
+| R2-Q6 | Split of the tests | "Also use best jedgement to split the AVD testing scenarios, some belongs to the plugin itself not the example app. The example app just makes sure that the main usecase inside bricks is verified and checked - if we ever open source this plugin, this example app and its tests will go to bricks app itself as an integration test." |
+| R2-Q7 | 02:00 stop | "the 2AM auto-stop is an example config in the main example app. transistor plugin supports that AFAIK (stopAfterMs - calculated when the plugin start method is called." → The field-force app computes the minutes until the next 02:00 into `geolocation.stopAfterElapsedMinutes` when it starts tracking. The plugin gets no schedule feature. |
+| R2-Q8 | PremiseMonitor service | "PremiseMonitor plugin should have its own foreground location service". |
+| R2-Q9 | Battery philosophy | "use similiar philosophy as https://docs.transistorsoft.com/help/philosophy/ which should reduce the battery usage - however we have a hard rule to send the hearbeat events (both to other native listners and to the http url), AFAIK this don't affect how much we poll the location fixes." |
+| R2-Q10 | Stationary | "GPS off, keep service, keep hearbeat with latest known location - hearbeat event itself will have a new timestamp, but the location record should be showing its acquired timestamp". |
+| R2-Q11 | Live location | "At most 5 min old" → new config key `http.syncInterval` (seconds); the field-force app uses `300`. |
+| R2-Q12 | Native API shape | Manifest-declared listener classes plus programmatic subscription (the recommended option was chosen). |
+| R2-Q13 | Where the AVD tests run | A GitHub Actions emulator job plus a runbook that an AI agent executes (the recommended option was chosen). |
+| R2-Q14 | Delivery | Pull request #1 was merged by the owner before round 2 started. The base branch was renamed from `main` to `master` at the owner's request. Round 2 is one new pull request into `master`. |
+
+### R2.2 Decisions made by the coordinator
+
+#### Design decisions in the round-2 contract
+
+| Decision | Why |
+|---|---|
+| Same process as round 1: a scaffold commit with every shared type, config key, wire field, stub and contract, then 15 work units that each replace only their own stubs. | The 15 units run in parallel and merge in any order without conflicts. |
+| Stationary mode: remove the moving location request, request PASSIVE fixes only, and register one OS geofence (the *stationary region*, id `__lt_stationary__`) of `max(stationaryRadius, 150 m)` around the last accepted fix, exit only. Leave the stationary state on the region's exit, on a passive fix that is certainly outside (`distance − accuracy > stationaryRadius`, accuracy ≤ `trackingAccuracyThreshold`), on a confident moving activity, or on `changePace(true)`. | Owner decisions R2-Q9 and R2-Q10: no GPS while stationary. 150 m is the default stationary geofence radius of the Transistor philosophy the owner referred to. The accuracy rule means a coarse fix alone never turns GPS on. |
+| If the region cannot be registered: a low-power request (at most one fix per 3 minutes) instead of PASSIVE. | Movement must still be detected without "Allow all the time" or when the geofence limit is reached. |
+| The stationary region is never stored, recorded, emitted or counted against the 100-geofence limit, and `removeGeofences()` does not remove it. | It is an internal mechanism, not an app geofence. |
+| `http.syncInterval`: normal records are uploaded when the oldest queued one is `syncInterval` seconds old (a timer checks while tracking); `autoSyncThreshold > 0` is a size limit; priority records are unchanged. | Owner decision R2-Q11 ("at most 5 min old") with one upload per interval instead of one per record; the heartbeat rule (R2-Q9) keeps audit records immediate. |
+| Every heartbeat record carries an optional `heartbeat` object (`strategy`, `min_interval`, `max_interval`, `next_at`, `battery_exempt`, `device_idle`). | The server can tell an expected gap (about 9 minutes in Doze without the exemption) from a failure, and show "online", without any app setting (R2-Q3). |
+| Companion API: listeners declared in the manifest are created in `Components.bootstrap()` in every process; `addListener` for code; one `LT-native` thread delivers every record (when it is queued, also when the local insert failed) and every event, in order. | Owner decision R2-Q12. A companion must not miss the first record of a process started by a boot or an alarm (R2-Q4), must see records in order, and keeps its own audit even when the plugin's database fails. |
+| Debug-only test hooks: an exported broadcast receiver in each example app runs plugin calls through the native API and answers with exactly one `LT-E2E` logcat line (large results in a file). | The tests drive the plugin without the WebView and from the background, like real background triggers; release builds have no hooks. |
+| A mock back office in the kit (`node:http`, port 8787, reached from the emulator at `10.0.2.2`), with control endpoints for records, faults and resets; cleartext HTTP only in debug builds and only to `10.0.2.2` and `localhost`. | Tests and the runbook need a server whose received records they can query and whose failures they can control. |
+| The kit and the suites use Node 22's built-in TypeScript type stripping and `node:test`, with no runtime dependencies. | The kit and the field-force suite can move into the Bricks app unchanged (R2-Q6). |
+| Both example apps' debug builds are signed with the shared `testing/debug.keystore`. | An APK built in CI can be installed over a local one (and back) with `adb install -r` and keeps the app's data; P-L07 updates in place. |
+| Stable scenario ids (`P-L*`, `P-H*`, `P-P*`, `F-*`, `M-*`) in the contract, mirrored in `testing/e2e-kit/src/catalogue.ts`. | The suites, CI and the runbook refer to the same ids. |
+| Two suites: the plugin suite against the plugin's example app, and the field-force suite against the field-force app. | Owner request R2-Q6: plugin behavior is tested without the field-force app; the field-force suite checks the Bricks use case and can move into the Bricks app. |
+| Test intervals: heartbeat 60/120 s and `syncInterval` 120 s (production 180/300 s and 300 s). Long scenarios (P-H04, about one hour of Doze) run only nightly. | Each scenario fits the 10-minute default timeout; the pull-request jobs stay short. |
+| The field-force app packages GMS only. | It stands for the Google Play build, which M-07 checks for 16 KB alignment. |
+
+#### Deviations of the scaffold from the plan
+
+| Decision | Why |
+|---|---|
+| A second manifest listener needs a meta-data name with a suffix (`com.brickssoft.locationtracking.LISTENER.<x>`). | Android's manifest merger rejects two libraries that declare the same meta-data name with different values, and `ApplicationInfo.metaData` is a map. |
+| `core/RecordHooks` was added (a fan-out of every queued record to in-process observers). | Unit 5 could add the two `dispatch` calls without editing scaffold files. |
+| `TrackingEngine` extends `StationaryRegionSink` with a default no-op, and `DefaultGeofenceManager`'s new `stationarySink` parameter defaults to `StationaryRegionSink.NONE`. | Existing tests compile unchanged. |
+| Kotlin is applied in both example apps. | The debug receivers are Kotlin; `NativeCallback`'s Kotlin `Result` is awkward to use from Java. |
+| The debug command protocol got: `json64` (base64 arguments, no shell quoting), `resultFile` for answers over 3000 characters, a 25-second timeout, `blockMainThread {delayMs}`, and fixed result shapes. | Reliable commands through `adb shell am broadcast` and logcat (logcat truncates long lines at about 4 KB). |
+| `PremiseMonitorNative` was defined in the scaffold, with the `PremiseAuditEntry` wire format (`pid`, `js`, `source`). | Units 12, 13 and 14 share it; `pid` and `js` let F-09 prove that entries were created before any JavaScript ran. |
+| Extra kit modules: `AppUnderTest`, fixtures, device detection, the catalogue, and two command-line tools (`npm run backoffice`, `npm run catalogue`). | Shared by all suites and by the runbook. |
+| The field-force app keeps a running session's `stopAfterElapsedMinutes` at startup. | The engine measures it from the session start, so recomputing it at a relaunch would move the stop time. |
+| `syncInterval` applies only with `autoSync` on, and `autoSyncThreshold > 0` acts as a size limit. | Keeps `autoSync: false` meaning "never upload normal records automatically". |
+| `HeartbeatMeta.strategy` is written as a literal union in TypeScript. | Clean `npm run docgen` output. |
+
+#### Additions by the coordinator after the scaffold
+
+| Decision | Why |
+|---|---|
+| Test-mode files: the kit writes JSON files into the app's storage with `run-as` before it launches the app (`files/e2e/example.json`, `files/e2e/ff-overrides.json`); the pages read them through `Capacitor.convertFileSrc`. | `localStorage` can be written only after the first page load, and the field-force page starts tracking on that first load. |
+| Robolectric test dependencies were added to the PremiseMonitor module. | Unit 13 can unit-test the fake plugin without an emulator. |
+| The field-force template's `ExampleInstrumentedTest` was removed. | It asserts the package `com.getcapacitor.app` and would fail. |
+| The base branch was renamed to `master`. | The owner's request (R2-Q14). |
+
+### R2.3 Integration decisions (round 2)
+
+<!-- coordinator fills -->
+
+### R2.4 Per-unit decisions (round 2)
+
+<!-- coordinator fills -->
+
+### R2.5 Open requests and known limitations
+
+| Item | Status |
+|---|---|
+| **HMS and the 16 KB page size.** `com.huawei.hms:location` 6.12.0.300 brings two native libraries with 4 KB ELF alignment: `libTransform.so` for `arm64-v8a` (from `com.huawei.hms.LocationLiteSdk:core` 2.12.0.300) and `libucs-credential.so` for `x86_64` (from `com.huawei.hms:ucs-credential-developers` 1.0.4.312). A build that packages HMS (`hms` or `gms,hms`) therefore does not support 16 KB page-size devices, which Google Play requires for apps targeting Android 15 or newer. | Open, depends on Huawei. The Play build is GMS only: the GMS-only field-force release APK has no native libraries and passes the CI 16 KB check (`.github/scripts/check-16kb.py`). On the `gms,hms` example APK the same check reports exactly these two libraries (`p_align` 4096). Runbook procedure M-07 repeats both checks. |
+| **No emulator in the development container.** The container has no KVM, so nothing in round 2 ran on an emulator before the merge. The units verified with unit tests, type checks, builds and dry runs. | The first real runs are the CI emulator jobs and the runbook ([docs/e2e-runbook.md](e2e-runbook.md)). |
+| **Background start of the PremiseMonitor service.** PremiseMonitor starts its foreground service from the native listener. Android 12+ allows that only while the app's process is in a foreground-service state (the tracking service runs in the foreground) or inside the short allowance after a geofence transition; Android 14+ also needs location permission for a `location` foreground service. In other cases (for example a restore of a non-exempt app whose tracking service was refused), Android refuses the start. | By design: a refusal is written as a `service_start_failed` audit entry, never a crash. F-07 and F-10 check the allowed cases on the emulator. |
+| **The 02:00 stop runs on the next wake-up.** `stopAfterElapsedMinutes` is a timer that does not advance while the CPU sleeps; the engine checks it on every fix and every heartbeat. While stationary (GPS off), the stop therefore happens at the first heartbeat after the stop time: within about `maxInterval` (5 minutes) for an exempt app, about 9–10 minutes in Doze without the exemption. | Accepted (a few minutes late is fine for a nightly stop). F-02/F-03 and runbook procedure M-05 measure it. <!-- verify after merge: still true after unit 2's engine changes (DefaultTrackingEngine runs fireDueTimers on heartbeat events) --> |
+| **Subset runs of the suites.** `npm run test:e2e -- --test-name-pattern=...` (the form in contract §11) runs every scenario: npm appends the option after the file pattern `"*.test.ts"`, and Node 22 then ignores it (checked with Node 22.22). | Worked around, found by units 6 and 15. The contract text is unchanged. CI passes the pattern as `E2E_TEST_NAME_PATTERN` to `.github/scripts/run-e2e.sh`; the README and the runbook use `NODE_OPTIONS='--test-name-pattern=…' npm run test:e2e`, or `node --test` with the option before the file pattern. |

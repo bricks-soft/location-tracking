@@ -19,31 +19,41 @@ whether the user really kept tracking on.
 - [Quick start](#quick-start)
 - [Configuration reference](#configuration-reference)
 - [Tracking behavior](#tracking-behavior)
+- [Battery](#battery)
 - [Geofencing](#geofencing)
-- [Records, uploads and the queue](#records-uploads-and-the-queue)
+- [Records, uploads and the queue](#records-uploads-and-the-queue) (including
+  [live location with `http.syncInterval`](#live-location-httpsyncinterval))
 - [Events reference](#events-reference)
+- [Companion plugins (native API)](#companion-plugins-native-api)
 - [Error codes](#error-codes)
 - [Web stub](#web-stub)
 - [Server side](#server-side)
 - [Example app](#example-app)
+- [Field-force example](#field-force-example)
+- [End-to-end tests](#end-to-end-tests)
 - [API](#api)
 
 ## Features
 
 - **Motion-aware tracking.** The plugin switches between *moving* (continuous, high-accuracy updates with an elastic
-  distance filter) and *stationary* (a low-power request that watches for movement) using activity recognition and
-  distance. It reports `motionchange` and `activitychange` events.
+  distance filter) and *stationary* (GPS off; a stationary geofence, passive fixes and activity recognition watch for
+  movement). It reports `motionchange` and `activitychange` events. See [Battery](#battery).
 - **Three location backends.** It supports GMS fused location, HMS fused location and the Android `LocationManager`.
   You choose which SDKs go into the APK at build time (`locationTracking.providers`) and which one to use at runtime
   (`locationProvider: 'auto' | 'gms' | 'hms' | 'android'`).
 - **Heartbeat audit.** If no record has been created for `heartbeat.minInterval` seconds (default 180), the plugin
   creates a `heartbeat` record with the last known location. It should exist before `maxInterval` (default 300), and
-  it is uploaded immediately. See [docs/heartbeat.md](docs/heartbeat.md).
+  it is uploaded immediately. Its `heartbeat` object tells the server when the next one is due. See
+  [docs/heartbeat.md](docs/heartbeat.md).
 - **Audit records.** `tracking_start`, `tracking_stop` (with a reason) and `providerchange` records are uploaded the
   same way, so the server can explain gaps.
 - **Offline-first HTTP sync.** Every record is stored in SQLite first. Uploads can send one record or a batch per
   request, use JSON templates, merge `params` into the body, and refresh a JWT on `401`. Failed uploads stay queued
-  and are retried, and `recorded_at` / `sent_at` expose late delivery. See [docs/wire-format.md](docs/wire-format.md).
+  and are retried, and `recorded_at` / `sent_at` expose late delivery. `http.syncInterval` batches location uploads
+  while keeping the server's live location at most that many seconds old. See [docs/wire-format.md](docs/wire-format.md).
+- **Companion native API.** Another plugin in the same app (Kotlin) receives every record and every event natively,
+  also when no WebView runs (after a reboot or an alarm), and can call the plugin. See
+  [Companion plugins](#companion-plugins-native-api).
 - **Geofencing.** Up to 100 circular or polygon geofences, with `ENTER`, `EXIT` and `DWELL` transitions, and a
   geofences-only tracking mode (`startGeofences()`). See [Geofencing](#geofencing).
 - **One-off and watched positions.** `getCurrentPosition()` (best of N samples) and `watchPosition()`.
@@ -345,13 +355,13 @@ numbers that are not finite become the default.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `desiredAccuracy` | `'high' \| 'balanced' \| 'low' \| 'passive'` | `'high'` | Accuracy of the location request while moving. While stationary the plugin uses `'balanced'` (or the configured value if it is lower-power), at most one fix per minute. |
+| `desiredAccuracy` | `'high' \| 'balanced' \| 'low' \| 'passive'` | `'high'` | Accuracy of the location request while moving. While stationary the plugin requests only passive fixes, whatever this value is (see [Battery](#battery)). |
 | `distanceFilter` | number (m, ≥ 0) | `10` | Minimum distance between recorded locations while moving. The plugin applies it itself (the OS request has no distance filter). |
 | `locationUpdateInterval` | number (ms, ≥ 0) | `1000` | Desired update interval while moving. |
 | `fastestLocationUpdateInterval` | number (ms, ≥ 0) | `500` | Fastest accepted update interval. |
 | `disableElasticity` | boolean | `false` | Turns off the speed-based scaling of `distanceFilter`. |
 | `elasticityMultiplier` | number (≥ 0) | `1` | Elastic filter: `distanceFilter × max(1, round(speed / 5) × elasticityMultiplier)`. |
-| `stationaryRadius` | number (m, ≥ 1) | `25` | While stationary, moving further than this (or than the fix accuracy, if larger) switches to moving. While moving, such a displacement counts as evidence of motion for stop detection. |
+| `stationaryRadius` | number (m, ≥ 1) | `25` | While stationary: the stationary geofence has a radius of `max(stationaryRadius, 150)` m, and a passive fix whose distance from the stop point minus its accuracy is more than `stationaryRadius` switches to moving. While moving, a displacement beyond it counts as evidence of motion for stop detection. |
 | `stopTimeout` | number (min, ≥ 0) | `5` | Minutes without evidence of motion (a displacement beyond `stationaryRadius`, or a confident moving activity) before switching to stationary. Values below 1 act as 1. |
 | `stopAfterElapsedMinutes` | number (min, ≥ 0) | `0` (off) | Stops tracking automatically this many minutes after it started (`tracking_stop`, reason `stop_after_elapsed`). |
 | `stopOnStationary` | boolean | `false` | Stops tracking when stop detection switches the device to stationary (`tracking_stop`, reason `stop_on_stationary`). `changePace({ isMoving: false })` does not stop tracking. |
@@ -396,8 +406,8 @@ numbers that are not finite become the default.
 | `headers` | object | `{}` | Extra request headers. They can override `Content-Type`; an `Authorization` header turns the JWT handling off. |
 | `params` | object | `{}` | Merged into the **root** of every request body. Keys that the body already has are not overwritten. Ignored for a batch with `rootProperty: '.'`. |
 | `autoSync` | boolean | `true` | Uploads normal records automatically. Priority records (heartbeat and audit records) are always uploaded immediately, and take queued normal records along. |
-| `autoSyncThreshold` | number (≥ 0) | `0` | Uploads normal records when the queue holds at least this many records. `0` uploads every record. |
-| `syncInterval` | number (s, ≥ 0) | `0` | Uploads normal records once the oldest queued one is this old, so the server's live location is at most this stale (the field-force setup uses `300`). `0` turns it off; priority records are not affected. |
+| `autoSyncThreshold` | number (≥ 0) | `0` | Uploads normal records when the queue holds at least this many records. With `syncInterval` `0`, the value `0` uploads every record. With `syncInterval` above `0`, it is a size limit: the queue is uploaded early when it reaches this many records, and `0` means no size limit. |
+| `syncInterval` | number (s, ≥ 0) | `0` | Uploads normal records once the oldest queued one is this old, so the server's live location is at most about this stale (the field-force setup uses `300`). Needs `autoSync: true`. `0` turns it off; priority records are not affected. See [Live location](#live-location-httpsyncinterval). |
 | `batchSync` | boolean | `false` | Sends several records per request, as an array, oldest first. |
 | `maxBatchSize` | number (≥ 1) | `100` | Maximum records per batch request. |
 | `disableAutoSyncOnCellular` | boolean | `false` | On cellular, uploads only priority records. `sync()` ignores it. |
@@ -503,18 +513,23 @@ The dialog shown before the Android 11+ "Allow all the time" settings page.
 
 - **Moving:** continuous updates with the configured `desiredAccuracy` and intervals. A `location` record is created
   when a fix is at least the (elastic) `distanceFilter` away from the last recorded one.
-- **Stationary:** a low-power request (`'balanced'`, at most one fix per minute). Fixes only feed motion detection and
-  polygon geofences; **no `location` records are created and the odometer doesn't grow**, so GPS jitter while parked
-  is neither uploaded nor counted. The last known location used by heartbeats is still refreshed from them.
-- Stationary → moving: a fix farther than `max(stationaryRadius, fix accuracy)` from where the device stopped, or a
-  moving activity (walking, running, on foot, on bicycle, in vehicle) at or above
-  `minimumActivityRecognitionConfidence` that lasts for `motionTriggerDelay`.
+- **Stationary:** GPS off. The plugin removes its location request and asks only for **passive** fixes (fixes that
+  other apps requested), and registers one OS geofence, the *stationary region*, around the last fix. The foreground
+  service keeps running and heartbeats continue. Fixes that still arrive only feed motion detection and polygon
+  geofences; **no `location` records are created and the odometer doesn't grow**, so position jitter while parked is
+  neither uploaded nor counted. Details in [Battery](#battery).
+- Stationary → moving, whichever comes first: the device leaves the stationary region; a passive fix is certainly
+  outside (`distance − accuracy > stationaryRadius`, with an accuracy no worse than
+  `filter.trackingAccuracyThreshold`); a moving activity (walking, running, on foot, on bicycle, in vehicle) at or
+  above `minimumActivityRecognitionConfidence` lasts for `motionTriggerDelay`; or `changePace({ isMoving: true })`.
+  Then the configured request (GPS for `'high'`) starts again and a `motionchange` with the first accepted fix is
+  recorded.
 - Moving → stationary (stop detection, unless `disableStopDetection`): `stopTimeout` minutes (at least 1) after the
   last evidence of motion, even if no more fixes arrive.
 - Each transition records a `motionchange` with the new `is_moving`. `changePace({ isMoving })` forces a transition;
   it is ignored while tracking is off or in geofences-only mode.
 - Without activity recognition (the `android` backend, `disableMotionActivityUpdates`, or no activity permission),
-  motion is detected from distance only.
+  motion is detected from the stationary region and from distance only.
 
 **Positions.** `getCurrentPosition()` works whether or not tracking is on. It needs location permission
 (`PERMISSION_DENIED`) and enabled location services (`LOCATION_DISABLED`). It takes up to `samples` fixes, stops
@@ -525,6 +540,60 @@ emitted as a `location` event and restarts the heartbeat window. `watchPosition(
 such as `PERMISSION_DENIED`) to its callback until `clearWatch()`; it doesn't report disabled location services as
 an error (fixes start once they are switched on). With `persist: true`, each fix is also stored as a
 `watch_position` record (uploaded, and emitted as a `location` event).
+
+## Battery
+
+Tracking for 12 hours or more a day must cost little battery without losing the audit trail. The plugin follows the
+same idea as Transistor Software's
+["philosophy of operation"](https://docs.transistorsoft.com/help/philosophy/): **GPS runs only while the device
+moves.** Heartbeats are a separate, fixed rule: they are always created and uploaded while tracking is on, and they
+never turn GPS on.
+
+**What runs in each state** (`start()` mode):
+
+| State | Runs | Does not run |
+|---|---|---|
+| Moving | The location request with `desiredAccuracy` (`'high'` = GPS) every `locationUpdateInterval` (1 s by default); activity recognition; uploads; the heartbeat schedule (heartbeats are rarely due, because records keep coming). | – |
+| Stationary | The foreground service and its notification; a **passive** location request (it receives only fixes that other apps requested, and costs nothing by itself); the **stationary region**: one OS geofence of `max(stationaryRadius, 150)` m around the last accepted fix, with an exit trigger; activity recognition; a heartbeat every `heartbeat.minInterval` seconds. | GPS, and any network-location request of the plugin. |
+| Tracking off | Nothing. | Everything. |
+
+**How the plugin notices that the device moves again** (whichever comes first):
+
+1. the OS reports that the device left the stationary region (typically after 150–250 m);
+2. a passive fix is certainly outside: its distance from the stop point minus its accuracy is more than
+   `stationaryRadius`, and its accuracy is no worse than `filter.trackingAccuracyThreshold` (a coarse fix alone never
+   wakes GPS);
+3. activity recognition reports walking, running, on foot, on bicycle or in vehicle, with at least
+   `minimumActivityRecognitionConfidence`, for `motionTriggerDelay`;
+4. the app calls `changePace({ isMoving: true })`.
+
+Then GPS starts again, and a `motionchange` (`is_moving: true`) is recorded with the first accepted fix.
+
+If the stationary region cannot be registered (no "Allow all the time" location, the OS geofence limit is reached, or
+a backend error), the plugin logs it and uses a low-power request instead of the passive one: at most one fix per
+3 minutes, without GPS. Movement is then still detected. A polygon geofence still forces the moving request while the
+device is inside the polygon's enclosing circle (see [Geofencing](#geofencing)).
+
+**Heartbeats while stationary.** A heartbeat carries the last accepted fix. Its `recorded_at` is the time the heartbeat
+was created (now); `timestamp` (`location.timestamp` in JavaScript) is the time the fix was **acquired**, which can be
+hours earlier. So the server can show "the device is on (last heartbeat 11:59), last position from 10:26". Details in
+[docs/heartbeat.md](docs/heartbeat.md#stationary-gps-off-heartbeats-continue).
+
+<!-- verify after merge: unit 2 (engine) implements the stationary mode as in docs/e2e/architecture.md §3 (passive request, region radius max(stationaryRadius, 150 m), the accuracy-aware passive-fix exit, the low-power fallback at most one fix per 3 minutes) -->
+
+**What costs battery, and the keys that change it** (largest cost first):
+
+| Cost | When | Config keys |
+|---|---|---|
+| GPS | While moving, and for `stopTimeout` minutes after the device stops (stop detection waits that long). | `geolocation.desiredAccuracy` (`'balanced'` uses Wi-Fi and cell towers, no GPS); `locationUpdateInterval` and `fastestLocationUpdateInterval`; `stopTimeout` (5 min by default); `disableStopDetection: true` keeps GPS on all the time: avoid it. |
+| Mobile radio | Every upload request wakes the radio for several seconds. | `http.syncInterval` (the field-force setup uses 300 s: one upload about every 5 minutes while moving instead of one per record), `batchSync`, `maxBatchSize`, `autoSyncThreshold`, `disableAutoSyncOnCellular`. Heartbeats and audit records are always uploaded at once. |
+| CPU wake-ups | Every heartbeat alarm; every fix while moving. | `heartbeat.minInterval` / `maxInterval` (180/300 s). With the battery-optimization exemption, heartbeats stay exact in Doze (about 20 wake-ups per hour at 180 s); without it, Android spaces them about 9 minutes apart. |
+| Polygon geofences | Continuous location while the device is inside a polygon's enclosing circle. | Prefer circles. |
+| Activity recognition | While tracking in `start()` mode. It uses the motion sensors and costs little. | `activity.activityRecognitionInterval`, `activity.disableMotionActivityUpdates` (then only the stationary region and passive fixes detect movement). |
+| Logging | Every log line is written to a file. | `logger.logLevel` (`'info'` by default; `'debug'` writes much more). |
+
+How to measure the cost on a real phone: procedure M-04 in the
+[e2e runbook](docs/e2e-runbook.md#m-04-12-hour-battery-measurement).
 
 ## Geofencing
 
@@ -558,8 +627,9 @@ an error (fixes start once they are switched on). With `persist: true`, each fix
 - Every record is written to SQLite first and uploaded to `http.url` according to the rules in
   [docs/wire-format.md](docs/wire-format.md#when-uploads-happen). Priority records (`heartbeat`, `tracking_start`,
   `tracking_stop`, `providerchange`) are uploaded right away and take the older queued records along.
-- There is **no retry timer**: queued records are retried when a record is inserted (at least every heartbeat while
-  tracking), when the network comes back, when tracking starts, and on `sync()`.
+- There is **no retry timer** for failed uploads: queued records are retried when a record is inserted (at least every
+  heartbeat while tracking), when the network comes back, when tracking starts, and on `sync()`. The only timer is the
+  `syncInterval` timer, which uploads normal records that have become due (see below).
 - `getLocations({ limit })` returns queued records, oldest first; `getCount()` counts them; `destroyLocations()` and
   `destroyLocation({ uuid })` delete them without uploading.
 - `sync()` uploads the whole queue now, ignoring `autoSync`, `autoSyncThreshold` and `disableAutoSyncOnCellular`, and
@@ -570,10 +640,48 @@ an error (fixes start once they are switched on). With `persist: true`, each fix
   tracking runs.
 - `persistence.maxDaysToPersist` and `maxRecordsToPersist` prune the queue, including heartbeats and audit records.
 
+### Live location: `http.syncInterval`
+
+A back office that shows where a worker is now needs a recent position, but one upload per location record keeps the
+mobile radio busy. `http.syncInterval` sets the maximum age of the newest position on the server:
+
+```ts
+http: {
+  url: 'https://api.example.com/locations',
+  autoSync: true,        // required: syncInterval works only with autoSync
+  syncInterval: 300,     // seconds: live location at most about 5 minutes old
+  batchSync: true,       // one request carries many records
+  maxBatchSize: 100,
+}
+```
+
+- **Normal records** (`location`, `motionchange`, `current_position`, `watch_position`, `geofence`) wait in the
+  queue until the **oldest** of them is `syncInterval` seconds old (by `recorded_at`). Then the whole queue is
+  uploaded, in batches of `maxBatchSize` when `batchSync` is on. While the device moves, that is one upload about
+  every `syncInterval` seconds.
+- **Audit records** (`heartbeat`, `tracking_start`, `tracking_stop`, `providerchange`) are still uploaded at once, and
+  they take the queued normal records with them.
+- While stationary, no location records are created; the heartbeat (every `minInterval`) is uploaded at once and
+  carries the last position with its acquisition time.
+- `autoSyncThreshold` above 0 is a size limit: the queue is uploaded earlier when it reaches that many records.
+- The check runs on every insert, when the network comes back, when the uploader starts, and on a timer in the
+  tracking process (at `oldest.recorded_at + syncInterval`). Doze can delay the timer; the next heartbeat uploads
+  the queue anyway. `disableAutoSyncOnCellular` still holds normal records back on cellular, and `sync()` still
+  uploads everything at once.
+- [Native listeners](#companion-plugins-native-api) receive every record when it is queued, not when it is uploaded,
+  so `syncInterval` does not delay them.
+- `syncInterval: 0` (the default) keeps the behavior without it: normal records follow `autoSync` and
+  `autoSyncThreshold`.
+
+<!-- verify after merge: unit 4 (http) implements syncInterval as in docs/e2e/architecture.md §4 (oldest pending normal record, whole-queue drain, timer only while tracking, negative age counts as due) -->
+
+Rules and a timeline example: [docs/wire-format.md](docs/wire-format.md#live-location-with-syncinterval).
+
 ## Events reference
 
 Subscribe with `LocationTracking.addListener(name, callback)` or the typed helpers. Events reach JavaScript only
-while the app's WebView is alive. Records are persisted and uploaded whether or not anyone is listening.
+while the app's WebView is alive; [native listeners](#companion-plugins-native-api) receive the same events in every
+process, also without a WebView. Records are persisted and uploaded whether or not anyone is listening.
 `connectivitychange` and `powersavechange`, and the `providerchange` events caused by system broadcasts, start once
 tracking has been started (or resumed) in the app's process.
 
@@ -592,6 +700,82 @@ tracking has been started (or resumed) in the app's process.
 | `enabledchange` | `{ enabled }` | Tracking was started or stopped, including automatic stops (`stopOnStationary`, `stopAfterElapsedMinutes`, `terminate`, `permission_denied`, `service_start_failed`, `reboot`, `package_replaced`). Not emitted when tracking resumes in a new process. |
 | `notificationaction` | `{ id }` | A notification action button was tapped. |
 | `authorization` | `{ success, status, error?, response? }` | A JWT refresh was attempted, successfully or not. `response` is the parsed JSON body of the refresh response. |
+
+## Companion plugins (native API)
+
+Another Capacitor plugin in the same app, or the app's own Android code, can work with this plugin directly in Kotlin,
+without JavaScript. This is for a companion that must see **every** record and event, including those created while
+no WebView exists: after a reboot, when a heartbeat alarm wakes the app at night, or after Android restarted a killed
+process. The example is the fake PremiseMonitor plugin of the [field-force example](#field-force-example), which
+audits a premise with its own foreground service.
+
+Package `com.brickssoft.locationtracking.api`:
+
+- `LocationTrackingListener` with two methods, both optional:
+  - `onRecord(context, record: JSONObject)`: every record that is queued for upload (all `event` types, including
+    `heartbeat`, `tracking_start`, `tracking_stop`, `providerchange`, `geofence` and records from `insertLocation()`),
+    in the [wire format](docs/wire-format.md) without `sent_at`. It is called when the record is queued, before any
+    upload, so `syncInterval` and network problems do not delay it.
+  - `onEvent(context, name: String, payload: JSONObject)`: every event, with the same name and payload as the
+    JavaScript `addListener` API.
+- `LocationTrackingNative`: `addListener`, and calls that do what the JavaScript methods do (`ready`, `setConfig`,
+  `start`, `startGeofences`, `stop`, `changePace`, `getState`, `getHeartbeatStatus`, `sync`, `insertLocation`,
+  `addGeofence`, `removeGeofence`, `getGeofences`). Results arrive in a `NativeCallback` as a Kotlin `Result`; a
+  failure carries the same error `code` as in JavaScript.
+
+**Register a listener in the manifest** (recommended: it never misses a record). The plugin creates the class once per
+process, before it can emit anything, in every process that runs the plugin (app launch, the tracking service, boot,
+alarms):
+
+```xml
+<application>
+  <meta-data android:name="com.brickssoft.locationtracking.LISTENER"
+             android:value="com.example.audit.AuditListener"/>
+</application>
+```
+
+```kotlin
+package com.example.audit
+
+import android.content.Context
+import com.brickssoft.locationtracking.api.LocationTrackingListener
+import org.json.JSONObject
+
+class AuditListener : LocationTrackingListener {        // public no-argument constructor
+    override fun onRecord(context: Context, record: JSONObject) {
+        // e.g. record.getString("event") == "heartbeat"; hand real work (I/O, uploads) to your own executor
+    }
+
+    override fun onEvent(context: Context, name: String, payload: JSONObject) {
+        // e.g. name == "providerchange"
+    }
+}
+```
+
+A second listener in the same app needs its own meta-data name with a suffix, for example
+`com.brickssoft.locationtracking.LISTENER.analytics`: Android's manifest merger rejects two libraries that declare the
+same meta-data name with different values.
+
+**Or subscribe from code.** Such a listener receives only what is emitted after the call:
+
+```kotlin
+val subscription = LocationTrackingNative.addListener(context, AuditListener())
+LocationTrackingNative.getState(context) { result ->
+    result.onSuccess { state -> Log.i("Audit", "tracking enabled: ${state.getBoolean("enabled")}") }
+        .onFailure { error -> Log.w("Audit", "getState failed", error) }
+}
+subscription.remove()                                    // idempotent
+```
+
+Listener methods and callbacks run on one background thread named `LT-native`, in the order the records and events
+were created (a record's `onRecord` comes before the events that carry it). Exceptions thrown by a listener are caught
+and logged. Keep the methods short; the listener's constructor must not block. Native calls do not need the
+JavaScript `ready()`, and are not subject to the `NOT_READY` rule; call `LocationTrackingNative.ready` first when you
+need a config. The consumer R8 rules keep the API and the listeners' constructors in minified builds.
+
+The full guide for companion-plugin authors: [docs/native-api.md](docs/native-api.md).
+
+<!-- verify after merge: docs/native-api.md exists (unit 5) and agrees with this section (thread name LT-native, suffixed meta-data names, NOT_READY not applied to native calls) -->
 
 ## Error codes
 
@@ -652,12 +836,17 @@ nothing and cannot track.
 - [docs/heartbeat.md](docs/heartbeat.md) covers heartbeat semantics, what reliability to expect on Android, and how
   to audit tracking gaps on the server.
 - [docs/device-test-checklist.md](docs/device-test-checklist.md) is a manual test plan for real GMS, HMS and
-  non-GMS phones.
+  non-GMS phones; [docs/e2e-runbook.md](docs/e2e-runbook.md) covers the emulator tests and the real-phone procedures
+  M-01 … M-08.
 
 In short, store records idempotently by `uuid` and answer `2xx` quickly (also for records you will never accept, or
 they are retried until pruned). While tracking is on, expect some record at least every `maxInterval` seconds (about
-every 9 minutes in deep idle when the app is not exempt from battery optimization), and flag longer gaps. A `tracking_stop` with reason `service_start_failed` means Android didn't let tracking resume in
-the background; the app has to call `start()` again.
+every 9 minutes in deep idle when the app is not exempt from battery optimization), and flag longer gaps. Each
+heartbeat's `heartbeat` object (`strategy`, `next_at`, `battery_exempt`, `device_idle`) tells you which gap to expect
+next, so a normal 9-minute gap in Doze is not flagged as a failure (see
+[docs/heartbeat.md](docs/heartbeat.md#heartbeat-metadata)). A back office can show tracking as **online** while the
+latest record is not older than that expected gap. A `tracking_stop` with reason `service_start_failed` means Android
+didn't let tracking resume in the background; the app has to call `start()` again.
 
 ## Example app
 
@@ -669,6 +858,95 @@ npm ci && npm run build            # in the repository root
 cd example && npm ci && npm run sync
 cd android && ./gradlew assembleDebug -PlocationTracking.providers=gms,hms
 ```
+
+Its **debug** build also contains the test hooks of the [end-to-end tests](#end-to-end-tests): a broadcast receiver
+that runs plugin calls without the web page, and an "E2E mode" in which the page never changes the plugin's state by
+itself. Release builds contain neither.
+
+## Field-force example
+
+[`examples/field-force/`](examples/field-force/) is the setup this plugin was built for: a field-force app whose back
+office audits a moving worker. It is plain HTML/JS (no bundler), Android only, and packages GMS only (like a Google
+Play build).
+
+- **Auto start.** Every time the app's page loads, it calls `ready()` with the preset below and then `start()` if
+  tracking is not on yet.
+- **Stop at 02:00.** At start, the app computes the minutes until the next 02:00 local time and passes them as
+  `geolocation.stopAfterElapsedMinutes`. The plugin then records `tracking_stop` with reason `stop_after_elapsed` at
+  about 02:00. This is app code, not a plugin schedule feature: any app can compute its own stop time the same way.
+  When tracking is already on at launch, the app keeps the running session's value, because the plugin measures it
+  from the session start. The daily stop ends each session at night, so the next morning starts a fresh session. (The
+  owner's reason: an app that is never closed must not hit a `ForegroundServiceDidNotStartInTimeException` on a cold
+  start the next morning.)
+- **Live location at most about 5 minutes old:** `http.syncInterval: 300` with batches.
+- **Device details and battery.** `http.params.device` carries the manufacturer, model, brand, OS version, SDK level,
+  plugin version, backend and GMS/HMS availability in every request; every record carries `battery`.
+- **Online status, route, travel time and distance** come from the records: heartbeats while stationary, `location`
+  records while moving, `motionchange` for the moving periods, `odometer` for the distance.
+- **Companion plugin.** A fake PremiseMonitor plugin (`examples/field-force/plugins/premise-monitor/`) listens to all
+  records and events through the [native API](#companion-plugins-native-api), monitors one circular premise with a
+  geofence, runs its own foreground location service while the worker is inside, and uploads its own audit entries.
+
+The preset (production values):
+
+| Group | Values |
+|---|---|
+| `geolocation` | `desiredAccuracy: 'high'`, `distanceFilter: 20`, `stationaryRadius: 50`, `stopTimeout: 5`, `stopAfterElapsedMinutes`: minutes to the next 02:00, `filter.trackingAccuracyThreshold: 50` |
+| `heartbeat` | `enabled: true`, `minInterval: 180`, `maxInterval: 300` |
+| `http` | `url: <backend>/locations`, `autoSync: true`, `syncInterval: 300`, `batchSync: true`, `maxBatchSize: 100`, `params: { worker_id, device: {…} }`, JWT `authorization` with `refreshUrl: <backend>/auth/refresh` |
+| `app` | `stopOnTerminate: false`, `startOnBoot: true` |
+| other | `notification: { title: 'Field Force', text: 'Shift tracking is on' }`, `logger.logLevel: 'debug'`, `locationProvider: 'auto'` |
+
+The startup logic is in `examples/field-force/www/ff-core.js`. The page exposes its progress as `window.FF_APP`
+(`status`: `'running'`, `'done'` or `'failed'`; `step`; `result` with the state, the computed
+`stopAfterElapsedMinutes`, the config, the device info and `warnings` about ignored test overrides; `error`; the
+`startup` promise). The startup asks for every permission that is not granted and waits until the permission dialog
+is answered.
+
+Build it (after `npm ci && npm run build` in the repository root), and run the Node tests of its startup logic:
+
+```bash
+cd examples/field-force && npm ci && npm run sync   # FF_BACKEND_URL=<url> sets the back office (default http://10.0.2.2:8787)
+cd android && ./gradlew assembleDebug
+cd ../../.. && node --test "examples/field-force/test/*.test.js"   # from the repository root
+```
+
+<!-- verify after merge: examples/field-force (units 12 and 13) matches this section: auto start on every page load, stopAfterElapsedMinutes kept for a running session, the preset values, FF_BACKEND_URL, www/ff-core.js, window.FF_APP fields, examples/field-force/test/*.test.js -->
+
+## End-to-end tests
+
+The plugin is tested end to end on an Android emulator (AVD), in GitHub Actions and on a developer's machine:
+
+| Part | Where | What |
+|---|---|---|
+| Plugin suite | [`e2e/plugin/`](e2e/plugin/) | 34 scenarios against the plugin's [example app](#example-app): lifecycle (foreground-service start crashes, kills, reboots, updates), heartbeat and power (stationary GPS off, Doze, clock changes, offline, server errors, `syncInterval`), permissions, providers and geofences. |
+| Field-force suite | [`examples/field-force/e2e/`](examples/field-force/e2e/) | 12 scenarios against the [field-force example](#field-force-example): auto start, 02:00 stop, live location, route and odometer, online/offline audit, and PremiseMonitor receiving every record natively (also after a kill and a reboot). |
+| Test kit | [`testing/e2e-kit/`](testing/e2e-kit/) | adb, WebView and debug-command helpers, a mock back office, fixtures and assertions, on Node 22 without runtime dependencies. |
+| Manual procedures | [docs/e2e-runbook.md](docs/e2e-runbook.md) | M-01 … M-08: HMS on a Huawei phone, phone makers' task killers, a real drive, a 12-hour battery measurement, a real 02:00 stop, a real Android 14 boot, 16 KB alignment, real overnight Doze. |
+
+Run them on a machine with KVM and a booted emulator (details, triage and the manual procedures are in the
+[runbook](docs/e2e-runbook.md)):
+
+```bash
+cd e2e/plugin && npm ci
+export E2E_APK=../../example/android/app/build/outputs/apk/debug/app-debug.apk
+npm run test:e2e                                                  # the whole plugin suite
+NODE_OPTIONS='--test-name-pattern=^P-L01' npm run test:e2e        # one scenario
+npm run dry-run                                                   # list the scenarios, no device
+```
+
+(`npm run test:e2e -- --test-name-pattern=...` does not filter: npm puts the option after the file pattern, where
+Node ignores it.) CI runs the same suites through `.github/scripts/run-e2e.sh` in
+`.github/workflows/e2e-android.yml`: the plugin suite on API 34 (with smaller runs on API 29 and 35), P-P08 on an
+image without Google Play services, the field-force suite on API 34, and the long scenarios nightly. The same workflow
+checks that the Google Play build of the field-force app supports 16 KB memory pages
+(`.github/scripts/check-16kb.py`).
+
+The field-force suite, together with the field-force app and the kit, is written so that it can move into the Bricks
+app as its integration test. The contract behind the tests (scenario ids, debug commands, mock back office) is
+[docs/e2e/architecture.md](docs/e2e/architecture.md).
+
+<!-- verify after merge: the 16 KB check runs in .github/workflows/e2e-android.yml or in the build workflow (unit 6); name the right workflow -->
 
 ## API
 
@@ -2061,9 +2339,7 @@ the computed enclosing circle.
 
 Construct a type with a set of properties K of type T
 
-<code>{
- [P in K]: T;
- }</code>
+<code>{ [P in K]: T; }</code>
 
 
 #### NotificationPriority
@@ -2117,18 +2393,14 @@ Rejection `code` of every failed promise.
 
 From T, pick a set of properties whose keys are in the union K
 
-<code>{
- [P in K]: T[P];
- }</code>
+<code>{ [P in K]: T[P]; }</code>
 
 
 #### Partial
 
 Make all properties in T optional
 
-<code>{
- [P in keyof T]?: T[P];
- }</code>
+<code>{ [P in keyof T]?: T[P]; }</code>
 
 
 #### HeartbeatStrategy

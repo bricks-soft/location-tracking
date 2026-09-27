@@ -5,7 +5,10 @@ whose app has been killed. The server can't tell these two cases apart. The hear
 tracking is on, the plugin makes sure the server hears from the device **every 3–5 minutes**, even when nothing moves.
 
 - [Semantics](#semantics)
+- [Stationary: GPS off, heartbeats continue](#stationary-gps-off-heartbeats-continue)
+- [Delivery to native listeners](#delivery-to-native-listeners)
 - [How it is scheduled](#how-it-is-scheduled)
+- [Heartbeat metadata](#heartbeat-metadata)
 - [Android reliability](#android-reliability)
 - [Battery-optimization exemption](#battery-optimization-exemption)
 - [Phone makers' power managers](#phone-makers-power-managers)
@@ -38,10 +41,11 @@ heartbeat: {
   - There is **no heartbeat right at `start()`**: a last record from an earlier tracking session doesn't make the new
     window overdue. The window starts at the session start (in practice at its `tracking_start` record).
   - Before any record exists (a new install), the window starts when the plugin first schedules it.
-- **Last known location.** The heartbeat carries the last known location: the last recorded fix, which is kept up to
-  date from the low-power fixes while the phone is stationary, or else the backend's last known location. It does
-  **not** turn on GPS for a new fix, so its battery cost is tiny. `timestamp` is the time of that fix, and `coords`
-  and `timestamp` are `null` if no location has ever been known.
+- **Last known location.** The heartbeat carries the last known location: the last fix the plugin accepted, or else
+  the backend's last known location. It does **not** turn on GPS for a new fix, so its battery cost is tiny.
+  `recorded_at` is when the heartbeat was created; `timestamp` is when that fix was **acquired**, which can be much
+  earlier (see [below](#stationary-gps-off-heartbeats-continue)). `coords` and `timestamp` are `null` if no location
+  has ever been known.
 - **Checked twice.** Before creating a heartbeat, the plugin checks the location provider state (which may create a
   `providerchange` record), then checks again that no record was created and tracking was not stopped in the
   meantime. Only then does it create the heartbeat, so a heartbeat never duplicates another record.
@@ -52,6 +56,10 @@ heartbeat: {
   `autoSyncThreshold`, batching and `disableAutoSyncOnCellular`. The upload also drains any older queued records
   (unless the phone is on cellular with `disableAutoSyncOnCellular`). The plugin holds a partial wake lock for up to
   60 s while it handles the alarm and starts the upload.
+  <!-- verify after merge: unit 3 (heartbeat cost) may have shortened the wake lock; update "up to 60 s" to the merged value -->
+- **Always sent.** Heartbeats are a fixed rule of the plugin: while tracking is on they are created, uploaded to
+  `http.url` and delivered to native listeners, also while the phone is stationary with GPS off. The battery saving of
+  the stationary mode comes from not polling GPS, not from skipping heartbeats.
 - **Queued and retried.** If the upload fails (no network, server error), the heartbeat stays in the SQLite queue.
   There is no retry timer: it is retried when the next record is inserted (the next heartbeat at the latest), when
   connectivity returns, when tracking starts, or on `sync()`. `recorded_at` stays the creation time and `sent_at` is
@@ -67,6 +75,51 @@ heartbeat: {
   Android refuses, the plugin records `tracking_stop` with reason `service_start_failed`, and tracking stays off until
   the app calls `start()` again (for example the next time the user opens it).
 - **JavaScript.** The app gets a `heartbeat` event (`{ location }`) while its WebView is alive.
+- **Native listeners.** Companion plugins get every heartbeat in every process, also without a WebView (see
+  [below](#delivery-to-native-listeners)).
+
+## Stationary: GPS off, heartbeats continue
+
+While the device is stationary, the plugin turns GPS off (see the README,
+[Battery](../README.md#battery)). The foreground service keeps running, and the heartbeat keeps its normal
+schedule. Each heartbeat carries the last fix the plugin accepted:
+
+| Field | Value while stationary |
+|---|---|
+| `recorded_at` | When the heartbeat was created: now. |
+| `timestamp` | When the carried fix was **acquired** (not when the heartbeat was created). |
+| `coords` | The coordinates of that fix. |
+| `is_moving` | `false`. |
+
+Example: a worker parks at 10:21 and stays until 12:00, with `stopTimeout` 5 minutes and heartbeats every
+180 s. GPS stays on until the stop is confirmed: at about 10:26 the plugin records the `motionchange`
+(`is_moving: false`), with `recorded_at` and `timestamp` about 10:26, and turns GPS off. The heartbeats at 10:29,
+10:32, … 11:59 have `recorded_at` 10:29, 10:32, … 11:59, and all of them have `timestamp` 10:26 and the same `coords`,
+unless a passive fix (a fix another app requested) was accepted in between; then they carry that fix and its time.
+
+A server shows this as "tracking is on (last heartbeat 11:59), last position from 10:26". Use `recorded_at − timestamp`
+as the age of the position. The age does not mean that tracking failed: the heartbeat itself proves the app is alive.
+
+<!-- verify after merge: unit 2 (engine) keeps runtime.lastLocation as the last accepted fix while stationary and updates it from accepted passive fixes -->
+
+## Delivery to native listeners
+
+When a heartbeat is created, the plugin:
+
+1. writes the record to the SQLite queue;
+2. hands it to every native listener (`LocationTrackingListener` of the
+   [companion API](../README.md#companion-plugins-native-api)): `onRecord(context, record)`, with the record in the
+   wire format (without `sent_at`);
+3. emits the `heartbeat` event: native listeners get `onEvent(context, "heartbeat", { location })`, and JavaScript gets
+   the `heartbeat` event if a WebView is alive;
+4. starts the upload to `http.url` at once (see [Semantics](#semantics)). The upload runs on its own; steps 2 and 3 do
+   not wait for it.
+
+Listeners declared in the app's manifest are created in **every** process that runs the plugin, before the first
+record, so a heartbeat created by an alarm at night, with no WebView and no JavaScript, still reaches them. A companion
+plugin (for example the field-force example's PremiseMonitor) can therefore keep its own audit of every heartbeat,
+independent of the app's JavaScript and of the network: delivery happens when the record is queued, also when the
+phone is offline.
 
 ## How it is scheduled
 
@@ -95,6 +148,62 @@ These facts come from AOSP `AlarmManagerService`:
   apps that aren't exempt at most about once every 9 minutes. So on those versions the strategy shows `exact`, but a
   phone that isn't exempt still gets heartbeats about 9 minutes apart in deep idle. Look at
   `isIgnoringBatteryOptimizations`, not only at `strategy`.
+
+## Heartbeat metadata
+
+Every heartbeat record carries a `heartbeat` object that says how the plugin schedules the **next** heartbeat on this
+phone. With it, the server can tell an expected gap (for example 9 minutes in Doze without the battery exemption) from
+a failure, without any setting in the app.
+
+```json
+"heartbeat": { "strategy": "idle_paced", "min_interval": 180, "max_interval": 300,
+               "next_at": "2026-09-27T01:14:05.310Z", "battery_exempt": false, "device_idle": true }
+```
+
+| Key | Meaning |
+|---|---|
+| `strategy` | The strategy armed for the next window: `exact`, `listener_with_backup` or `idle_paced` (see [How it is scheduled](#how-it-is-scheduled)). Never `disabled`: then no heartbeat exists. |
+| `min_interval`, `max_interval` | `heartbeat.minInterval` and `maxInterval` (seconds) when this heartbeat was created. |
+| `next_at` | When the next heartbeat will be due if no other record is created: `recorded_at + min_interval`, or, for `idle_paced`, the time of the backup alarm (at least 9 minutes after the previous backup alarm fired). `null` if unknown. |
+| `battery_exempt` | The app was exempt from battery optimization when the heartbeat was created. |
+| `device_idle` | The phone was in deep Doze when the heartbeat was created. |
+
+The object is optional: heartbeats from plugin versions before round 2 don't have it. Only `heartbeat` records have it.
+
+<!-- verify after merge: unit 3 (heartbeat) fills the object on every heartbeat record exactly as described here (next_at for idle_paced = max(due, lastBackupFire + 9 min)) -->
+
+**How a server uses it.** Take two consecutive records of one device while tracking is on: `prev` and the next
+record `next`. Let `hb` be the `heartbeat` object of the device's latest heartbeat up to `prev` (`prev`'s own object
+when `prev` is a heartbeat):
+
+```
+grace = 120 s
+if hb is missing:
+    allowed = maxInterval of the app's config                      # plugin versions before round 2
+elif not hb.battery_exempt and (hb.device_idle or next.heartbeat?.device_idle):
+    allowed = 660 s                                                # Doze without exemption: about 9 min, up to 11
+else:
+    allowed = hb.max_interval                                      # awake, charging or exempt
+gap      = next.recorded_at - prev.recorded_at
+expected = gap <= allowed + grace
+open gap = (no next record yet) and now - prev.recorded_at > allowed + grace + delivery allowance
+```
+
+- `battery_exempt: true` → the next record should come within `max_interval` (300 s by default), also in Doze.
+- `battery_exempt: false` and Doze (`device_idle` true on this heartbeat or on the next one) → about 9 minutes is
+  normal. `strategy` is `idle_paced` on Android 12+. On Android 11 and older it shows `exact`, but Android still spaces
+  the alarms of a non-exempt app about 9 minutes apart in Doze, so use `battery_exempt` and `device_idle`, not only
+  `strategy`.
+- `listener_with_backup` → the phone was awake and not exempt; if it enters Doze before the next heartbeat, the next
+  one can come about 9 minutes later and will have `device_idle: true`.
+- The next heartbeat's `recorded_at` minus this heartbeat's `next_at` shows how much later than planned the next
+  heartbeat came (positive = late). Occasional delays of a minute or two are normal; a heartbeat that never comes is
+  a gap to explain (table in [Server-side audit](#3-explain-gaps)).
+
+**"Online" in a back office.** Show a device as online while tracking is on (its last `tracking_*` record is a
+`tracking_start`) and `now − recorded_at` of its newest record is at most `allowed + grace` from the rule above.
+Remember that records can arrive late (`sent_at` later than `recorded_at`), so "offline" is provisional until the
+queued records have had time to arrive.
 
 ## Android reliability
 
@@ -200,8 +309,9 @@ Strategies for the app UI:
 - `disabled`: tracking is off, or heartbeats are disabled.
 - A growing `pendingHeartbeats` means uploads fail: check the network, `http.url` and the `http` events.
 
-To let the server know which devices are exempt, the app can copy the flag into every record. For example, on every
-launch and resume:
+Every heartbeat record already tells the server whether the app is exempt (`heartbeat.battery_exempt`, see
+[Heartbeat metadata](#heartbeat-metadata)). To have the flag on every other record too, the app can copy it into
+`persistence.extras`. For example, on every launch and resume:
 
 ```ts
 const { isIgnoringBatteryOptimizations } = await LocationTracking.getHeartbeatStatus();
@@ -247,9 +357,10 @@ delivery allowance`.
 Choosing `grace`:
 
 - **60–120 s** covers alarm batching and processing time on phones that are awake or exempt.
-- Phones that **aren't exempt** legitimately produce gaps of about 9 minutes in deep idle. Either require the
-  exemption, raise the threshold for those devices to about 10–11 minutes (you can tell them apart with a flag in
-  `extras`, see [above](#getheartbeatstatus)), or report 5–11 minute gaps as a separate "idle-paced" category.
+- Phones that **aren't exempt** legitimately produce gaps of about 9 minutes in deep idle. Use the
+  [heartbeat metadata](#heartbeat-metadata) to allow up to 11 minutes (plus `grace`) exactly when the heartbeat before
+  or after the gap shows `battery_exempt: false` and `device_idle: true`. Or require the exemption, or report 5–11
+  minute gaps as a separate "idle-paced" category.
 
 ### 3. Explain gaps
 
@@ -264,7 +375,7 @@ Choosing `grace`:
 | No explanation, and records resume only when the user opens the app | Force-stop, battery "Restricted", or a phone maker's task killer. The device was not tracking. |
 | `providerchange` with `enabled: false` and no gap | The app was alive (heartbeats kept coming), but location services were off. Treat positions from that period as unknown. |
 | No `providerchange` for a change you expected | The plugin records one per settled change (broadcasts are debounced by 1 s), only while tracking is on, and not for the very first state it observes after install. A change the plugin already saw while tracking was off (for example when the app came to the foreground) is not recorded later. |
-| Heartbeats with an old `timestamp` | The phone is stationary, or has no new fix (indoors). The app is alive; the position is the last known one. |
+| Heartbeats with an old `timestamp` | The phone is stationary (GPS is off, see [above](#stationary-gps-off-heartbeats-continue)), or has no new fix (indoors). The app is alive; the position is the last known one. |
 
 ### 4. Detect device clock changes
 

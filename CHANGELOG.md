@@ -3,6 +3,74 @@
 All notable changes to `@bricks-soft/capacitor-location-tracking` are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Round 2: the field-force audit setup, a native API for companion plugins, and end-to-end tests on an Android
+emulator. Decisions: [docs/DECISIONS.md](docs/DECISIONS.md#round-2-field-force-audit-companion-api-and-avd-tests).
+
+### Added
+
+- **Companion native API** (Kotlin, package `com.brickssoft.locationtracking.api`): `LocationTrackingListener`
+  receives every queued record (`onRecord`, heartbeats and audit records included) and every event (`onEvent`) on one
+  background thread (`LT-native`), in every process, also without a WebView. Listeners are declared in the manifest
+  (meta-data `com.brickssoft.locationtracking.LISTENER`, or `….LISTENER.<suffix>` for more than one) or added with
+  `LocationTrackingNative.addListener`. `LocationTrackingNative` also offers `ready`, `setConfig`, `start`,
+  `startGeofences`, `stop`, `changePace`, `getState`, `getHeartbeatStatus`, `sync`, `insertLocation`, `addGeofence`,
+  `removeGeofence` and `getGeofences`. Guide: `docs/native-api.md`.
+- **`http.syncInterval`** (seconds, default `0` = off): normal records are uploaded once the oldest queued one is
+  that old, so the server's live location is at most about `syncInterval` seconds old with one upload per interval.
+  Audit records are still uploaded at once. `autoSyncThreshold` above 0 becomes a size limit.
+- **Heartbeat metadata:** every `heartbeat` record carries an optional `heartbeat` object (`strategy`,
+  `min_interval`, `max_interval`, `next_at`, `battery_exempt`, `device_idle`), so a server can tell an expected gap
+  (about 9 minutes in Doze without the battery exemption) from a failure. TypeScript: `Location.heartbeat?:
+  HeartbeatMeta`.
+- **Stationary GPS-off mode:** while stationary, the plugin requests only passive fixes and registers one OS geofence
+  (the stationary region, radius `max(stationaryRadius, 150 m)`) to notice movement; heartbeats continue with the
+  last fix and its acquisition time. If the region cannot be registered, a low-power request (at most one fix per
+  3 minutes, no GPS) is used instead.
+- **Foreground-service start hardening** against `ForegroundServiceDidNotStartInTimeException` and refused
+  background starts (tested by P-L01, P-L02, P-L11 and P-L13).
+- **Field-force example** (`examples/field-force/`): auto start on every app launch, stop at 02:00 through
+  `stopAfterElapsedMinutes` computed by the app, live location with `syncInterval: 300`, device details in
+  `http.params`, JWT, GMS only.
+- **PremiseMonitor fake plugin** (`examples/field-force/plugins/premise-monitor/`): a companion plugin with a
+  manifest listener that audits every record and event, monitors one circular premise with a geofence, runs its own
+  foreground location service while the worker is inside, flags fixes outside the premise, and uploads its audit
+  entries.
+- **End-to-end test kit** (`testing/e2e-kit/`, Node 22, no runtime dependencies): adb and WebView helpers, debug
+  commands, a mock back office (`npm run backoffice`), fixtures, assertions and failure artifacts.
+- **End-to-end suites:** the plugin suite (`e2e/plugin/`, 34 scenarios against `example/`) and the field-force suite
+  (`examples/field-force/e2e/`, 12 scenarios). Debug builds of both example apps got test hooks (a command receiver,
+  test-mode files, cleartext HTTP to the emulator host) and share `testing/debug.keystore`.
+- **CI emulator workflow** (`.github/workflows/e2e-android.yml`, script `.github/scripts/run-e2e.sh`): the plugin
+  suite on API 34 (smaller runs on API 29 and 35), P-P08 on an image without Google Play services, the field-force
+  suite, nightly long scenarios, artifacts of every job; and a 16 KB page-size check of the Google Play build
+  (`.github/scripts/check-16kb.py`).
+- **Runbook** ([docs/e2e-runbook.md](docs/e2e-runbook.md)) for an AI agent: local AVD setup, running and triaging the
+  suites, and the manual procedures M-01 … M-08 (HMS phone, phone makers' task killers, real drive, 12-hour battery
+  measurement, real 02:00 stop, Android 14 boot with while-in-use location, 16 KB alignment, real overnight Doze).
+- **Documentation:** README sections "Battery", "Live location", "Companion plugins (native API)", "Field-force
+  example" and "End-to-end tests"; heartbeat metadata, stationary behavior and native delivery in
+  `docs/heartbeat.md`; `syncInterval` and the `heartbeat` object in `docs/wire-format.md`.
+
+### Changed
+
+- **Stationary no longer polls:** before, the stationary state kept a `'balanced'` request with up to one fix per
+  minute; now GPS and the plugin's own location requests are off while stationary (see "Stationary GPS-off mode").
+- **Boot broadcasts are gated by the boot count:** a boot broadcast without a real reboot (for example a repeated or
+  fake `QUICKBOOT_POWERON`) no longer restores tracking a second time (P-L10).
+
+<!-- verify after merge: the FGS start hardening (unit 1) and the boot-count gate — describe the merged behavior in one sentence each -->
+
+### Known limitations
+
+- A build that packages HMS (`hms` or `gms,hms`) is not 16 KB page-size compatible: `com.huawei.hms:location`
+  6.12.0.300 brings `libTransform.so` (`arm64-v8a`) and `libucs-credential.so` (`x86_64`) with 4 KB alignment.
+- The 02:00 stop (`stopAfterElapsedMinutes`) happens at the first wake-up after the stop time: within about
+  `maxInterval` for an exempt app, about 9–10 minutes in Doze without the exemption.
+- The PremiseMonitor service can start from the background only while the tracking service is in the foreground or
+  right after a geofence transition; a refused start is audited (`service_start_failed`), not a crash.
+
 ## [0.1.0] - Unreleased
 
 The first release: Android and TypeScript. iOS is planned for a later phase.

@@ -1,59 +1,62 @@
-// STUB — owned by Unit 4 (GMS). Replace this implementation.
 package com.brickssoft.locationtracking.provider.gms
 
 import android.content.Context
-import com.brickssoft.locationtracking.model.DesiredAccuracy
+import com.brickssoft.locationtracking.core.Logger
 import com.brickssoft.locationtracking.model.ProviderKind
-import com.brickssoft.locationtracking.model.TrackedLocation
 import com.brickssoft.locationtracking.provider.ActivityBackend
 import com.brickssoft.locationtracking.provider.GeofenceBackend
 import com.brickssoft.locationtracking.provider.LocationBackend
-import com.brickssoft.locationtracking.provider.LocationListener
-import com.brickssoft.locationtracking.provider.LocationRequestSpec
-import com.brickssoft.locationtracking.provider.OsGeofence
 import com.brickssoft.locationtracking.provider.ProviderBundle
+import com.google.android.gms.common.ConnectionResult
+import com.google.android.gms.common.GoogleApiAvailability
+import com.google.android.gms.location.ActivityRecognition
+import com.google.android.gms.location.ActivityRecognitionClient
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.GeofencingClient
+import com.google.android.gms.location.LocationServices
 
-/** Created reflectively via its public (Context) constructor. Stub: unavailable, no-op backends. */
-class GmsProviderBundle(@Suppress("unused") private val context: Context) : ProviderBundle {
+/**
+ * Google Play services backends: fused location, activity recognition and geofencing.
+ *
+ * Created reflectively through the public `(Context)` constructor. The other parameters exist so tests can inject
+ * the availability check and the GMS clients. Each backend (and its client) is created on first use.
+ */
+class GmsProviderBundle @JvmOverloads constructor(
+    context: Context,
+    private val availabilityCheck: (Context) -> Int = {
+        GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(it)
+    },
+    private val fusedClient: (Context) -> FusedLocationProviderClient = {
+        LocationServices.getFusedLocationProviderClient(it)
+    },
+    private val activityClient: (Context) -> ActivityRecognitionClient = { ActivityRecognition.getClient(it) },
+    private val geofencingClient: (Context) -> GeofencingClient = { LocationServices.getGeofencingClient(it) },
+) : ProviderBundle {
+    private val appContext: Context = context.applicationContext ?: context
+
     override val kind: ProviderKind = ProviderKind.GMS
 
-    override fun isAvailable(): Boolean = false
+    private val locationBackend by lazy { GmsLocationBackend(fusedClient(appContext)) }
+    private val activityBackend by lazy { GmsActivityBackend(appContext, activityClient(appContext)) }
+    private val geofenceBackend by lazy { GmsGeofenceBackend(appContext, geofencingClient(appContext)) }
 
-    override fun location(): LocationBackend = NoopLocation
-
-    override fun activity(): ActivityBackend = NoopActivity
-
-    override fun geofence(): GeofenceBackend = NoopGeofence
-
-    private object NoopLocation : LocationBackend {
-        override val kind = ProviderKind.GMS
-
-        override fun requestUpdates(spec: LocationRequestSpec, listener: LocationListener) = Unit
-
-        override fun removeUpdates(listener: LocationListener) = Unit
-
-        override suspend fun getLastLocation(): TrackedLocation? = null
-
-        override suspend fun getCurrentLocation(accuracy: DesiredAccuracy, timeoutMs: Long): TrackedLocation? = null
+    /** True if `GoogleApiAvailability` reports SUCCESS; false on any other result or failure. */
+    override fun isAvailable(): Boolean = try {
+        val status = availabilityCheck(appContext)
+        if (status != ConnectionResult.SUCCESS) Logger.d(TAG, "Google Play services unavailable: status $status")
+        status == ConnectionResult.SUCCESS
+    } catch (t: Throwable) {
+        Logger.w(TAG, "Google Play services availability check failed", t)
+        false
     }
 
-    private object NoopActivity : ActivityBackend {
-        override val kind = ProviderKind.GMS
-        override val isSupported = false
+    override fun location(): LocationBackend = locationBackend
 
-        override fun start(intervalMs: Long): Boolean = false
+    override fun activity(): ActivityBackend = activityBackend
 
-        override fun stop() = Unit
-    }
+    override fun geofence(): GeofenceBackend = geofenceBackend
 
-    private object NoopGeofence : GeofenceBackend {
-        override val kind = ProviderKind.GMS
-        override val supportsDwell = false
-
-        override suspend fun add(regions: List<OsGeofence>) = Unit
-
-        override suspend fun remove(ids: List<String>) = Unit
-
-        override suspend fun removeAll() = Unit
+    private companion object {
+        const val TAG = "LT.Gms"
     }
 }

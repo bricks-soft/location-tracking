@@ -1,7 +1,8 @@
 /*
- * Field-force example app (docs/e2e/architecture.md §10): tracking starts automatically on every page load and
- * stops at 02:00 local time; this page shows the status of tracking, the stop time, the location provider, the
- * heartbeat, the premise and the last events.
+ * Field-force example app (docs/e2e/architecture.md §10): tracking starts automatically on every page load, and
+ * again when the app comes back to the foreground with tracking off (after the 02:00 stop, the app was never
+ * closed); it stops at 02:00 local time. This page shows the status of tracking, the stop time, the location
+ * provider, the heartbeat, the premise and the last events.
  *
  * Plain browser JavaScript, no bundler. Globals:
  *   - FF_ENV (env.js, written by `npm run copy-vendor`): {backendUrl};
@@ -10,7 +11,12 @@
  *   - capacitorPremiseMonitor.PremiseMonitor (vendor/premise-monitor.js);
  *   - FFCore (ff-core.js): the startup logic, also tested in Node (examples/field-force/test/).
  *
- * For the e2e tests the page publishes window.FF_APP; `FF_APP.startup` is the promise of the auto start.
+ * For the e2e tests the page publishes window.FF_APP; `FF_APP.startup` is the promise of the latest startup run.
+ *
+ * Foreground detection: Capacitor 8 Android fires the document event 'resume' on every activity resume after the
+ * first pause (Bridge.onResume -> MockCordovaWebViewImpl.handleResume -> Capacitor.triggerEvent('resume',
+ * 'document')); 'visibilitychange' to visible is the fallback (and the only signal in a browser). Both lead to one
+ * resume check (FFCore.createAutoStarter).
  * ES2017 syntax only (no optional chaining, no `??`, no object spread).
  */
 (function () {
@@ -46,9 +52,18 @@
   var REFRESH_EVENTS = ['enabledchange', 'motionchange', 'providerchange', 'heartbeat', 'geofence', 'http'];
 
   var app = {
-    /** Promise of the auto start: resolves with {state, stopAfterElapsedMinutes, config, deviceInfo, ...}. */
+    /**
+     * Promise of the latest startup run (page load, or a resume with tracking off): resolves with
+     * {state, stopAfterElapsedMinutes, config, deviceInfo, ...}.
+     */
     startup: null,
-    /** 'running' | 'done' | 'failed' */
+    /** number of startup runs in this page (1 after the page load) */
+    startupCount: 0,
+    /** reason of the latest run: 'load' | 'resume' */
+    lastStartupReason: null,
+    /** the latest foreground check: {at, trigger: 'resume' | 'visibilitychange' | 'manual', outcome} (see below) */
+    lastResume: null,
+    /** 'running' | 'done' | 'failed' (latest run) */
     status: 'running',
     /** name of the startup step that runs now (or 'done') */
     step: null,
@@ -58,6 +73,13 @@
     /** newest first: {at, name, summary} */
     events: [],
     refresh: refreshAll,
+    /**
+     * Runs the foreground check by hand, as the 'resume' event does. Resolves with the outcome:
+     * 'started' | 'enabled' | 'busy' | 'autostart_off' | 'error' (FFCore.createAutoStarter).
+     */
+    checkResume: function () {
+      return starter ? starter.resume('manual') : Promise.resolve('error');
+    },
     /** FFCore (ff-core.js), e.g. FF_APP.core.minutesUntil('02:00') */
     core: core || null,
   };
@@ -68,6 +90,10 @@
   /** the refresh in progress, and the one queued behind it */
   var refreshing = null;
   var refreshQueued = null;
+  /** FFCore.createAutoStarter: runs the startup on load and on resume */
+  var starter = null;
+  /** overrides of the latest run, also a failed one (a resume does nothing while they say autoStart false) */
+  var lastOverrides = null;
 
   /* ------------------------------------------------------------------ small helpers */
 
@@ -196,6 +222,10 @@
     var result = app.result;
     var rows = [['Startup', app.status + (app.status === 'running' && app.step ? ' (' + app.step + ')' : ''),
       app.status === 'failed' ? 'bad' : app.status === 'done' ? 'good' : '']];
+    rows.push(['Startup runs', app.startupCount + (app.lastStartupReason ? ' (latest: ' + app.lastStartupReason + ')' : '')]);
+    if (app.lastResume) {
+      rows.push(['Last foreground check', fmtClock(app.lastResume.at) + ' ' + app.lastResume.trigger + ': ' + app.lastResume.outcome]);
+    }
     if (result) {
       var overrides = result.overrides || {};
       rows.push(['Test overrides', result.overridesSource === 'none' ? 'none (production values)' : 'from ' + result.overridesSource]);
@@ -205,7 +235,7 @@
       rows.push(['Upload interval', http.syncInterval + ' s']);
       rows.push(['Heartbeat interval', hb.minInterval + '–' + hb.maxInterval + ' s']);
       rows.push(['Auto start', overrides.autoStart === false ? 'off (test override)' : 'on']);
-      rows.push(['Started by this page', yesNo(result.started)]);
+      rows.push(['Started by this run', yesNo(result.started)]);
       if (result.warnings && result.warnings.length) rows.push(['Warnings', result.warnings.join('; '), 'warn']);
     }
     if (app.error) rows.push(['Error', (app.error.step ? app.error.step + ': ' : '') + errorText(app.error), 'bad']);
@@ -500,16 +530,8 @@
 
   /* ------------------------------------------------------------------ startup */
 
-  function start() {
-    if (!core) {
-      var missing = new Error('ff-core.js did not load');
-      missing.code = 'UNAVAILABLE';
-      return Promise.reject(missing);
-    }
-    if (!tracking) {
-      return Promise.reject(core.codedError('UNAVAILABLE', 'vendor/plugin.js did not load (run `npm run sync`)'));
-    }
-    subscribeEvents();
+  /** One startup run (FFCore.runStartup) with the page's plugins, files and clock. */
+  function runStartupOnce() {
     return core.runStartup({
       tracking: tracking,
       premise: premise || null,
@@ -528,36 +550,94 @@
     });
   }
 
-  app.startup = start();
+  function onStartupDone(result) {
+    app.status = 'done';
+    app.result = result;
+    lastOverrides = result.overrides || null;
+    if (result.started && result.startCalledAt) {
+      storageSet(SESSION_KEY, JSON.stringify({ startedAt: result.startCalledAt, minutes: result.stopAfterElapsedMinutes }));
+    }
+    showBanner(result.warnings.length ? 'Started with warnings: ' + result.warnings.join('; ') : '', 'warn');
+    renderStartup();
+    if (result.state) renderState(result.state, '–');
+    refreshAll();
+    updateTimer();
+  }
+
+  function onStartupFailed(error) {
+    if (error && error.overrides) lastOverrides = error.overrides;
+    app.status = 'failed';
+    app.error = { code: (error && error.code) || 'ERROR', message: (error && error.message) || String(error), step: error && error.step };
+    showBanner('Automatic start failed' + (app.error.step ? ' at step "' + app.error.step + '"' : '') + ': ' + errorText(error), 'bad');
+    renderStartup();
+    if (tracking) refreshAll();
+    updateTimer();
+  }
+
+  /** A run begins (page load or resume): FF_APP shows it until it settles. */
+  function onRunBegin(reason, run) {
+    app.startup = run;
+    app.startupCount = starter.count;
+    app.lastStartupReason = reason;
+    app.status = 'running';
+    app.step = null;
+    app.result = null;
+    app.error = null;
+    showBanner('', '');
+    renderStartup();
+    run.then(
+      function (result) {
+        if (app.startup === run) onStartupDone(result);
+      },
+      function (error) {
+        if (app.startup === run) onStartupFailed(error);
+      },
+    );
+  }
+
+  /** The app came to the foreground: run the startup again if tracking is off (FFCore.createAutoStarter). */
+  function onForeground(trigger) {
+    if (starter) starter.resume(trigger);
+  }
+
+  if (!core || !tracking) {
+    var missing = new Error(core ? 'vendor/plugin.js did not load (run `npm run sync`)' : 'ff-core.js did not load');
+    missing.code = 'UNAVAILABLE';
+    app.startup = Promise.reject(missing);
+    app.startupCount = 1;
+    app.lastStartupReason = 'load';
+    app.startup.then(null, onStartupFailed);
+  } else {
+    subscribeEvents();
+    starter = core.createAutoStarter({
+      start: runStartupOnce,
+      getState: function () {
+        return tracking.getState();
+      },
+      autoStartOff: function () {
+        return !!(lastOverrides && lastOverrides.autoStart === false);
+      },
+      onBegin: onRunBegin,
+      onResume: function (entry) {
+        app.lastResume = entry;
+        renderStartup();
+      },
+    });
+    starter.load();
+  }
   renderStartup();
   renderEvents();
 
-  app.startup.then(
-    function (result) {
-      app.status = 'done';
-      app.result = result;
-      if (result.started && result.startCalledAt) {
-        storageSet(SESSION_KEY, JSON.stringify({ startedAt: result.startCalledAt, minutes: result.stopAfterElapsedMinutes }));
-      }
-      showBanner(result.warnings.length ? 'Started with warnings: ' + result.warnings.join('; ') : '', 'warn');
-      renderStartup();
-      if (result.state) renderState(result.state, '–');
-      refreshAll();
-      updateTimer();
-    },
-    function (error) {
-      app.status = 'failed';
-      app.error = { code: (error && error.code) || 'ERROR', message: (error && error.message) || String(error), step: error && error.step };
-      showBanner('Automatic start failed' + (app.error.step ? ' at step "' + app.error.step + '"' : '') + ': ' + errorText(error), 'bad');
-      renderStartup();
-      if (tracking) refreshAll();
-      updateTimer();
-    },
-  );
+  // Capacitor 8 Android: document 'resume' after every activity resume (not on the first one at launch).
+  document.addEventListener('resume', function () {
+    onForeground('resume');
+  });
 
   document.addEventListener('visibilitychange', function () {
     updateTimer();
-    if (document.visibilityState !== 'hidden' && app.status !== 'running') refreshAll();
+    if (document.visibilityState === 'hidden') return;
+    if (app.status !== 'running') refreshAll();
+    onForeground('visibilitychange');
   });
 
   var refreshButton = byId('refresh');

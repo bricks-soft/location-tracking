@@ -373,7 +373,8 @@
   }
 
   /**
-   * The auto start (architecture §10 steps 1-8). Every page load runs it once.
+   * The auto start (architecture §10 steps 1-8). Every page load runs it once, and a return to the foreground with
+   * tracking off runs it again (createAutoStarter).
    *
    * deps:
    *   tracking            LocationTracking plugin (getState, getDeviceInfo, ready, checkPermissions,
@@ -389,7 +390,8 @@
    * Resolves with {state, stopAfterElapsedMinutes, config, deviceInfo} plus diagnostics (overrides, overridesSource,
    * backendUrl, stopMinutesKept, stopMinutesRecomputed, started, startCalledAt, permissions, permissionsRequested,
    * premiseStatus, warnings).
-   * Rejects with the first failing step's error; `error.step` names the step and `error.code` is kept.
+   * Rejects with the first failing step's error; `error.step` names the step, `error.code` is kept and
+   * `error.overrides` holds the normalized overrides when they were read before the failure.
    */
   function runStartup(deps) {
     var tracking = deps.tracking;
@@ -419,6 +421,9 @@
               ? error
               : codedError((error && error.code) || 'INTERNAL', String((error && error.message) || error));
             if (!e.step) e.step = name;
+            // the overrides of this run (when the first step read them), so a resume after a failed run still
+            // knows that a test set autoStart false
+            if (result.overrides && !e.overrides) e.overrides = result.overrides;
             throw e;
           });
       };
@@ -542,6 +547,106 @@
       });
   }
 
+  /* ------------------------------------------------------------------ auto start on load and on resume */
+
+  /**
+   * Runs the startup on page load and again when the app comes back to the foreground with tracking off.
+   *
+   * Why: the startup runs on page load only, but the app's process and activity often survive the night (the app
+   * is never closed). After the 02:00 stop the worker brings the app to the front the next morning without a page
+   * load, so tracking would stay off. The field-force app has no stop button, so "not enabled on resume" means the
+   * day's session ended (02:00 stop, permission loss, a failed service start) and the startup runs again, with
+   * the minutes until the next 02:00 computed again.
+   *
+   * options:
+   *   start(reason)   -> Promise: one startup run ('load' | 'resume'), e.g. runStartup(deps)
+   *   getState()      -> Promise<State>: LocationTracking.getState()
+   *   autoStartOff()  -> boolean: true when the latest overrides say autoStart false (then a resume never runs the
+   *                      startup again: its ready({reset: true}) would replace a config a test has set)
+   *   onBegin(reason, promise)  called when a run begins (synchronously)
+   *   onResume(entry)           called with every resume check's outcome
+   *
+   * Returns {load(), resume(trigger), count, reason, running()}. resume() resolves with the outcome:
+   *   'started'       tracking was off: a new startup run began
+   *   'enabled'       tracking is on: nothing to do
+   *   'busy'          a startup run (or another resume check) is in progress: nothing to do
+   *   'autostart_off' the overrides say autoStart false: nothing to do
+   *   'error'         getState() failed: nothing to do
+   */
+  function createAutoStarter(options) {
+    var current = null;
+    var checking = null;
+    var starter = {
+      /** number of startup runs begun */
+      count: 0,
+      /** reason of the latest run: 'load' | 'resume' */
+      reason: null,
+      running: function () {
+        return current !== null;
+      },
+      load: function () {
+        return begin('load');
+      },
+      resume: resume,
+    };
+
+    function begin(reason) {
+      starter.count += 1;
+      starter.reason = reason;
+      var run = Promise.resolve().then(function () {
+        return options.start(reason);
+      });
+      current = run;
+      var clear = function () {
+        if (current === run) current = null;
+      };
+      run.then(clear, clear);
+      if (typeof options.onBegin === 'function') options.onBegin(reason, run);
+      return run;
+    }
+
+    function report(trigger, outcome) {
+      if (typeof options.onResume === 'function') {
+        options.onResume({ at: Date.now(), trigger: trigger, outcome: outcome });
+      }
+      return outcome;
+    }
+
+    function resume(trigger) {
+      if (current) return Promise.resolve(report(trigger, 'busy'));
+      // A second trigger of the same foregrounding (document 'resume' and 'visibilitychange') joins the check.
+      if (checking) return checking.then(function () {
+        return report(trigger, 'busy');
+      });
+      if (typeof options.autoStartOff === 'function' && options.autoStartOff()) {
+        return Promise.resolve(report(trigger, 'autostart_off'));
+      }
+      var check = Promise.resolve()
+        .then(function () {
+          return options.getState();
+        })
+        .then(
+          function (state) {
+            if (state && state.enabled) return 'enabled';
+            if (current) return 'busy';
+            begin('resume');
+            return 'started';
+          },
+          function () {
+            return 'error';
+          },
+        )
+        .then(function (outcome) {
+          checking = null;
+          return report(trigger, outcome);
+        });
+      checking = check;
+      return check;
+    }
+
+    return starter;
+  }
+
   return {
     APP_ID: APP_ID,
     DEFAULT_STOP_AT: DEFAULT_STOP_AT,
@@ -566,5 +671,6 @@
     codedError: codedError,
     readOverrides: readOverrides,
     runStartup: runStartup,
+    createAutoStarter: createAutoStarter,
   };
 });

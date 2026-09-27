@@ -35,6 +35,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Extras: `id` (`[A-Za-z0-9._-]{1,64}`), `cmd`, and the JSON arguments as `json64` (base64 of UTF-8 JSON) or `json`
  * (plain JSON); none = `{}`. Every request produces exactly one `LT-E2E` logcat line (see [Reply]). Tracking
  * commands go through [LocationTrackingNative], `premise.*` through [PremiseMonitorNative]. Nothing here touches JS.
+ *
+ * The debug manifest declares the receiver with `android:permission="android.permission.DUMP"`: the adb shell and
+ * root hold that permission, other apps on the device do not, so they cannot send commands.
  */
 class E2eCommandReceiver : BroadcastReceiver() {
 

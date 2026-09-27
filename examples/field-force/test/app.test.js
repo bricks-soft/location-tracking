@@ -64,6 +64,10 @@ function fakeTracking(options) {
   const state = () => ({ enabled, trackingMode: 'location', isMoving: false, odometer: 1234, backend: 'gms', lastRecordAt: null, config });
   return {
     calls,
+    /** e.g. the 02:00 stop: tracking is off without the page knowing */
+    setEnabled(value) {
+      enabled = value;
+    },
     emit(name, payload) {
       (listeners[name] || []).forEach((fn) => fn(payload));
     },
@@ -134,15 +138,22 @@ function loadApp(options) {
   const storage = new Map(Object.entries(opts.storage || {}));
   const fetched = [];
   const intervals = [];
+  const documentListeners = {};
   const document = {
     visibilityState: 'visible',
+    /** dispatches a document event, like Capacitor's triggerEvent('resume', 'document') */
+    fire(name) {
+      (documentListeners[name] || []).forEach((fn) => fn({ type: name }));
+    },
     getElementById(id) {
       if (!HTML_IDS.has(id)) return null;
       return (elements[id] = elements[id] || element('x'));
     },
     createElement: element,
     createTextNode: (text) => ({ textContent: text }),
-    addEventListener() {},
+    addEventListener(name, fn) {
+      (documentListeners[name] = documentListeners[name] || []).push(fn);
+    },
   };
   const tracking = opts.tracking || fakeTracking();
   const premiseCalls = [];
@@ -187,7 +198,7 @@ function loadApp(options) {
   for (const src of OWN_SCRIPTS) {
     vm.runInContext(fs.readFileSync(path.join(WWW, src), 'utf8'), sandbox, { filename: src });
   }
-  return { sandbox, elements, storage, fetched, intervals, tracking, premiseCalls };
+  return { sandbox, document, elements, storage, fetched, intervals, tracking, premiseCalls };
 }
 
 /** Resolves after pending promise callbacks and zero-delay timers ran. */
@@ -289,4 +300,75 @@ test('app.js: without a file the localStorage overrides are used; a failed start
   assert.match(app.elements.banner.textContent, /step "start": PERMISSION_DENIED: no location permission/);
   assert.equal(app.storage.has('ff.session'), false);
   assert.equal(rows(app.elements['shift-rows']).Tracking, 'off');
+});
+
+test('app.js: back in the foreground with tracking off (after the 02:00 stop) runs the startup again', async () => {
+  const app = loadApp({ overridesFile: JSON.stringify({ syncInterval: 120 }) });
+  const FF_APP = app.sandbox.window.FF_APP;
+  const first = FF_APP.startup;
+  await first;
+  await settle();
+  assert.equal(FF_APP.startupCount, 1);
+  assert.equal(FF_APP.lastStartupReason, 'load');
+  assert.equal(FF_APP.lastResume, null);
+
+  // Tracking is on: the activity resumes (document 'resume' + 'visibilitychange'), nothing runs.
+  app.document.fire('resume');
+  app.document.fire('visibilitychange');
+  await settle();
+  assert.equal(FF_APP.startupCount, 1);
+  assert.equal(FF_APP.startup, first);
+  assert.equal(FF_APP.lastResume.outcome, 'busy', 'the second trigger joined the first check');
+
+  // The 02:00 stop happened while the app stayed open; the next morning the worker brings it to the front.
+  app.tracking.setEnabled(false);
+  const readyBefore = app.tracking.calls.filter((c) => c === 'ready').length;
+  app.document.fire('resume');
+  app.document.fire('visibilitychange');
+  await settle();
+  assert.equal(FF_APP.startupCount, 2, 'exactly one new run for the two triggers');
+  assert.equal(FF_APP.lastStartupReason, 'resume');
+  assert.notEqual(FF_APP.startup, first);
+  const result = JSON.parse(JSON.stringify(await FF_APP.startup));
+  assert.equal(result.started, true);
+  assert.equal(result.state.enabled, true);
+  assert.equal(result.config.http.syncInterval, 120, 'the overrides file is read again');
+  assert.equal(app.tracking.calls.filter((c) => c === 'ready').length, readyBefore + 1);
+  await settle();
+  assert.equal(FF_APP.status, 'done');
+  assert.match(rows(app.elements['startup-rows'])['Startup runs'], /^2 \(latest: resume\)$/);
+
+  // Now on again: a later resume does nothing; FF_APP.checkResume() answers the same way.
+  assert.equal(await FF_APP.checkResume(), 'enabled');
+  assert.equal(FF_APP.startupCount, 2);
+});
+
+test('app.js: autoStart false in the overrides: a resume with tracking off does not run the startup', async () => {
+  const app = loadApp({ overridesFile: JSON.stringify({ autoStart: false }) });
+  const FF_APP = app.sandbox.window.FF_APP;
+  await FF_APP.startup;
+  await settle();
+  assert.equal(app.tracking.calls.includes('start'), false);
+  app.document.fire('resume');
+  await settle();
+  assert.equal(FF_APP.startupCount, 1);
+  assert.equal(FF_APP.lastResume.outcome, 'autostart_off');
+});
+
+test('app.js: autoStart false is also kept after a failed run (a resume does not run the startup)', async () => {
+  // premise set but the start of monitoring fails: the run fails at step 'premise', after the overrides were read
+  const app = loadApp({ overridesFile: JSON.stringify({ autoStart: false, premise: { id: 'hq', latitude: 1, longitude: 2, radius: 150 } }) });
+  app.sandbox.capacitorPremiseMonitor.PremiseMonitor.startMonitoring = async () => {
+    const e = new Error('no premise service');
+    e.code = 'UNAVAILABLE';
+    throw e;
+  };
+  const FF_APP = app.sandbox.window.FF_APP;
+  await assert.rejects(FF_APP.startup, (e) => e.step === 'premise' && e.overrides.autoStart === false);
+  await settle();
+  assert.equal(FF_APP.status, 'failed');
+  app.document.fire('resume');
+  await settle();
+  assert.equal(FF_APP.startupCount, 1);
+  assert.equal(FF_APP.lastResume.outcome, 'autostart_off');
 });

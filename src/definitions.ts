@@ -621,7 +621,7 @@ export interface LocationTrackingPlugin {
   addGeofence(options: { geofence: Geofence }): Promise<void>;
   addGeofences(options: { geofences: Geofence[] }): Promise<void>;
   removeGeofence(options: { identifier: string }): Promise<void>;
-  /** no identifiers = remove all */
+  /** identifiers omitted (or null) = remove all; an empty array removes nothing */
   removeGeofences(options?: { identifiers?: string[] }): Promise<void>;
   getGeofences(): Promise<{ geofences: Geofence[] }>;
   getGeofence(options: { identifier: string }): Promise<{ geofence: Geofence | null }>;

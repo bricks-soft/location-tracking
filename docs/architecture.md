@@ -2,6 +2,8 @@
 
 This document is the contract between the scaffold and all work units. The scaffold owns it. Units must not change it; if a contract is insufficient, describe a "Contract change request" in the unit's final report.
 
+**Status: as built (0.1.0).** All units are merged, and this document was updated after integration to describe the contracts as implemented, including the accepted contract change requests (`TrackingEngine.onServiceStartFailed` and the `service_start_failed` reason, geofence re-registration on provider changes, the web stub's extra methods, the R8 keep rules and the docgen config). User-facing behavior is documented in `README.md` and `docs/*.md`; this document keeps only what the components promise each other.
+
 ## Product decisions
 
 - This is a clean-room implementation with the feature set of `transistorsoft/capacitor-background-geolocation`. Its native engine is closed-source and commercial, and **none of it is copied**.
@@ -9,18 +11,18 @@ This document is the contract between the scaffold and all work units. The scaff
   - npm package `@bricks-soft/capacitor-location-tracking`;
   - JS plugin object `LocationTracking` (`registerPlugin('LocationTracking')`);
   - Android package `com.brickssoft.locationtracking` (Kotlin).
-- iOS is deferred to a later phase. Web is a stub that implements only `getCurrentPosition`, `watchPosition` and `clearWatch`, using `navigator.geolocation`.
+- iOS is deferred to a later phase. Web is a development stub: `getCurrentPosition`, `watchPosition` and `clearWatch` (using `navigator.geolocation`), an in-memory `ready`/`setConfig`/`reset`/`getState`, `checkPermissions`, `requestPermissions` and `getDeviceInfo` (see §1).
 - **GMS/HMS selection.** There are three location backends: GMS (Google Play services), HMS (Huawei Location Kit) and the plain Android `LocationManager`.
   - The plugin compiles against both SDKs with `compileOnly`.
   - The app chooses which SDKs are packaged with the Gradle property `locationTracking.providers=gms,hms` (default `gms`).
-  - Config `locationProvider: 'auto'|'gms'|'hms'|'android'` selects one at runtime. `auto` means: GMS if its class is present and `GoogleApiAvailability` reports SUCCESS; otherwise HMS if its class is present and `HuaweiApiAvailability` reports SUCCESS; otherwise Android.
+  - Config `locationProvider: 'auto'|'gms'|'hms'|'android'` selects one at runtime. `auto` means: GMS if its class is present and `GoogleApiAvailability` reports SUCCESS; otherwise HMS if its class is present and `HuaweiApiAvailability` reports SUCCESS; otherwise Android. An explicit `gms`/`hms` that is not packaged or not available falls back to Android (logged).
   - Backend bundles are created only through reflection.
 - **Heartbeat (audit):**
   - **Trigger.** While tracking is enabled, if no record has been created for `heartbeat.minInterval` (default 180 s), the plugin creates a `heartbeat` record with the last known location.
-  - **Window.** It must fire within [`minInterval`, `maxInterval`] (default 180–300 s) after the last record. A record created inside the window restarts it.
+  - **Window.** It must fire within [`minInterval`, `maxInterval`] (default 180–300 s) after the last record: it is due at `minInterval`, and `maxInterval` is the deadline (later deliveries are logged as late). A record created inside the window restarts it. `insertLocation()` records do not count.
   - **Delivery.** It is POSTed to the same `http.url`, in the same record shape, immediately.
   - **Failure.** It stays queued in SQLite and is retried later. `recorded_at` and `sent_at` let the server detect late delivery.
-- **Audit records**, POSTed the same way: `tracking_start`, `tracking_stop`, `providerchange`.
+- **Audit records**, POSTed the same way: `tracking_start`, `tracking_stop` (including reason `service_start_failed` when Android refuses the foreground service), `providerchange`.
 - **Idle-mode permissions.** Only the battery-optimization exemption is used: the plugin opens the settings list with `ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS`. It does **not** declare `SCHEDULE_EXACT_ALARM`, `USE_EXACT_ALARM` or `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`.
 - **Excluded:** schedule, headless mode, debug sounds, the background-task API, more than 100 geofences, iOS code, transistor-background-fetch.
 
@@ -240,7 +242,7 @@ export interface Location {
   extras?: Record<string, unknown>;
   /** event 'geofence' only */ geofence?: { identifier: string; action: GeofenceAction; extras?: Record<string, unknown> };
   /** event 'providerchange' only */ provider?: ProviderState;
-  /** tracking_start: start|start_geofences|boot|restore|package_replaced; tracking_stop: stop|stop_on_stationary|stop_after_elapsed|terminate|permission_denied */
+  /** tracking_start: start|start_geofences|boot|restore|package_replaced; tracking_stop: stop|stop_on_stationary|stop_after_elapsed|terminate|permission_denied|service_start_failed */
   reason?: string;
 }
 export type LocationRecord = Location;
@@ -338,7 +340,7 @@ export interface LocationTrackingPlugin {
   addGeofence(options: { geofence: Geofence }): Promise<void>;
   addGeofences(options: { geofences: Geofence[] }): Promise<void>;
   removeGeofence(options: { identifier: string }): Promise<void>;
-  /** no identifiers = remove all */ removeGeofences(options?: { identifiers?: string[] }): Promise<void>;
+  /** identifiers omitted (or null) = remove all; an empty array removes nothing */ removeGeofences(options?: { identifiers?: string[] }): Promise<void>;
   getGeofences(): Promise<{ geofences: Geofence[] }>;
   getGeofence(options: { identifier: string }): Promise<{ geofence: Geofence | null }>;
   geofenceExists(options: { identifier: string }): Promise<{ exists: boolean }>;
@@ -383,7 +385,13 @@ export interface LocationTrackingPlugin {
 }
 ```
 
-**NOT_READY rule.** The bridge rejects every method except the following until `ready()` has resolved in the current process: `ready`, `getState`, `checkPermissions`, `requestPermissions`, `getDeviceInfo`, `getSensors`, `log`, `getLog`, `getProviderState`, and the `open*Settings` methods.
+**NOT_READY rule.** The bridge rejects every method except the following until `ready()` has resolved in the current process (a process-wide flag): `ready`, `getState`, `checkPermissions`, `requestPermissions`, `getDeviceInfo`, `getSensors`, `log`, `getLog`, `getProviderState`, and the `open*Settings` methods. The web stub applies the same rule to the methods it implements (`setConfig`, `reset`, `getCurrentPosition`, `watchPosition`, `clearWatch`).
+
+**Method semantics fixed at integration.**
+- `start()` / `startGeofences()` resolve after the `tracking_start` record and `EnabledChange(true)`; the initial `motionchange` follows asynchronously (≤ `locationTimeout` + 5 s).
+- `ready()` restores tracking (reason `restore`) when `runtime.enabled` is true but no session runs in this process.
+- `removeGeofences()`: a missing or null `identifiers` removes all; an empty array removes nothing.
+- `insertLocation()`: `RecordFactory.fromExternal`, then `locationStore.insert` and `syncer.onRecordInserted`. It bypasses the `RecordSink`: no event, no runtime update, and the heartbeat window is not restarted (an inserted record is not evidence that tracking runs).
 
 **How the TypeScript entry points expose events.**
 - `src/plugin.ts` calls `registerPlugin<LocationTrackingPlugin>('LocationTracking', { web: () => import('./web').then(m => new m.LocationTrackingWeb()) })`.
@@ -393,11 +401,14 @@ export interface LocationTrackingPlugin {
 - `plugin.ts` is a separate file so that `index` and `events` do not import each other.
 
 **Web stub.**
-- `getCurrentPosition`, `watchPosition` and `clearWatch` use `navigator.geolocation`. They map results to the `Location` shape, with `boot_count: -1`, `backend: 'web'`, and uuids from `crypto.randomUUID()`.
+- `getCurrentPosition`, `watchPosition` and `clearWatch` use `navigator.geolocation`. They map results to the `Location` shape, with `boot_count: -1`, `backend: 'web'`, and uuids from `crypto.randomUUID()`. `getCurrentPosition` (unless `persist: false`) and `watchPosition` with `persist: true` also emit `location` events; nothing is stored or uploaded, and `lastRecordAt` stays null. `getCurrentPosition` runs its own overall deadline (best fix so far at the deadline; `timeout: 0` rejects at once). `WatchPositionOptions.interval` is ignored.
 - `ready`, `setConfig`, `reset` and `getState` resolve an in-memory `State` built from the given config.
-- `checkPermissions` uses `navigator.permissions` when available. The other three permission types are always `'granted'`.
+- `checkPermissions` uses `navigator.permissions` when available (`'prompt'` when it cannot tell). The other three permission types are always `'granted'`.
+- `requestPermissions` asks for a fix so that the browser shows its prompt (only when `location` is requested and still `'prompt'`), gives up after 60 s, and reports the result.
+- `getDeviceInfo` parses `navigator.userAgent` (`platform: 'web'`, `sdkInt: -1`).
+- Errors are `CapacitorException`s whose `code` is an `ErrorCode`. `plugin.ts` memoizes the web factory, so concurrent first calls share one instance.
 - Listener methods come from `WebPlugin`.
-- Everything else throws `this.unimplemented('Not implemented on web.')`.
+- Everything else throws `this.unimplemented('Not implemented on web.')` (`UNIMPLEMENTED`).
 - On iOS, Capacitor rejects every call with "not implemented on ios".
 
 ---
@@ -445,7 +456,7 @@ General rules:
   - `recorded_at` is when the heartbeat was created; `sent_at` is when it was uploaded, so the server can detect a late delivery.
 - **Audit records.** Both carry the last known coords, or null.
   - `"event":"tracking_start"` with `"reason":"start"|"start_geofences"|"boot"|"restore"|"package_replaced"`.
-  - `"event":"tracking_stop"` with `"reason":"stop"|"stop_on_stationary"|"stop_after_elapsed"|"terminate"|"permission_denied"`.
+  - `"event":"tracking_stop"` with `"reason":"stop"|"stop_on_stationary"|"stop_after_elapsed"|"terminate"|"permission_denied"|"service_start_failed"`. `permission_denied`: location permission missing on restore, or `start()`/`startGeofences()` could not start the service (the call rejects with `PERMISSION_DENIED`). `service_start_failed`: the foreground service was refused on restore, or failed to enter the foreground after `ServiceController.start()` returned true.
 - **Providerchange:** `"event":"providerchange","provider":{"enabled":false,"gps":false,"network":true,"permission":"always","accuracy":"precise","backend":"gms"}`.
 - **Geofence:** `"event":"geofence","geofence":{"identifier":"home","action":"ENTER","extras":{...}}`, with the coords of the fix that triggered it.
 - **`motionchange`:** the fix at the moment of the state change, with `is_moving` set to the new state.
@@ -453,48 +464,52 @@ General rules:
 
 **Batch** (`batchSync:true`): `{"location":[{...},{...}], ...params}`, with up to `maxBatchSize` records, oldest first.
 
-**`rootProperty:"."`:**
-- A single record's fields are merged into the root together with params.
+**Params** never overwrite a key the body already has (the record data wins); params that are not a JSON object are ignored.
+
+**`rootProperty:"."`** (a blank `rootProperty` behaves the same):
+- A single record's fields are merged into the root together with params. A template that renders an array is sent bare.
 - A batch is sent as a bare JSON array, and params are ignored.
 
 **Request details.**
 - Headers:
   - `Content-Type: application/json; charset=utf-8`;
-  - then `http.headers`;
-  - then `Authorization: Bearer <accessToken>` when authorization is configured, unless the headers already contain `Authorization`.
+  - then `http.headers` (same name, ignoring case, replaces the earlier value);
+  - then `Authorization: Bearer <accessToken>` when authorization is configured and a token is available, unless the headers already contain `Authorization` (which disables the JWT handling).
 - Outcomes:
-  - 2xx: the records are deleted.
-  - 401: refresh the token, then retry once.
-  - Any other status, or an I/O error: the records stay queued, and `attempts` and `last_attempt_at` are updated.
-- One `http` event is emitted per request.
+  - 2xx: the records are deleted (an unreadable body still counts as success).
+  - 401: refresh the token, then retry once, unless a refresh was already attempted for this upload (at most one refresh per upload).
+  - Any other status, or an I/O error: the records stay queued, and `attempts` and `last_attempt_at` are updated once per upload.
+- One `http` event is emitted per HTTP request (401 + refresh + retry = 2 events). An invalid `http.url` is treated as no URL.
 
 **Templates.**
 - `<%= name %>` tolerates surrounding whitespace. It is substituted as a raw JSON literal:
-  - numbers and booleans are inserted bare;
-  - null is inserted as `null`;
-  - strings are inserted without quotes, so users write `"<%= timestamp %>"`.
-- Placeholders: `uuid, event, timestamp, recorded_at, sent_at, latitude, longitude, accuracy, altitude, altitude_accuracy, speed, speed_accuracy, heading, heading_accuracy, is_moving, odometer, mock, activity.type, activity.confidence, battery.level, battery.is_charging, elapsed_realtime_ms, boot_count, backend, reason, geofence.identifier, geofence.action, provider.enabled, provider.gps, provider.network, provider.permission, extras`. `extras` is substituted as JSON object text.
+  - numbers and booleans are inserted bare (non-finite numbers as `null`);
+  - null is inserted as `null`; a null placeholder wrapped exactly in quotes (`"<%= reason %>"`) replaces the quotes too, giving JSON `null`;
+  - strings are JSON-escaped but inserted without quotes, so users write `"<%= timestamp %>"`.
+- Placeholders: `uuid, event, timestamp, recorded_at, sent_at, latitude, longitude, accuracy, altitude, altitude_accuracy, speed, speed_accuracy, heading, heading_accuracy, is_moving, odometer, mock, activity.type, activity.confidence, battery.level, battery.is_charging, elapsed_realtime_ms, boot_count, backend, reason, geofence.identifier, geofence.action, provider.enabled, provider.gps, provider.network, provider.permission, extras`. `extras` is substituted as JSON object text (`{}` when the record has none).
 - An unknown placeholder becomes an empty string and logs a warning.
-- If the rendered text is not valid JSON, the default shape is used and an error is logged.
+- The rendered text must be a JSON object or array, validated by a strict parser (org.json is too lenient); otherwise the default shape is used and an error is logged.
 
 **Priority records.** `RecordEvent.isPriority` marks `heartbeat`, `tracking_start`, `tracking_stop` and `providerchange`.
 - Priority records are uploaded immediately whenever `http.url` is set, ignoring `autoSync`, `autoSyncThreshold`, batch waiting and `disableAutoSyncOnCellular`.
 - If on cellular with `disableAutoSyncOnCellular`, only priority records are sent. Otherwise the whole queue is drained in order.
-- Normal records follow `autoSync` and the threshold.
-- Queued records are retried:
-  - on the next insert;
-  - when connectivity returns (`ConnectivityChange(connected=true)`);
-  - on each heartbeat;
-  - on a manual `sync()`.
+- Normal records follow `autoSync` and the threshold (queue ≥ `max(1, autoSyncThreshold)`).
+- A pass stops at the first failed request, except that when the server rejected (non-2xx, not a network error) an upload in a whole-queue pass, the queued priority records are still sent in the same pass. Normal records behind a rejected normal record stay blocked until it is accepted or pruned.
+- One upload worker; automatic passes and `sync()` share one mutex; triggers during a pass collapse into one more pass.
+- Queued records are retried (there is no timer):
+  - on the next insert (every heartbeat is one);
+  - when connectivity returns (`ConnectivityChange(connected=true)`, including Doze/Data Saver unblocking);
+  - when the syncer starts (first tracking start or restore in a process);
+  - on a manual `sync()`, which ignores the policy and connectivity.
 
 **JWT.**
-- **When to refresh:** before a request if `expires > 0 && now >= expires - 60s`, or after a 401.
-- **Request:** POST to `refreshUrl` with `refreshHeaders`. The body is `refreshPayload` with `{refreshToken}` substituted, encoded as JSON or form.
+- **When to refresh:** before a request if the access token is missing or `expires > 0 && now >= expires - 60s` (a refreshed token with ≤ 60 s lifetime is not refreshed again until it expires), or after a 401 unless a refresh was already attempted for this upload. A refresh needs `refreshUrl`.
+- **Request:** POST to `refreshUrl` with `refreshHeaders` (no Authorization header). The body is `refreshPayload` with `{refreshToken}` substituted, encoded as JSON or form.
 - **Response fields read:**
   - `accessToken|access_token`;
   - `refreshToken|refresh_token` (optional);
-  - `expires|expires_at` (epoch; interpreted as seconds if less than 1e12) or `expires_in` (relative seconds).
-- **After a refresh:** new tokens are persisted with `configStore.update`, and an `authorization` event is emitted.
+  - `expires|expires_at` (epoch; interpreted as seconds if less than 1e12; or an ISO-8601 string) or `expires_in` (relative seconds); none → `expires = -1`.
+- **After a refresh:** new tokens are persisted with `configStore.update`. An `authorization` event is emitted for every attempt, on success and on failure. Token values are never logged.
 - **Concurrency:** a single-flight mutex allows at most one refresh per request.
 
 ---
@@ -653,10 +668,11 @@ data class LocationRequestSpec(val accuracy: DesiredAccuracy, val intervalMs: Lo
 fun interface LocationListener { fun onLocations(locations: List<TrackedLocation>) }   // any thread
 interface LocationBackend {
   val kind: ProviderKind
-  fun requestUpdates(spec: LocationRequestSpec, listener: LocationListener)   // multiple listeners; same listener => replace
+  fun requestUpdates(spec: LocationRequestSpec, listener: LocationListener)   // multiple listeners; same listener => replace;
+                                                                              // distanceFilterM 0 = no filter; never throws (logs)
   fun removeUpdates(listener: LocationListener)
-  suspend fun getLastLocation(): TrackedLocation?
-  suspend fun getCurrentLocation(accuracy: DesiredAccuracy, timeoutMs: Long): TrackedLocation?   // null on timeout
+  suspend fun getLastLocation(): TrackedLocation?                             // may throw PERMISSION_DENIED; callers catch
+  suspend fun getCurrentLocation(accuracy: DesiredAccuracy, timeoutMs: Long): TrackedLocation?   // null on timeout; may throw PERMISSION_DENIED
 }
 interface ActivityBackend { val kind: ProviderKind; val isSupported: Boolean; fun start(intervalMs: Long): Boolean; fun stop() }
 data class OsGeofence(val id: String, val latitude: Double, val longitude: Double, val radius: Float, val onEntry: Boolean,
@@ -760,13 +776,14 @@ data class CurrentPositionOptions(val samples: Int = 3, val timeoutMs: Long? = n
 data class WatchPositionOptions(val intervalMs: Long = 1000, val desiredAccuracy: DesiredAccuracy = DesiredAccuracy.HIGH, val persist: Boolean = false, val extras: String? = null)
 interface PositionService { suspend fun getCurrentPosition(o: CurrentPositionOptions): Record
   fun watchPosition(id: String, o: WatchPositionOptions, callback: (Record?, TrackingException?) -> Unit); fun clearWatch(id: String): Boolean; fun clearAllWatches() }
-interface ServiceController { val isRunning: Boolean; fun start(): Boolean /* false if OS refused, logged */; fun stop(); fun refreshNotification() }
+interface ServiceController { val isRunning: Boolean; fun start(): Boolean /* false if OS refused (or API 34+ without location permission), logged */; fun stop(); fun refreshNotification() }
 interface TrackingEngine : ActivitySink {
   suspend fun ready(config: JSONObject?, reset: Boolean): State; suspend fun setConfig(config: JSONObject): State; suspend fun reset(config: JSONObject?): State
   suspend fun start(): State; suspend fun startGeofences(): State; suspend fun stop(): State; suspend fun changePace(isMoving: Boolean)
   fun state(): State
   suspend fun restore(reason: String)      // "restore" | "boot" | "package_replaced": cold process while enabled
   suspend fun onTerminate()                // task removed
+  suspend fun onServiceStartFailed(error: String) = Unit   // startForeground failed after ServiceController.start() returned true
 }
 data class LogQuery(val start: Long? = null, val end: Long? = null, val level: LogLevel? = null, val limit: Int? = null, val ascending: Boolean = true)
 interface LogStore : LogSink { fun configure(level: LogLevel, maxDays: Int); suspend fun read(q: LogQuery): String; suspend fun destroy()
@@ -847,43 +864,52 @@ The dependency cycles (the record sink and the heartbeat scheduler; the device m
 - **`engine.start()`:**
   1. Require `permissions.hasForegroundLocation()`, otherwise throw `PERMISSION_DENIED`.
   2. `updateRuntime{enabled=true, mode=LOCATION, trackingStartedAt}`.
-  3. `serviceController.start()`. On failure: set enabled=false, record `tracking_stop` with reason `permission_denied`, and throw.
+  3. `serviceController.start()`. On failure: set enabled=false, record `tracking_stop` with reason `permission_denied`, and throw `PERMISSION_DENIED`.
   4. Start `device.start()`, `syncer.start()`, `heartbeat.start()` and `geofences.onTrackingStarted(mode)`, then start the activity backend and the location request.
   5. Submit a `tracking_start` record with the last known location.
   6. Emit `EnabledChange(true)`.
-  7. Fetch an initial fix and record `motionchange` with `is_moving=false`.
+  7. Fetch an initial fix and record `motionchange` with `is_moving=false` (asynchronously; `start()` has already resolved).
 - **`engine.stop()`** is the reverse order. The `tracking_stop` record is submitted *before* `serviceController.stop()`.
+- **`engine.restore(reason)`** (cold process with `runtime.enabled`; from `ready()`, the heartbeat receiver, `START_STICKY`, an activity update, or `BootReceiver` with `startOnBoot`): no foreground permission → stop with `permission_denied`; `serviceController.start()` refused → stop with `service_start_failed` (no retry on later alarms); otherwise activate the session and record `tracking_start` with the reason. A running session whose service is gone restarts the service, or stops with `service_start_failed`.
+- **Asynchronous service failure.** `LocationTrackingService.onStartCommand` reports a failed `startForeground` (for example a background start on Android 12+ without an exemption, or Android 14+ with only while-in-use location) through `engine.onServiceStartFailed(error)`, which stops a running or enabled session with `service_start_failed`. On Android 12+ only exact alarms (battery-exempt apps), `BOOT_COMPLETED` and `MY_PACKAGE_REPLACED` may start the service from the background; the non-exempt backup heartbeat alarm cannot.
+- **Geofence re-registration.** The engine subscribes to `ProviderChange` events during a session. When location becomes enabled again, or the permission level changes while enabled (and on the first event of a session), it calls `geofences.onTrackingStarted(mode)` again, because GMS/HMS drop geofences when location is switched off. Re-adding the same ids is idempotent.
+- **Backend switch** (`locationProvider` changed): while tracking, remove location/activity updates and call `geofences.onTrackingStopped()` before `providers.reselect()`, then `geofences.onTrackingStarted(mode)` and the requests on the new backend; `device.checkProviderState("reselect")` if the kind changed.
 - **`startGeofences()`** uses mode GEOFENCES. The foreground service and heartbeat keep running. There is no continuous location request, except while `geofences.needsContinuousLocation` is true.
 - **Motion (U7).**
-  - STATIONARY uses a balanced location request. It exits to MOVING when either happens:
+  - STATIONARY uses a balanced location request (or the configured accuracy if lower-power), at most one fix per minute; it becomes the configured (MOVING) request while `geofences.needsContinuousLocation`. It exits to MOVING when either happens:
     - a fix is more than `max(stationaryRadius, accuracy)` from the anchor;
     - a moving activity at or above the confidence threshold lasts for `motionTriggerDelay`.
-  - MOVING uses the configured request.
-  - Stop detection (unless `disableStopDetection`): a still activity, or no displacement beyond `stationaryRadius`, arms the `stopTimeout` timer.
+  - STATIONARY fixes feed only the state machine and the geofences: no records, no odometer. `runtime.lastLocation` is refreshed from them at most every 10 s, so heartbeats carry a recent fix.
+  - MOVING uses the configured request. Requests always use `distanceFilterM = 0`; the engine applies the elastic filter itself.
+  - Stop detection (unless `disableStopDetection`): the `stopTimeout` timer is always armed while MOVING; evidence of motion (a displacement beyond `max(stationaryRadius, accuracy)` or a confident moving activity) restarts it, so STATIONARY follows `stopTimeout` after the last evidence of motion. `stopTimeout` has a floor of 1 min.
   - Elastic distance filter: `d = distanceFilter * max(1, round(speed/5.0) * elasticityMultiplier)`, unless `disableElasticity`.
-  - `changePace` forces a transition.
-  - `stopOnStationary` and `stopAfterElapsedMinutes` call `stop()` with the matching reason.
-  - Every accepted fix goes through `processor`, then `odometer`, then `geofences.onLocation`, then the distance check, then `recordFactory`, then `recordSink`.
-- **Providerchange.** `DeviceMonitor` checks provider state on PROVIDERS_CHANGED, on the plugin's `handleOnResume`, on service start, on each heartbeat, and on cold start. Revoking a permission kills the process; the diff against the persisted `runtime.providerState` catches it on the next start.
+  - `changePace` forces a transition (ignored while not tracking or in GEOFENCES mode).
+  - `stopOnStationary` (automatic stop-timeout transitions only, not `changePace(false)`) and `stopAfterElapsedMinutes` call `stop()` with the matching reason.
+  - Overdue timers are also checked after each fix batch, activity sample and `Heartbeat` event, because `delay()` does not advance in deep sleep.
+  - Every accepted MOVING fix goes through `processor`, then `odometer`, then `geofences.onLocation`, then the distance check, then `recordFactory`, then `recordSink`.
+- **Providerchange.** `DeviceMonitor` checks provider state on PROVIDERS_CHANGED / MODE_CHANGED (debounced 1 s; receivers registered by `device.start()` at session activation and kept for the process lifetime), on the plugin's `handleOnResume`, at session activation (start or restore), on each heartbeat, and after a backend reselect. The first observation is persisted silently; a later difference emits `ProviderChange` (also while tracking is off) and, while enabled, submits a `providerchange` record; the new state is persisted after the submit. Revoking a permission kills the process; the diff against the persisted `runtime.providerState` catches it on the next check.
 - **Receivers** use `goAsync()` and `Components.get(ctx).scope.launch { ...; finish() }`, which requires the sinks to be suspend functions.
 
 **Heartbeat algorithm (U12).**
-- **Base time.** `base` is the last record time. Use the elapsed clock when the boot count matches, otherwise wall time. If there is no record, use `now`.
-- **Due time.** `due = base + minInterval`. Always use `ELAPSED_REALTIME_WAKEUP`.
+- **Base time.** `base` is the last record time. Use the elapsed clock when the boot count matches, otherwise wall time. If there is no record, use a stable "now" anchor. A last record older than `runtime.trackingStartedAt` moves the base up to the session start (no heartbeat immediately at `start()`).
+- **Due time.** `due = base + minInterval`, and never earlier than the last attempt + `minInterval` (a failed attempt does not loop). Always use `ELAPSED_REALTIME_WAKEUP`.
 - **Scheduling:**
   - If `device.canScheduleExactAlarms()`: use `setExactAndAllowWhileIdle(due, PendingIntent)`. Strategy is `EXACT`.
   - Otherwise use two alarms:
     - `setExact(due, tag, OnAlarmListener, mainHandler)`;
-    - a backup `setAndAllowWhileIdle(backupAt, PendingIntent)`, where `backupAt = due`, or `max(due, lastBackupFireElapsed + 9 min)` while `isDeviceIdleMode()`.
+    - a backup `setAndAllowWhileIdle(backupAt, PendingIntent)`, where `backupAt = due`, or `max(due, lastBackupFireElapsed + 9 min)` while `isDeviceIdleMode()`. The last backup fire (elapsed, boot count) is persisted, so pacing survives process restarts; it is ignored after a reboot.
 
     Strategy is `LISTENER_WITH_BACKUP` or `IDLE_PACED`.
-  - Re-evaluate the schedule on DEVICE_IDLE_MODE_CHANGED.
-- **When any alarm fires:**
+  - Re-evaluate the schedule on DEVICE_IDLE_MODE_CHANGED, on config/enabled changes and on every record; re-arm only when the window changes (no cancel first: AlarmManager replaces the alarm).
+  - The strategy and next time are persisted so `status()` in a new process (same boot) reports what was armed.
+- **When any alarm fires** (serialized; a listener and a backup alarm for one window produce one heartbeat):
   - If `now - base >= minInterval - 1s`:
     1. Take a PARTIAL_WAKE_LOCK (60 s timeout).
-    2. Location = `runtime.lastLocation ?: backend.getLastLocation()`.
-    3. Submit a HEARTBEAT record. The sink reschedules the heartbeat and the syncer uploads the record immediately.
-    4. If the foreground service is not running, call `engine.restore("restore")` through `Components.get(ctx)`.
+    2. `device.checkProviderState("heartbeat")` (≤ 3 s).
+    3. Location = `runtime.lastLocation ?: backend.getLastLocation()` (≤ 3 s).
+    4. Re-check that the window is still due and tracking was not stopped (a record created meanwhile, e.g. a `providerchange`, supersedes the heartbeat).
+    5. Submit a HEARTBEAT record. The sink reschedules the heartbeat and the syncer uploads the record immediately.
+    6. (Receiver path) If tracking is enabled and the foreground service is not running, call `engine.restore("restore")` through `Components.get(ctx)`. If Android refuses the service, the engine stops with `service_start_failed`.
   - Otherwise, reschedule.
 - **Errors.** Wrap `setExactAndAllowWhileIdle` in try/catch for `SecurityException`.
 
@@ -957,10 +983,11 @@ Use fully qualified class names. Use a `FileProvider` subclass, because the Capa
   - `main`/`module`/`types`/`unpkg` as in the Capacitor plugin template;
   - `files: ["android/src/main/","android/build.gradle","android/consumer-rules.pro","dist/"]`;
   - `"capacitor": {"android": {"src": "android"}}` with no ios key;
-  - scripts: `clean`, `build` (`npm run clean && tsc && rollup -c rollup.config.mjs`, with **no docgen** because docgen rewrites the README), `test` (`node --test "test/**/*.mjs"`; Node 22 treats a bare `test/` argument as a module path, not a directory), and `docgen` (run only by U18);
+  - scripts: `clean`, `build` (`npm run clean && tsc && rollup -c rollup.config.mjs`, with **no docgen** because docgen rewrites the README), `test` (`node --test "test/**/*.mjs"`; Node 22 treats a bare `test/` argument as a module path, not a directory), and `docgen` (`docgen --api LocationTrackingPlugin --project tsconfig.docgen.json --output-readme README.md --output-json dist/docs.json`; run it by hand after changing `definitions.ts`);
   - devDependencies: `@capacitor/core@8.5.2`, `@capacitor/android@8.5.2`, `@capacitor/docgen@^0.3.1`, `typescript@~5.9.3`, `rollup@^4.53`, `rimraf@^6`;
   - peerDependency `@capacitor/core >=8.0.0`.
 - `tsconfig.json` and `rollup.config.mjs` as in the template (IIFE name `capacitorLocationTracking`).
+- `tsconfig.docgen.json`: used only by `@capacitor/docgen` 0.3.1, which bundles TypeScript 4.2. It sets an explicit `lib: ["lib.es2017.d.ts"]` (no DOM lib), so return types resolve (otherwise every method renders as `Promise<any>`) and the plugin's `Location`/`PermissionStatus` are not shadowed by the DOM types.
 - `ios/README.md`: placeholder only.
 - `.gitignore`: `node_modules`, `dist`, `android/build`, `android/.gradle`, `**/local.properties`, `example/node_modules`, `example/www/vendor`, `example/android/{.gradle,build,app/build,app/src/main/assets/public,capacitor-cordova-android-plugins}`.
 
@@ -994,6 +1021,7 @@ if (ltProviders.contains('hms')) implementation "com.huawei.hms:location:$hmsLoc
 **`android/consumer-rules.pro`:**
 - `-dontwarn` for `com.google.android.gms.**` and `com.huawei.**`.
 - Keep the `*ProviderBundle(Context)` constructors.
+- `-keepnames` for the SDK classes `DefaultProviderFactory` probes with `Class.forName`: `com.google.android.gms.location.LocationServices`, `com.google.android.gms.common.GoogleApiAvailability`, `com.huawei.hms.location.LocationServices` (otherwise R8 may rename them and a minified app silently falls back to Android).
 - Huawei's recommended keeps: `com.huawei.hms.**`, `com.huawei.hianalytics.**`, `com.huawei.updatesdk.**`.
 
 **`android/gradle.properties`.** The same file is copied to `example/android/gradle.properties`, plus `locationTracking.providers=gms,hms` there. These settings are tuned for many concurrent builds on a 4-CPU, 15 GB machine:
@@ -1112,7 +1140,7 @@ Units can be merged in any order, because each one replaces only its own stubs.
     - A channel's importance cannot change after creation.
     - A wrong or bitmap small icon shows as a white square; fall back to `lt_ic_notification`.
     - If POST_NOTIFICATIONS is denied (API 33+), the foreground service still runs but the notification is hidden.
-11. **Phone makers' task killers.** `START_STICKY` plus the heartbeat PendingIntent alarm are how tracking comes back. The receiver calls `engine.restore("restore")`, which emits `tracking_start` with reason `restore`. The OEM settings screens are best-effort; treat `ActivityNotFoundException` and `SecurityException` as `opened:false`.
+11. **Phone makers' task killers.** `START_STICKY` plus the heartbeat PendingIntent alarm are how tracking comes back. The receiver calls `engine.restore("restore")`, which emits `tracking_start` with reason `restore`. On Android 12+ that works only when Android allows the background foreground-service start (exact alarm of a battery-exempt app); otherwise the engine records `tracking_stop` with reason `service_start_failed` and stays stopped until the app calls `start()` again. The OEM settings screens are best-effort; treat `ActivityNotFoundException` and `SecurityException` as `opened:false`.
 12. **Threading.**
     - Engine state changes only on `dispatchers.engine`. SQLite and HTTP run only on `io`.
     - `LocationManager` requests need a Looper; use the main one.

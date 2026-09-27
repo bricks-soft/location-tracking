@@ -9,6 +9,15 @@
   </head>
   <body>
     <header class="topbar">
+      <!-- Shown only in e2e mode (see the top of app.js); stays visible because the top bar is sticky. -->
+      <div id="e2e-banner" class="e2e-banner" role="status" hidden>
+        <strong>E2E mode</strong>
+        <span>
+          The page makes no state-changing plugin call on its own (no auto-ready). Turned on by
+          <code id="e2e-banner-source">?</code>.
+        </span>
+        <button id="e2e-leave" type="button" class="secondary" hidden>Leave E2E mode</button>
+      </div>
       <div class="topbar-row">
         <h1>LocationTracking <span class="muted">example</span></h1>
         <span id="platform" class="chip" title="Capacitor platform">platform: ?</span>

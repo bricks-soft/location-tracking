@@ -27,7 +27,8 @@ internal data class HeartbeatWindow(
 ) {
     /**
      * Elapsed time at which the heartbeat is expected: the backup alarm while idle-paced (the listener alarm is
-     * deferred in deep idle), otherwise [dueElapsed].
+     * deferred in deep idle), otherwise [dueElapsed]. This is the heartbeat metadata's `next_at` and
+     * `getHeartbeatStatus().nextHeartbeatAt`, converted to wall-clock time.
      */
     val expectedFireElapsed: Long
         get() = if (strategy == HeartbeatStrategy.IDLE_PACED) backupAtElapsed else dueElapsed
@@ -38,13 +39,40 @@ internal data class HeartbeatWindow(
      */
     fun shouldFire(nowElapsed: Long): Boolean = nowElapsed >= dueElapsed - FIRE_TOLERANCE_MS
 
-    /** True if [other] needs the same alarms (same strategy and trigger times). */
-    fun sameSchedule(other: HeartbeatWindow): Boolean =
-        strategy == other.strategy && dueElapsed == other.dueElapsed && backupAtElapsed == other.backupAtElapsed
+    /**
+     * True if the alarms armed for [armed] must be set again for this window (null [armed]: nothing is armed).
+     *
+     * Every record moves the window later, and a moving phone records every few seconds. Setting the alarms for each
+     * record costs AlarmManager calls, so a due time that moved later by less than [REARM_THRESHOLD_MS] keeps the
+     * armed alarms. Such an alarm fires up to [REARM_THRESHOLD_MS] before the real due time; the alarm handler then
+     * finds the window not due, creates no heartbeat and arms the real due time.
+     *
+     * The alarms are always set again when:
+     * - the strategy differs;
+     * - a trigger time moved earlier (the armed alarm would fire after the heartbeat is due);
+     * - the strategy is [HeartbeatStrategy.IDLE_PACED] and the backup time moved at all. An early backup alarm uses
+     *   one of the few allow-while-idle alarms Android grants per hour and would move the next backup about
+     *   9 minutes later ([IDLE_BACKUP_SPACING_MS]). Records are rare in deep idle, so this costs little.
+     */
+    fun needsRearm(armed: HeartbeatWindow?): Boolean {
+        if (armed == null || armed.strategy != strategy) return true
+        val dueMove = dueElapsed - armed.dueElapsed
+        val backupMove = backupAtElapsed - armed.backupAtElapsed
+        if (dueMove < 0L || backupMove < 0L) return true
+        if (strategy == HeartbeatStrategy.IDLE_PACED && backupMove != 0L) return true
+        // Outside idle pacing the backup time equals the due time, so the due time decides.
+        return dueMove >= REARM_THRESHOLD_MS
+    }
 
     companion object {
         /** Tolerance of [shouldFire], so an alarm delivered a little early still counts. */
         const val FIRE_TOLERANCE_MS = 1_000L
+
+        /**
+         * A due time that moved later by less than this keeps the armed alarms (see [needsRearm]). With a record every
+         * 5 s, the alarms are set once per 30 s of records instead of once per record.
+         */
+        const val REARM_THRESHOLD_MS = 30_000L
 
         /** Minimum spacing of allow-while-idle backup alarms while idle and not battery-exempt. */
         const val IDLE_BACKUP_SPACING_MS = 9 * 60_000L

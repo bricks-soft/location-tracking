@@ -17,6 +17,7 @@ import com.brickssoft.locationtracking.core.LogLevel
 import com.brickssoft.locationtracking.core.Logger
 import com.brickssoft.locationtracking.data.LocationStore
 import com.brickssoft.locationtracking.device.DeviceMonitor
+import com.brickssoft.locationtracking.model.HeartbeatMeta
 import com.brickssoft.locationtracking.model.HeartbeatStatus
 import com.brickssoft.locationtracking.model.HeartbeatStrategy
 import com.brickssoft.locationtracking.model.Record
@@ -36,12 +37,13 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
- * Alarm-based [HeartbeatScheduler] (architecture §3 "Heartbeat algorithm").
+ * Alarm-based [HeartbeatScheduler] (architecture §3 "Heartbeat algorithm"; round 2: docs/e2e/architecture.md §5).
  *
  * While tracking is enabled (`runtime.enabled`, either mode) and `heartbeat.enabled`, one window is kept armed.
  * If no record was created for `heartbeat.minInterval`, a `heartbeat` record carrying the last known location
- * is submitted through the [RecordSink], which persists it, restarts the window ([onRecordRecorded]), emits the
- * Heartbeat event and uploads it immediately (priority record; on failure it stays queued).
+ * is submitted through the [RecordSink]. The sink persists it, restarts the window ([onRecordRecorded]), passes it to
+ * the record hooks (the native listeners of companion plugins), emits the Heartbeat event and uploads it immediately
+ * (priority record; if the upload fails it stays queued).
  *
  * Alarms always use `ELAPSED_REALTIME_WAKEUP`:
  * - [HeartbeatStrategy.EXACT] when `canScheduleExactAlarms()` (battery-exempt): one exact allow-while-idle
@@ -52,6 +54,29 @@ import kotlin.coroutines.cancellation.CancellationException
  *
  * Alarms fire into [onAlarm] (listener: here; PendingIntent: [HeartbeatAlarmReceiver]), which is serialized, so
  * a listener and a backup firing for the same window produce one heartbeat.
+ *
+ * **Timestamps.** A heartbeat's `recorded_at` is the time it is created. Its location is the last known fix, unchanged,
+ * so its `timestamp` is the time that fix was acquired: a phone that has been stationary for an hour sends heartbeats
+ * with new `recorded_at` values and the same hour-old `timestamp`.
+ *
+ * **Metadata.** Every heartbeat record carries a [HeartbeatMeta] (`record.heartbeat`). The next window is armed before
+ * the record is submitted, so the metadata describes exactly what AlarmManager holds: the strategy, the config
+ * intervals, `nextAt` (when the next heartbeat is due if no other record is created) and the battery-exemption and
+ * deep-idle flags. [status] reports the same values at the same moment.
+ *
+ * **Cost.**
+ * - AlarmManager is called only when [HeartbeatWindow.needsRearm] says so: a changed strategy, a trigger that moved
+ *   earlier, a due time that moved later by at least [HeartbeatWindow.REARM_THRESHOLD_MS], or any move of an
+ *   idle-paced backup. A record every 5 s therefore sets the alarms once per 30 s instead of once per record. An alarm
+ *   left in place fires up to 30 s early; [onAlarm] then finds the window not due, creates no heartbeat and arms the
+ *   real due time.
+ * - One partial wake lock per alarm delivery. It is released when the heartbeat has been submitted (the upload holds
+ *   its own wake lock) and times out after [WAKE_LOCK_TIMEOUT_MS] if something hangs.
+ * - The backend's last known location is requested only when `runtime.lastLocation` is null, and not again within
+ *   [LAST_LOCATION_RETRY_MS] after the backend answered that it has none (a timeout or an error is retried at the
+ *   next heartbeat).
+ * - The provider state check runs once per created heartbeat, as before. It is the only check that sees permission
+ *   changes that neither kill the process nor send a broadcast; early alarms and superseded alarms skip it.
  *
  * @param alarms AlarmManager access; injectable for tests.
  */
@@ -85,10 +110,20 @@ class DefaultHeartbeatScheduler(
     private val lock = Any()
     private var lifecycle = Lifecycle.NEW
 
-    /** The window currently armed with AlarmManager, or null. */
+    /** The window whose trigger times AlarmManager holds (after a refused exact alarm: the fallback), or null. */
     private var armed: HeartbeatWindow? = null
 
-    /** Incremented on every arm and cancel; lets [onAlarm] tell whether the sink already re-armed. */
+    /**
+     * The window the heartbeat follows now: the last evaluated window, with the strategy that is armed. It differs
+     * from [armed] when a record moved the due time by less than [HeartbeatWindow.REARM_THRESHOLD_MS] and the alarms
+     * were left in place. [status] reports it.
+     */
+    private var current: HeartbeatWindow? = null
+
+    /** True if the last arm asked for an exact alarm and AlarmManager refused it. The next re-arm asks again. */
+    private var exactRefused = false
+
+    /** Incremented on every arm and cancel; lets [onAlarm] tell whether anything re-armed since the alarm. */
     private var generation = 0L
 
     /** True once the alarms were cancelled and nothing was armed since. */
@@ -100,24 +135,28 @@ class DefaultHeartbeatScheduler(
     /** Last heartbeat attempt: the next one is not due before one min interval later, even if this one failed. */
     private var lastAttemptElapsed: Long? = null
 
+    /** Elapsed time of the last backend last-location request that returned no location, or null. */
+    private var lastLocationMissElapsed: Long? = null
+
     /** In-memory copy of the persisted last backup fire (elapsed, boot count); loaded lazily. */
     private var lastBackupFire: Pair<Long, Int>? = null
     private var lastBackupFireLoaded = false
     private var configJob: Job? = null
     private var idleReceiverRegistered = false
 
-    /** Serializes [onAlarm]: the listener and the backup alarm may fire for the same window. */
+    /** Serializes alarm handling: the listener and the backup alarm may fire for the same window. */
     private val alarmMutex = Mutex()
 
     private val listener = AlarmManager.OnAlarmListener {
-        // Hold our own wake lock across the hop to the coroutine; the alarm's wake lock ends when this returns.
+        // The alarm's own wake lock ends when this returns: hold ours across the hop to the coroutine and through the
+        // handling (the handling takes no second wake lock).
         val wakeLock = acquireWakeLock()
-        scope.launch { onAlarm(HeartbeatTrigger.LISTENER_ALARM) }.invokeOnCompletion { release(wakeLock) }
+        scope.launch { runAlarm(HeartbeatTrigger.LISTENER_ALARM) }.invokeOnCompletion { release(wakeLock) }
     }
 
     private val idleReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            Logger.d(TAG, "device idle mode changed (idle=${device.isDeviceIdleMode()})")
+            Logger.d(TAG, "device idle mode changed")
             reschedule("idle-change", force = false)
         }
     }
@@ -142,6 +181,7 @@ class DefaultHeartbeatScheduler(
             cancelAlarmsLocked()
             noRecordAnchorElapsed = null
             lastAttemptElapsed = null
+            lastLocationMissElapsed = null
             clearPersistedSchedule()
         }
         Logger.d(TAG, "stopped")
@@ -154,10 +194,11 @@ class DefaultHeartbeatScheduler(
         }
     }
 
+    /** Handles an alarm while holding a partial wake lock (the receiver path; the listener holds its own). */
     override suspend fun onAlarm(trigger: HeartbeatTrigger) {
         val wakeLock = acquireWakeLock()
         try {
-            alarmMutex.withLock { handleAlarm(trigger) }
+            runAlarm(trigger)
         } finally {
             release(wakeLock)
         }
@@ -193,6 +234,10 @@ class DefaultHeartbeatScheduler(
 
     // ---- alarm handling
 
+    private suspend fun runAlarm(trigger: HeartbeatTrigger) {
+        alarmMutex.withLock { handleAlarm(trigger) }
+    }
+
     private suspend fun handleAlarm(trigger: HeartbeatTrigger) {
         val nowElapsed = clock.elapsedRealtime()
         // Every backup delivery counts toward the OS allow-while-idle quota, whatever happens next.
@@ -212,6 +257,7 @@ class DefaultHeartbeatScheduler(
         } ?: return
 
         if (!window.shouldFire(nowElapsed)) {
+            // Expected after records moved the due time by less than the re-arm threshold.
             Logger.d(TAG, "$trigger: not due for ${(window.dueElapsed - nowElapsed) / 1_000} s; re-arming")
             // The alarm that fired is consumed: re-arm even if the window did not change.
             reschedule("early-$trigger", force = true, fromAlarm = true)
@@ -221,8 +267,9 @@ class DefaultHeartbeatScheduler(
             createHeartbeat(trigger, window, nowElapsed)
         } finally {
             synchronized(lock) {
-                // The sink re-arms through onRecordRecorded; re-arm here only if nothing did since the alarm.
-                rescheduleLocked("after-$trigger", force = generation == entryGeneration, fromAlarm = true)
+                // createHeartbeat arms the next window before it submits, and a record or stop() in the meantime
+                // re-armed or cancelled; re-arm here only if nothing did since the alarm (no heartbeat was created).
+                if (generation == entryGeneration) rescheduleLocked("after-$trigger", force = true, fromAlarm = true)
             }
         }
     }
@@ -244,23 +291,45 @@ class DefaultHeartbeatScheduler(
             Logger.w(TAG, "provider state check failed", e)
         }
         try {
-            val location = configStore.runtime.value.lastLocation ?: lastKnownLocation()
+            val location = heartbeatLocation(trigger)
             // The calls above suspend: a record (e.g. providerchange) may have restarted the window, or stop()
-            // may have run. Decide again, with no suspension point between this check and the submit.
+            // may have run. Decide again. Only the due time matters here, so the device flags of the entry are reused.
+            var seenLastRecord: Pair<Long?, Long?>? = null
             val stillDue = synchronized(lock) {
                 val nowAgain = clock.elapsedRealtime()
                 val due = lifecycle != Lifecycle.STOPPED && isActive() &&
-                    computeWindowLocked(device.canScheduleExactAlarms(), anchor = true).shouldFire(nowAgain)
-                if (due) lastAttemptElapsed = nowAgain
+                    computeWindowLocked(
+                        canExact = window.strategy == HeartbeatStrategy.EXACT,
+                        anchor = true,
+                        isIdle = window.strategy == HeartbeatStrategy.IDLE_PACED,
+                    ).shouldFire(nowAgain)
+                if (due) {
+                    lastAttemptElapsed = nowAgain
+                    seenLastRecord = lastRecordMarker()
+                }
                 due
             }
             if (!stillDue) {
                 Logger.d(TAG, "$trigger: superseded by a newer record or stop()")
                 return
             }
-            val record = recordFactory.create(RecordEvent.HEARTBEAT, location)
+            val created = recordFactory.create(RecordEvent.HEARTBEAT, location)
+            // Another thread may have submitted a record, or stopped tracking, while the record was being built.
+            val record = synchronized(lock) {
+                val superseded = lifecycle == Lifecycle.STOPPED || !isActive() || lastRecordMarker() != seenLastRecord
+                if (superseded) null else created.copy(heartbeat = armAfterLocked(created))
+            }
+            if (record == null) {
+                Logger.d(TAG, "$trigger: superseded by a newer record or stop() while the heartbeat was built")
+                return
+            }
             recordSink.value.submit(record)
-            Logger.i(TAG, "heartbeat ${record.uuid} ($trigger, ${window.strategy.wire}, location=${location != null})")
+            val meta = record.heartbeat
+            Logger.i(
+                TAG,
+                "heartbeat ${record.uuid} ($trigger, next ${meta?.strategy?.wire} in " +
+                    "${meta?.nextAt?.let { (it - record.recordedAt) / 1_000 }} s, location=${location != null})",
+            )
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -268,13 +337,55 @@ class DefaultHeartbeatScheduler(
         }
     }
 
-    private suspend fun lastKnownLocation(): TrackedLocation? = try {
-        withTimeoutOrNull(LAST_LOCATION_TIMEOUT_MS) { providers.location().getLastLocation() }
-    } catch (e: CancellationException) {
-        throw e
-    } catch (e: Exception) {
-        Logger.w(TAG, "last known location unavailable", e)
-        null
+    /**
+     * Arms the window that starts at [record] (the heartbeat about to be submitted) and returns the record's
+     * metadata. Arming first makes the metadata describe what AlarmManager holds (also after a refused exact alarm);
+     * the sink's [onRecordRecorded] then computes the same window and sets no alarm.
+     */
+    private fun armAfterLocked(record: Record): HeartbeatMeta {
+        val isIdle = device.isDeviceIdleMode()
+        val next = computeWindowLocked(device.canScheduleExactAlarms(), anchor = true, isIdle = isIdle, lastRecord = record)
+        val armedWindow = armLocked(next, "heartbeat", isIdle = isIdle, lastRecord = record)
+        val config = configStore.config.value.heartbeat
+        val inMs = (armedWindow.expectedFireElapsed - record.elapsedRealtimeMs).coerceAtLeast(0L)
+        return HeartbeatMeta(
+            strategy = armedWindow.strategy,
+            minInterval = config.minInterval,
+            maxInterval = config.maxInterval,
+            nextAt = record.recordedAt + inMs,
+            batteryExempt = device.isIgnoringBatteryOptimizations(),
+            deviceIdle = isIdle,
+        )
+    }
+
+    /**
+     * The heartbeat's location: `runtime.lastLocation` (kept fresh by the engine), else the backend's last known
+     * location. After the backend answered that it has no location, it is not asked again within
+     * [LAST_LOCATION_RETRY_MS]: the engine's own fixes reach `runtime.lastLocation` directly, so a new request would
+     * almost always answer the same. A timeout or an exception is not remembered; the next heartbeat asks again.
+     */
+    private suspend fun heartbeatLocation(trigger: HeartbeatTrigger): TrackedLocation? {
+        configStore.runtime.value.lastLocation?.let { return it }
+        val nowElapsed = clock.elapsedRealtime()
+        val lastMiss = synchronized(lock) { lastLocationMissElapsed }
+        if (lastMiss != null && nowElapsed - lastMiss in 0L until LAST_LOCATION_RETRY_MS) {
+            Logger.d(TAG, "$trigger: no known location; the backend had none ${(nowElapsed - lastMiss) / 1_000} s ago")
+            return null
+        }
+        var answered = false
+        val found = try {
+            withTimeoutOrNull(LAST_LOCATION_TIMEOUT_MS) {
+                providers.location().getLastLocation().also { answered = true }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Logger.w(TAG, "last known location unavailable", e)
+            null
+        }
+        if (!answered) Logger.w(TAG, "$trigger: the last known location request failed or timed out")
+        synchronized(lock) { lastLocationMissElapsed = if (found == null && answered) nowElapsed else null }
+        return found
     }
 
     // ---- scheduling
@@ -284,9 +395,9 @@ class DefaultHeartbeatScheduler(
     }
 
     /**
-     * Arms, re-arms or cancels the alarms for the current state. Without [force] nothing happens if the armed
-     * alarms already match. [fromAlarm] allows arming in a process whose scheduler was never started (the alarm
-     * outlived its process; the receiver then restores tracking).
+     * Arms, re-arms or cancels the alarms for the current state. Without [force], the armed alarms stay when
+     * [HeartbeatWindow.needsRearm] is false (only [current] is updated). [fromAlarm] allows arming in a process whose
+     * scheduler was never started (the alarm outlived its process; the receiver then restores tracking).
      */
     private fun rescheduleLocked(reason: String, force: Boolean, fromAlarm: Boolean) {
         val mayArm = when (lifecycle) {
@@ -303,20 +414,38 @@ class DefaultHeartbeatScheduler(
             }
             return
         }
-        val window = computeWindowLocked(device.canScheduleExactAlarms(), anchor = true)
-        val current = armed
-        if (!force && current != null && current.sameSchedule(window)) return
-        armLocked(window, reason)
+        val canExact = device.canScheduleExactAlarms()
+        val isIdle = device.isDeviceIdleMode()
+        // After a refused exact alarm the fallback stays until the window moves enough to re-arm anyway.
+        val evaluated = computeWindowLocked(canExact && !exactRefused, anchor = true, isIdle = isIdle)
+        val armedNow = armed
+        if (!force && armedNow != null && !evaluated.needsRearm(armedNow)) {
+            current = evaluated
+            return
+        }
+        // A re-arm asks for the exact alarm again.
+        val requested = if (canExact && exactRefused) computeWindowLocked(true, anchor = true, isIdle = isIdle) else evaluated
+        armLocked(requested, reason, isIdle = isIdle)
     }
 
     /**
-     * Sets the alarms of [window]. Nothing is cancelled first: AlarmManager replaces an alarm with the same
-     * PendingIntent (exact and backup share one) or the same listener. Only a listener left over from a
+     * Sets the alarms of [window] and returns the window actually armed ([window], or the listener-and-backup
+     * fallback when the exact alarm is refused). Nothing is cancelled first: AlarmManager replaces an alarm with the
+     * same PendingIntent (exact and backup share one) or the same listener. Only a listener left over from a
      * non-exact schedule is cancelled when switching to exact.
+     *
+     * @param isIdle the deep-idle reading [window] was computed with (used for the fallback window).
+     * @param lastRecord the record [window] starts at, if it is not yet in `runtime` (used for the fallback window).
      */
-    private fun armLocked(window: HeartbeatWindow, reason: String) {
+    private fun armLocked(
+        window: HeartbeatWindow,
+        reason: String,
+        isIdle: Boolean = device.isDeviceIdleMode(),
+        lastRecord: Record? = null,
+    ): HeartbeatWindow {
         val previous = armed
         var effective = window
+        var refused = false
         if (window.strategy == HeartbeatStrategy.EXACT) {
             try {
                 alarms.setExactAndAllowWhileIdle(
@@ -328,7 +457,8 @@ class DefaultHeartbeatScheduler(
             } catch (e: RuntimeException) {
                 // SecurityException when exact alarms are not allowed after all (re-checked on every arm).
                 Logger.w(TAG, "exact alarm refused; falling back to listener + backup alarms", e)
-                effective = computeWindowLocked(canExact = false, anchor = true)
+                refused = true
+                effective = computeWindowLocked(canExact = false, anchor = true, isIdle = isIdle, lastRecord = lastRecord)
             }
         }
         if (effective.strategy != HeartbeatStrategy.EXACT) {
@@ -354,6 +484,8 @@ class DefaultHeartbeatScheduler(
             }
         }
         armed = effective
+        current = effective
+        exactRefused = refused
         generation++
         alarmsCleared = false
         persistSchedule(effective)
@@ -363,6 +495,7 @@ class DefaultHeartbeatScheduler(
             "armed ($reason): ${effective.strategy.wire}, due in ${(effective.dueElapsed - nowElapsed) / 1_000} s, " +
                 "backup in ${(effective.backupAtElapsed - nowElapsed) / 1_000} s",
         )
+        return effective
     }
 
     /** Cancels both alarms, including a PendingIntent alarm armed by a previous process. */
@@ -374,6 +507,8 @@ class DefaultHeartbeatScheduler(
             Logger.w(TAG, "cannot cancel the heartbeat alarm", e)
         }
         armed = null
+        current = null
+        exactRefused = false
         generation++
         alarmsCleared = true
     }
@@ -388,24 +523,33 @@ class DefaultHeartbeatScheduler(
 
     private fun isActive(): Boolean = configStore.runtime.value.enabled && configStore.config.value.heartbeat.enabled
 
-    /** @param anchor remember "now" as the window base while there is no record (false for read-only previews). */
-    private fun computeWindowLocked(canExact: Boolean, anchor: Boolean): HeartbeatWindow {
+    /**
+     * @param anchor remember "now" as the window base while there is no record (false for read-only previews).
+     * @param lastRecord the record the window starts at, if it is not yet in `runtime` (a heartbeat before submit).
+     */
+    private fun computeWindowLocked(
+        canExact: Boolean,
+        anchor: Boolean,
+        isIdle: Boolean = device.isDeviceIdleMode(),
+        lastRecord: Record? = null,
+    ): HeartbeatWindow {
         val runtime = configStore.runtime.value
         val heartbeat = configStore.config.value.heartbeat
         val now = clock.now()
         val nowElapsed = clock.elapsedRealtime()
         val bootCount = clock.bootCount()
-        if (anchor && runtime.lastRecordAt == null && noRecordAnchorElapsed == null) noRecordAnchorElapsed = nowElapsed
+        val lastRecordAt = lastRecord?.recordedAt ?: runtime.lastRecordAt
+        if (anchor && lastRecordAt == null && noRecordAnchorElapsed == null) noRecordAnchorElapsed = nowElapsed
         return HeartbeatWindow.compute(
-            lastRecordAt = runtime.lastRecordAt,
-            lastRecordElapsed = runtime.lastRecordElapsed,
-            lastRecordBootCount = runtime.lastRecordBootCount,
+            lastRecordAt = lastRecordAt,
+            lastRecordElapsed = if (lastRecord != null) lastRecord.elapsedRealtimeMs else runtime.lastRecordElapsed,
+            lastRecordBootCount = if (lastRecord != null) lastRecord.bootCount else runtime.lastRecordBootCount,
             now = now,
             nowElapsed = nowElapsed,
             bootCount = bootCount,
             minIntervalSec = heartbeat.minInterval,
             maxIntervalSec = heartbeat.maxInterval,
-            isIdle = device.isDeviceIdleMode(),
+            isIdle = isIdle,
             canExact = canExact,
             lastBackupFireElapsed = lastBackupFireElapsed(bootCount),
             enabled = runtime.enabled && heartbeat.enabled,
@@ -415,18 +559,35 @@ class DefaultHeartbeatScheduler(
         )
     }
 
-    /** (strategy, nextHeartbeatAt) for [status]: what is armed, else what a previous process armed, else a preview. */
+    /**
+     * (strategy, nextHeartbeatAt) for [status]: the window the heartbeat follows in this process, else what a previous
+     * process armed, else a preview.
+     */
     private fun scheduleSnapshotLocked(): Pair<HeartbeatStrategy, Long?> {
         if (lifecycle == Lifecycle.STOPPED || !isActive()) return HeartbeatStrategy.DISABLED to null
         val now = clock.now()
-        armed?.let { window ->
+        current?.let { window ->
             val inMs = (window.expectedFireElapsed - clock.elapsedRealtime()).coerceAtLeast(0L)
             return window.strategy to now + inMs
         }
-        persistedSchedule(clock.bootCount())?.let { (strategy, next) -> return strategy to maxOf(next, now) }
+        persistedSchedule(clock.bootCount())?.let { (strategy, next) ->
+            if (configStore.runtime.value.lastRecordAt == null) return strategy to maxOf(next, now)
+            // The previous process may have kept its alarms up to REARM_THRESHOLD_MS before the real due time, and the
+            // persisted time is the alarm's. The real due time follows from the last record and the armed strategy.
+            val window = computeWindowLocked(
+                canExact = strategy == HeartbeatStrategy.EXACT,
+                anchor = false,
+                isIdle = strategy == HeartbeatStrategy.IDLE_PACED,
+            )
+            return strategy to (window.nextHeartbeatAt ?: maxOf(next, now))
+        }
         val preview = computeWindowLocked(device.canScheduleExactAlarms(), anchor = false)
         return preview.strategy to preview.nextHeartbeatAt
     }
+
+    /** Identifies the last record in `runtime`; it changes whenever a record is submitted. */
+    private fun lastRecordMarker(): Pair<Long?, Long?> =
+        configStore.runtime.value.let { it.lastRecordAt to it.lastRecordElapsed }
 
     private fun observeConfigLocked() {
         configJob?.cancel()
@@ -502,6 +663,7 @@ class DefaultHeartbeatScheduler(
         return lastBackupFire?.takeIf { it.second == bootCount }?.first
     }
 
+    /** Persisted on every arm (not on evaluations that keep the alarms), so a new process can report what was armed. */
     private fun persistSchedule(window: HeartbeatWindow) {
         val next = window.nextHeartbeatAt ?: return clearPersistedSchedule()
         prefs.edit()
@@ -527,10 +689,20 @@ class DefaultHeartbeatScheduler(
         const val TAG = "LT.Heartbeat"
         const val LISTENER_TAG = "lt-heartbeat"
         const val WAKE_LOCK_TAG = "LocationTracking:heartbeat"
+
+        /**
+         * Upper bound of the heartbeat wake lock. The lock is released as soon as the heartbeat is submitted
+         * (milliseconds normally); the bound only matters when something hangs, and a shorter one could let the CPU
+         * sleep before a slow submit completes.
+         */
         const val WAKE_LOCK_TIMEOUT_MS = 60_000L
+
         // Both run inside the receiver's goAsync() budget.
         const val LAST_LOCATION_TIMEOUT_MS = 3_000L
         const val PROVIDER_CHECK_TIMEOUT_MS = 3_000L
+
+        /** After the backend returned no last location, it is not asked again for this long. */
+        const val LAST_LOCATION_RETRY_MS = 10 * 60_000L
 
         const val KEY_LAST_BACKUP_ELAPSED = "hb_last_backup_fire_elapsed"
         const val KEY_LAST_BACKUP_BOOT = "hb_last_backup_fire_boot"

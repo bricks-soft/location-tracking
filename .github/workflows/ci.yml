@@ -89,6 +89,7 @@ jobs:
         working-directory: examples/field-force
         run: |
           npm ci
+          npm test
           npm run sync
           cd android
           gradle assembleDebug --console=plain

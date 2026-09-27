@@ -5,7 +5,8 @@
   "description": "Field-force audit example: auto start at launch, stop at 02:00, live location, and the fake PremiseMonitor companion plugin.",
   "scripts": {
     "copy-vendor": "node scripts/copy-vendor.mjs",
-    "sync": "npm run copy-vendor && cap sync android"
+    "sync": "npm run copy-vendor && cap sync android",
+    "test": "node --test \"test/*.test.js\""
   },
   "dependencies": {
     "@bricks-soft/capacitor-location-tracking": "file:../..",

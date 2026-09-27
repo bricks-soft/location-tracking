@@ -46,7 +46,7 @@ Units edit only these files (and may add new files inside their own directories)
 | 3 | Heartbeat cost + metadata | `.../heartbeat/**` |
 | 4 | `http.syncInterval` behavior | `.../http/**` |
 | 5 | Companion native API | `.../api/**`, `.../record/RecordSink.kt`, `.../bridge/PluginHandlers.kt` (insertLocation hook), `android/consumer-rules.pro`, `docs/native-api.md` |
-| 6 | CI emulator workflow + 16 KB check | `.github/workflows/**` |
+| 6 | CI emulator workflow + 16 KB check | `.github/workflows/**`, `.github/scripts/**` |
 | 7 | e2e-kit | `testing/e2e-kit/**` |
 | 8 | Plugin example test hooks | `example/android/app/src/debug/**`, `example/www/**`, `example/android/app/src/androidTest/**` |
 | 9 | Plugin suite A lifecycle | `e2e/plugin/lifecycle.test.ts` |
@@ -634,7 +634,7 @@ npm ci --prefer-offline --no-audit --no-fund && npm run build && npm test       
 npm run docgen                                                                        # only after changing definitions.ts
 scripts/gradle-slot.sh -p android testDebugUnitTest                                   # plugin unit tests
 (cd example && npm ci && npm run sync && cd android && ../../scripts/gradle-slot.sh assembleDebug -PlocationTracking.providers=gms,hms)
-(cd examples/field-force && npm ci && npm run sync && cd android && ../../../scripts/gradle-slot.sh assembleDebug)
+(cd examples/field-force && npm ci && npm test && npm run sync && cd android && ../../../scripts/gradle-slot.sh assembleDebug)
 (cd examples/field-force/android && ../../../scripts/gradle-slot.sh :bricks-soft-capacitor-premise-monitor:testDebugUnitTest)  # PremiseMonitor Robolectric tests (after the line above)
 (cd testing/e2e-kit && npm ci && npm run typecheck && npm test)
 (cd e2e/plugin && npm ci && npm run typecheck && npm run dry-run)
@@ -652,7 +652,7 @@ emulator -avd e2e-34 -no-snapshot -no-boot-anim &          # google_apis x86_64 
 adb wait-for-device && adb root
 adb install -r -g example/android/app/build/outputs/apk/debug/app-debug.apk
 cd e2e/plugin && E2E_APK=../../example/android/app/build/outputs/apk/debug/app-debug.apk npm run test:e2e
-npm run test:e2e -- --test-name-pattern="P-L0[13]"          # a subset by id
+NODE_OPTIONS='--test-name-pattern=P-L0[13]' npm run test:e2e   # a subset by id (npm's `-- --test-name-pattern` does not filter on Node 22)
 E2E_INCLUDE_LONG=1 npm run test:e2e                         # include long scenarios (nightly)
 cd examples/field-force/e2e && E2E_APK=../android/app/build/outputs/apk/debug/app-debug.apk npm run test:e2e
 ```

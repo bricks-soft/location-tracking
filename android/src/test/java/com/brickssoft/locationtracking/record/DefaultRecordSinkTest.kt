@@ -3,6 +3,7 @@ package com.brickssoft.locationtracking.record
 import com.brickssoft.locationtracking.config.ConfigStore
 import com.brickssoft.locationtracking.config.RuntimeState
 import com.brickssoft.locationtracking.core.Logger
+import com.brickssoft.locationtracking.core.RecordHooks
 import com.brickssoft.locationtracking.core.TrackingEvent
 import com.brickssoft.locationtracking.data.LocationStore
 import com.brickssoft.locationtracking.heartbeat.HeartbeatScheduler
@@ -21,9 +22,11 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 import java.io.IOException
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlin.coroutines.cancellation.CancellationException
 
 class DefaultRecordSinkTest {
     private val calls = CopyOnWriteArrayList<String>()
@@ -59,7 +62,10 @@ class DefaultRecordSinkTest {
         }
     }
 
-    private val sink = DefaultRecordSink(loggingStore, loggingConfig, loggingHeartbeat, loggingSyncer, events).also {
+    private val hooks = RecordHooks().apply { add { calls += "hook" } }
+    private val hooked = CopyOnWriteArrayList<Record>().also { list -> hooks.add { list += it } }
+
+    private val sink = DefaultRecordSink(loggingStore, loggingConfig, loggingHeartbeat, loggingSyncer, events, hooks).also {
         events.subscribe { event -> calls += "emit:${event::class.simpleName}" }
     }
 
@@ -75,7 +81,7 @@ class DefaultRecordSinkTest {
         val result = sink.submit(record)
 
         assertSame(record, result)
-        assertEquals(listOf("insert", "updateRuntime", "heartbeat", "emit:Location", "sync"), calls)
+        assertEquals(listOf("insert", "hook", "updateRuntime", "heartbeat", "emit:Location", "sync"), calls)
         assertEquals(listOf(record), store.all)
         assertEquals(listOf(record), heartbeat.recorded)
         assertEquals(listOf(record), syncer.inserted)
@@ -105,7 +111,7 @@ class DefaultRecordSinkTest {
 
         assertEquals(previous, configStore.runtime.value.lastLocation)
         assertEquals(9_000L, configStore.runtime.value.lastHeartbeatAt)
-        assertEquals(listOf("insert", "updateRuntime", "heartbeat", "emit:Heartbeat", "sync"), calls)
+        assertEquals(listOf("insert", "hook", "updateRuntime", "heartbeat", "emit:Heartbeat", "sync"), calls)
     }
 
     @Test
@@ -151,8 +157,60 @@ class DefaultRecordSinkTest {
 
         sink.submit(record)
 
-        assertEquals(listOf("insert", "updateRuntime", "heartbeat", "emit:Location"), calls)
+        assertEquals(listOf("insert", "hook", "updateRuntime", "heartbeat", "emit:Location"), calls)
         assertTrue(syncer.inserted.isEmpty())
         assertEquals(record.recordedAt, configStore.runtime.value.lastRecordAt)
+        assertEquals("the companion still gets the record", listOf(record), hooked.toList())
     }
+
+    @Test
+    fun `every record type is dispatched to the record hooks once`() = runTest {
+        val records = RecordEvent.entries.map { Fixtures.record(uuid = it.wire, event = it) }
+
+        records.forEach { sink.submit(it) }
+
+        assertEquals(records, hooked.toList())
+    }
+
+    @Test
+    fun `a throwing record observer does not stop the sink`() = runTest {
+        hooks.add { throw IllegalStateException("observer boom") }
+        val record = Fixtures.record(event = RecordEvent.HEARTBEAT)
+
+        sink.submit(record)
+
+        assertEquals(listOf("insert", "hook", "updateRuntime", "heartbeat", "emit:Heartbeat", "sync"), calls)
+        assertEquals(listOf(record), syncer.inserted)
+    }
+
+    @Test
+    fun `a sink built without the hooks parameter works as before`() = runTest {
+        val plain = DefaultRecordSink(store, configStore, heartbeat, syncer, events)
+        val record = Fixtures.record()
+
+        assertSame(record, plain.submit(record))
+        assertEquals(listOf(record), store.all)
+        assertEquals(listOf(record), syncer.inserted)
+    }
+
+    @Test
+    fun `a record whose insert was cancelled still reaches the record hooks, then the cancellation propagates`() =
+        runTest {
+            val cancelling = object : LocationStore by store {
+                override suspend fun insert(record: Record) = throw CancellationException("stop() cancelled the job")
+            }
+            val cancelSink = DefaultRecordSink(cancelling, configStore, heartbeat, syncer, events, hooks)
+            val record = Fixtures.record(event = RecordEvent.HEARTBEAT)
+
+            try {
+                cancelSink.submit(record)
+                fail("expected the cancellation")
+            } catch (e: CancellationException) {
+                assertEquals("stop() cancelled the job", e.message)
+            }
+
+            assertEquals(listOf(record), hooked.toList())
+            assertTrue(syncer.inserted.isEmpty())
+            assertTrue(events.events.isEmpty())
+        }
 }

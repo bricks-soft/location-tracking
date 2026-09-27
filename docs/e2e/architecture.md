@@ -612,6 +612,7 @@ npm run docgen                                                                  
 scripts/gradle-slot.sh -p android testDebugUnitTest                                   # plugin unit tests
 (cd example && npm ci && npm run sync && cd android && ../../scripts/gradle-slot.sh assembleDebug -PlocationTracking.providers=gms,hms)
 (cd examples/field-force && npm ci && npm run sync && cd android && ../../../scripts/gradle-slot.sh assembleDebug)
+(cd examples/field-force/android && ../../../scripts/gradle-slot.sh :bricks-soft-capacitor-premise-monitor:testDebugUnitTest)  # PremiseMonitor Robolectric tests (after the line above)
 (cd testing/e2e-kit && npm ci && npm run typecheck && npm test)
 (cd e2e/plugin && npm ci && npm run typecheck && npm run dry-run)
 (cd examples/field-force/e2e && npm ci && npm run typecheck && npm run dry-run)

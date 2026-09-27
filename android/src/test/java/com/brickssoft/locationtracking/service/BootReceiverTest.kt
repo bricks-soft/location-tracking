@@ -88,7 +88,10 @@ class BootReceiverTest {
                         !startOnBoot -> {
                             assertEquals(case, BootReceiver.Outcome.DISABLED, outcome)
                             assertFalse(case, store.runtime.value.enabled)
-                            assertEquals(case, 0, resolved)
+                            // The engine records tracking_stop so the server learns why heartbeats stopped.
+                            val stopReason = if (reason == "boot") "reboot" else "package_replaced"
+                            assertEquals(case, listOf(stopReason), engine.endReasons)
+                            assertTrue(case, engine.restoreReasons.isEmpty())
                         }
                         else -> {
                             assertEquals(case, BootReceiver.Outcome.RESTORED, outcome)
@@ -105,9 +108,35 @@ class BootReceiverTest {
     fun `enabled without startOnBoot is logged`() = runTest {
         val store = FakeConfigStore(Config(), RuntimeState(enabled = true))
 
-        BootReceiver.handle("boot", store) { error("engine must not be resolved") }
+        BootReceiver.handle("boot", store) { FakeTrackingEngine(store) }
 
         assertTrue(env.logged(LogLevel.INFO, "startOnBoot is false"))
+    }
+
+    @Test
+    fun `a session already running in this process is left alone`() = runTest {
+        val store = FakeConfigStore(Config(), RuntimeState(enabled = true))
+        // An engine with a live session ignores endWithoutRestore (the default no-op models that here).
+        val engine = object : TrackingEngine by FakeTrackingEngine(store) {
+            override suspend fun endWithoutRestore(reason: String) = Unit
+        }
+
+        BootReceiver.handle("package_replaced", store) { engine }
+
+        assertTrue(store.runtime.value.enabled)
+    }
+
+    @Test
+    fun `enabled flag is cleared even if the engine fails to record the stop`() = runTest {
+        val store = FakeConfigStore(Config(), RuntimeState(enabled = true))
+        val engine = FakeTrackingEngine(store).apply {
+            failWith = TrackingException(ErrorCode.IO_ERROR, "disk full")
+        }
+
+        val result = runCatching { BootReceiver.handle("boot", store) { engine } }
+
+        assertTrue(result.isFailure)
+        assertFalse(store.runtime.value.enabled)
     }
 
     @Test

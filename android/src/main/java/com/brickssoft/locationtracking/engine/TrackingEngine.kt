@@ -36,4 +36,11 @@ interface TrackingEngine : ActivitySink {
      * `service_start_failed`, so the server sees why the audit trail ends.
      */
     suspend fun onServiceStartFailed(error: String) = Unit
+
+    /**
+     * Tracking was enabled in a process that ended with a reboot or an app update, and `app.startOnBoot` is false, so
+     * it is not resumed. Records `tracking_stop` with [reason] (`reboot` | `package_replaced`), so the server learns why
+     * the heartbeats stopped, and clears `enabled`.
+     */
+    suspend fun endWithoutRestore(reason: String) = Unit
 }

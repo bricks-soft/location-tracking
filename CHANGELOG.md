@@ -25,14 +25,17 @@ The first release: Android and TypeScript. iOS is planned for a later phase.
   scheduling strategy (`exact`, `listener_with_backup`, `idle_paced` or `disabled`).
 - **Audit records:** `tracking_start` (reasons `start`, `start_geofences`, `boot`, `restore`, `package_replaced`),
   `tracking_stop` (reasons `stop`, `stop_on_stationary`, `stop_after_elapsed`, `terminate`, `permission_denied`,
-  `service_start_failed`) and `providerchange` (debounced by 1 s; the first observed state is saved silently),
+  `service_start_failed`, `reboot`, `package_replaced`) and `providerchange` (debounced by 1 s; the first observed state is saved silently),
   uploaded as priority records.
 - **`tracking_stop` reason `service_start_failed`:** when Android refuses or aborts the foreground service after
   tracking was started, or when the plugin restarts it from the background (process restore, heartbeat alarm, boot,
   app update), tracking ends with this audit record instead of looking enabled while nothing is collected. On
-  Android 12+ only exact alarms (battery-exempt apps), `BOOT_COMPLETED` and `MY_PACKAGE_REPLACED` may start the
-  service from the background, and on Android 14+ that also needs background location. The app must call `start()`
-  again.
+  Android 12+ only battery-exempt apps, `BOOT_COMPLETED` and `MY_PACKAGE_REPLACED` may start the service from the
+  background, and on Android 14+ that also needs background location. The app must call `start()` again. A service
+  that Android itself restarted (`START_STICKY`) is not started a second time.
+- **`tracking_stop` reasons `reboot` and `package_replaced`:** when tracking was on before a reboot or an app update
+  and `app.startOnBoot` is `false`, a `tracking_stop` with that reason is recorded after the restart, so the server
+  learns why the heartbeats stopped.
 - **SQLite queue with HTTP sync:**
   - single or batch bodies, `rootProperty` (including `"."`), `params` merged into the body root;
   - JSON templates with `<%= name %>` placeholders;

@@ -288,6 +288,14 @@ class FakeTrackingEngine(
     }
 
     val serviceStartFailures = CopyOnWriteArrayList<String>()
+    val endReasons = CopyOnWriteArrayList<String>()
+
+    override suspend fun endWithoutRestore(reason: String) {
+        call("endWithoutRestore") {
+            endReasons += reason
+            configStore.updateRuntime { it.copy(enabled = false) }
+        }
+    }
 
     override suspend fun onServiceStartFailed(error: String) {
         call("onServiceStartFailed") { serviceStartFailures += error }

@@ -151,6 +151,12 @@ class DefaultTrackingEngine(
 
     override suspend fun restore(reason: String) = serialized { restoreLocked(reason) }
 
+    override suspend fun endWithoutRestore(reason: String) = serialized {
+        if (session != null || !runtime.enabled) return@serialized
+        Logger.i(TAG, "tracking is not resumed after $reason (app.startOnBoot is false)")
+        stopLocked(reason)
+    }
+
     override suspend fun onServiceStartFailed(error: String) = serialized {
         if (session == null && !runtime.enabled) return@serialized
         Logger.w(TAG, "the foreground service failed to start ($error); stopping tracking")
@@ -236,7 +242,9 @@ class DefaultTrackingEngine(
         configStore.updateRuntime {
             it.copy(enabled = true, trackingMode = mode, isMoving = false, trackingStartedAt = startedAt)
         }
-        if (!startService()) {
+        // The system may have restarted the service itself (START_STICKY), which then calls restore(): starting it again
+        // from the background could be refused on Android 12+ although it is already in the foreground.
+        if (!serviceController.isRunning && !startService()) {
             // Without the foreground service Android throttles background location and the heartbeat alarms would
             // keep retrying; end the session with an explicit audit record instead.
             Logger.w(TAG, "restore($reason): the foreground service was refused; stopping tracking")

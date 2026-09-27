@@ -17,8 +17,8 @@ import kotlin.coroutines.cancellation.CancellationException
  * (`MY_PACKAGE_REPLACED`).
  *
  * - Tracking enabled and `app.startOnBoot` → `engine.restore("boot" | "package_replaced")`.
- * - Tracking enabled but not `startOnBoot` → the persisted `enabled` flag is cleared, because tracking does not
- *   resume and the state must say so.
+ * - Tracking enabled but not `startOnBoot` → `engine.endWithoutRestore("reboot" | "package_replaced")` records
+ *   `tracking_stop` with that reason (so the server learns why heartbeats stopped) and clears `enabled`.
  * - Tracking not enabled → nothing.
  *
  * Devices that send several boot broadcasts are handled once per process.
@@ -69,6 +69,7 @@ class BootReceiver : BroadcastReceiver() {
     internal companion object {
         private const val TAG = "LT.Boot"
         const val REASON_BOOT = "boot"
+        const val STOP_REASON_REBOOT = "reboot"
         const val REASON_PACKAGE_REPLACED = "package_replaced"
 
         /** How long the broadcast is held for the restore (receivers must finish within about 10 s). */
@@ -89,15 +90,28 @@ class BootReceiver : BroadcastReceiver() {
             else -> null
         }
 
-        /** The boot decision; [engine] is only resolved when tracking is restored. */
+        /** `tracking_stop` reason when tracking is not resumed: `"reboot"` or `"package_replaced"`. */
+        fun stopReasonFor(reason: String): String = if (reason == REASON_BOOT) STOP_REASON_REBOOT else reason
+
+        /** The boot decision; [engine] is only resolved when tracking was enabled. */
         suspend fun handle(reason: String, configStore: ConfigStore, engine: () -> TrackingEngine): Outcome {
             if (!configStore.runtime.value.enabled) {
                 Logger.d(TAG, "$reason: tracking is not enabled")
                 return Outcome.IGNORED
             }
             if (!configStore.config.value.app.startOnBoot) {
-                configStore.updateRuntime { it.copy(enabled = false) }
                 Logger.i(TAG, "$reason: tracking was enabled but app.startOnBoot is false; tracking does not resume")
+                try {
+                    // Clears `enabled` together with the tracking_stop record. It deliberately does nothing when a
+                    // session is already running in this process (e.g. START_STICKY or start() before this broadcast).
+                    engine().endWithoutRestore(stopReasonFor(reason))
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Recording failed: tracking does not resume, so the persisted state must still say so.
+                    configStore.updateRuntime { it.copy(enabled = false) }
+                    throw e
+                }
                 return Outcome.DISABLED
             }
             Logger.i(TAG, "$reason: restoring tracking")

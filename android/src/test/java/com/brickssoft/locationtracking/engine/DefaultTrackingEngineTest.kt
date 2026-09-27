@@ -734,6 +734,45 @@ class DefaultTrackingEngineTest {
     }
 
     @Test
+    fun `restore after a system restart of the service does not start it again`() = runTest {
+        configStore.runtimeFlow.value = RuntimeState(enabled = true)
+        service.isRunning = true // START_STICKY: the system re-created the service, which calls restore()
+        service.startResult = false // a second start from the background would be refused
+        val engine = newEngine()
+
+        engine.restore("restore")
+        runCurrent()
+
+        assertEquals(0, service.startCalls)
+        assertTrue(configStore.runtime.value.enabled)
+        assertEquals("tracking_start:restore", records().first())
+    }
+
+    @Test
+    fun `endWithoutRestore records tracking_stop with the reason and disables tracking`() = runTest {
+        configStore.runtimeFlow.value = RuntimeState(enabled = true, lastLocation = origin)
+        val engine = newEngine()
+
+        engine.endWithoutRestore("reboot")
+        runCurrent()
+
+        assertEquals(listOf("tracking_stop:reboot"), records())
+        assertSame(origin, recordSink.records.single().location)
+        assertFalse(configStore.runtime.value.enabled)
+        assertEquals(listOf(TrackingEvent.EnabledChange(false)), events.events)
+    }
+
+    @Test
+    fun `endWithoutRestore does nothing when tracking is not enabled`() = runTest {
+        val engine = newEngine()
+
+        engine.endWithoutRestore("reboot")
+        runCurrent()
+
+        assertTrue(recordSink.records.isEmpty())
+    }
+
+    @Test
     fun `restore of a running session stops when the service is refused again`() = runTest {
         val engine = newEngine()
         started(engine)

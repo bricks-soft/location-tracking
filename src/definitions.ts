@@ -376,7 +376,7 @@ export interface Location {
   provider?: ProviderState;
   /**
    * tracking_start: start|start_geofences|boot|restore|package_replaced;
-   * tracking_stop: stop|stop_on_stationary|stop_after_elapsed|terminate|permission_denied|service_start_failed
+   * tracking_stop: stop|stop_on_stationary|stop_after_elapsed|terminate|permission_denied|service_start_failed|reboot|package_replaced
    */
   reason?: string;
 }

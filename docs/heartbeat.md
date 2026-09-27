@@ -113,8 +113,8 @@ for example overnight on a table.
 | Battery usage set to **"Restricted"** (Android 12+) | **None until the app is opened again** | Background work is blocked. |
 | **Phone makers' task killers** (Huawei PowerGenie, Xiaomi, Oppo, Vivo, Samsung) kill the process, app **exempt** | A gap, then heartbeats again | If the killer leaves the app's alarms alone, the next heartbeat alarm creates a heartbeat and restores tracking (`tracking_start`, reason `restore`). Some killers also block alarms: then nothing until the app is opened again. |
 | **Phone makers' task killers**, app **not exempt** (Android 12+) | **One more heartbeat, then none until the app calls `start()` again** | The backup alarm can still wake the app and create a heartbeat, but Android 12+ does not let a non-exempt app restart its foreground service from the background (the inexact backup alarm carries no foreground-service allowance). The plugin records `tracking_stop` with reason `service_start_failed`. Allow the app in the phone maker's power manager, see [below](#phone-makers-power-managers). |
-| **Phone off** or battery empty | **None while off** | After boot, tracking resumes (`tracking_start`, reason `boot`) only with `app.startOnBoot: true`. On Android 14+ it also needs "Allow all the time" location, otherwise a `tracking_stop` with reason `service_start_failed` follows. With `startOnBoot: false`, tracking is off after the reboot (no `tracking_stop` is recorded). |
-| App **updated** | A short gap | With `app.startOnBoot: true`, tracking resumes (`tracking_start`, reason `package_replaced`). With `false`, tracking is off after the update, without a `tracking_stop`. |
+| **Phone off** or battery empty | **None while off** | After boot, tracking resumes (`tracking_start`, reason `boot`) only with `app.startOnBoot: true`. On Android 14+ it also needs "Allow all the time" location, otherwise a `tracking_stop` with reason `service_start_failed` follows. With `startOnBoot: false`, tracking is off after the reboot and a `tracking_stop` with reason `reboot` is recorded when the phone has booted. |
+| App **updated** | A short gap | With `app.startOnBoot: true`, tracking resumes (`tracking_start`, reason `package_replaced`). With `false`, tracking is off after the update and a `tracking_stop` with reason `package_replaced` is recorded. |
 | **Location permission removed** | **None until the app is opened again** | Android kills the app when a permission is revoked. When the plugin runs again, it records a `providerchange`, and if location permission is gone completely, a `tracking_stop` with reason `permission_denied`. |
 | App swiped away with `stopOnTerminate: true` (default) | None, by design | A `tracking_stop` record with reason `terminate` is sent first. |
 | App swiped away with `stopOnTerminate: false` | About `minInterval` | The foreground service keeps running. On some phones the swipe kills the process anyway; then the cases above apply (`restore` when exempt, `service_start_failed` when not exempt on Android 12+). |
@@ -222,9 +222,12 @@ then `elapsed_realtime_ms`.
 - `tracking_start` (reasons `start`, `start_geofences`, `boot`, `restore`, `package_replaced`) sets the state to **ON**.
   A `tracking_start` while already ON is a mode switch between `start()` and `startGeofences()`.
 - `tracking_stop` (reasons `stop`, `stop_on_stationary`, `stop_after_elapsed`, `terminate`, `permission_denied`,
-  `service_start_failed`) sets it to **OFF**. The reason says who stopped it: your app (`stop`, or its configuration:
-  `stop_on_stationary`, `stop_after_elapsed`), the user by swiping the app away (`terminate`), a missing permission
-  (`permission_denied`), or Android refusing the foreground service (`service_start_failed`).
+  `service_start_failed`, `reboot`, `package_replaced`) sets it to **OFF**. The reason says who stopped it: your app
+  (`stop`, or its configuration: `stop_on_stationary`, `stop_after_elapsed`, and `reboot` / `package_replaced` when
+  `app.startOnBoot` is `false`), the user by swiping the app away (`terminate`), a missing permission
+  (`permission_denied`), or Android refusing the foreground service (`service_start_failed`). A `reboot` /
+  `package_replaced` stop is recorded after the restart, so the gap before it is the time the phone was off or
+  updating.
 - `heartbeat`, `location`, `motionchange`, `geofence` and `providerchange` records also prove that the device was ON
   at `recorded_at`. Positions requested by the app (`current_position`, `watch_position`) and records added with
   `insertLocation()` can also exist while tracking is OFF, so don't count them as proof.
@@ -258,7 +261,7 @@ Choosing `grace`:
 | The gap ends with `tracking_start` reason `restore` | The app's process was killed and tracking resumed: by itself (Android restarted the service, or a heartbeat alarm woke the app) or when the user opened the app again (for example after a force-stop). |
 | The gap ends with `tracking_start` reason `package_replaced` | The app was updated. |
 | A `providerchange` at the end of the gap, with `permission: "denied"` or `"when_in_use"` | The user revoked the location permission (followed by `tracking_stop` reason `permission_denied` when it is `denied`). |
-| No explanation, and records resume only when the user opens the app | Force-stop, battery "Restricted", a reboot or an update with `startOnBoot: false`, or a phone maker's task killer. The device was not tracking. |
+| No explanation, and records resume only when the user opens the app | Force-stop, battery "Restricted", or a phone maker's task killer. The device was not tracking. |
 | `providerchange` with `enabled: false` and no gap | The app was alive (heartbeats kept coming), but location services were off. Treat positions from that period as unknown. |
 | No `providerchange` for a change you expected | The plugin records one per settled change (broadcasts are debounced by 1 s), only while tracking is on, and not for the very first state it observes after install. A change the plugin already saw while tracking was off (for example when the app came to the foreground) is not recorded later. |
 | Heartbeats with an old `timestamp` | The phone is stationary, or has no new fix (indoors). The app is alive; the position is the last known one. |

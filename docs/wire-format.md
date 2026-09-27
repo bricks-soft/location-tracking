@@ -376,12 +376,14 @@ no records are expected until the next `tracking_start`.
 | `stop_after_elapsed` | `geolocation.stopAfterElapsedMinutes` elapsed. |
 | `terminate` | The user swiped the app away with `app.stopOnTerminate: true`. |
 | `permission_denied` | Location permission was gone when the plugin tried to resume tracking (the user revoked it), or `start()` / `startGeofences()` could not start the foreground service (the call then rejects with `PERMISSION_DENIED`). |
-| `service_start_failed` | Android refused or aborted the tracking foreground service after tracking had been started, or when the plugin tried to restart it from the background (after the process was killed, from a heartbeat alarm, after a reboot or an update). On Android 12+, only a battery-optimization-exempt app (whose heartbeat alarm is exact), `BOOT_COMPLETED` and `MY_PACKAGE_REPLACED` may start it from the background, and on Android 14+ that also needs "Allow all the time" location. Tracking stays off until the app calls `start()` again. |
+| `service_start_failed` | Android refused or aborted the tracking foreground service after tracking had been started, or when the plugin tried to restart it from the background (after the process was killed, from a heartbeat alarm, after a reboot or an update). On Android 12+, only a battery-optimization-exempt app (the exemption is itself an exemption from background-start restrictions), `BOOT_COMPLETED` and `MY_PACKAGE_REPLACED` may start it from the background, and on Android 14+ that also needs "Allow all the time" location. Tracking stays off until the app calls `start()` again. |
+| `reboot` | Tracking was on before the phone restarted, and `app.startOnBoot` is `false`, so it is not resumed. Recorded after the reboot (`recorded_at` is after the boot). |
+| `package_replaced` | Tracking was on before the app was updated, and `app.startOnBoot` is `false`, so it is not resumed. |
 
 A `tracking_stop` is written before the service stops. If the phone is offline at that moment, the record stays
 queued and arrives later, with a late `sent_at`. There is **no** `tracking_stop` when the phone is switched off, the
-app is force-stopped, or the process is killed, nor when tracking does not resume after a reboot or an app update
-because `app.startOnBoot` is `false`. Those show up as a gap, which is the correct audit outcome (see
+app is force-stopped, or the process is killed (a reboot or an app update with `app.startOnBoot: false` records one
+afterwards, with reason `reboot` or `package_replaced`). Those show up as a gap, which is the correct audit outcome (see
 [heartbeat.md](heartbeat.md#server-side-audit)).
 
 ### `providerchange`

@@ -262,4 +262,83 @@ class NotificationFactoryTest {
         assertEquals(1, n.actions.size)
         assertTrue(shadowOf(n.actions[0].actionIntent).isImmutable)
     }
+
+    @Test
+    fun `initial notification has the default content and creates the default channel`() {
+        val initial = factory.buildInitial()
+        val n = initial.notification
+
+        assertEquals(NotificationConfig(), initial.config)
+        assertEquals(NotificationConfig.DEFAULT_CHANNEL_ID, n.channelId)
+        val channel = notificationManager.getNotificationChannel(NotificationConfig.DEFAULT_CHANNEL_ID)
+        assertEquals(app.getString(R.string.lt_notification_channel_name), channel.name.toString())
+        assertEquals(NotificationManager.IMPORTANCE_DEFAULT, channel.importance)
+        assertEquals(app.applicationInfo.loadLabel(app.packageManager).toString(), n.title)
+        assertEquals(app.getString(R.string.lt_notification_text), n.text)
+        assertEquals(R.drawable.lt_ic_notification, n.smallIcon.resId)
+        assertTrue(n.flags and Notification.FLAG_ONGOING_EVENT != 0)
+        assertEquals(
+            Notification.FOREGROUND_SERVICE_IMMEDIATE,
+            ReflectionHelpers.getField<Int>(n, "mFgsDeferBehavior"),
+        )
+        assertTrue(n.actions.isNullOrEmpty())
+    }
+
+    @Test
+    fun `initial notification does not rename an existing default channel`() {
+        factory.build(NotificationConfig(channelName = "Shift tracking"))
+
+        factory.buildInitial()
+
+        val channel = notificationManager.getNotificationChannel(NotificationConfig.DEFAULT_CHANNEL_ID)
+        assertEquals("Shift tracking", channel.name.toString())
+    }
+
+    @Test
+    fun `initial notification from command fields creates the channel with the configured importance`() {
+        val spec = NotificationConfig(
+            title = "Field Force",
+            text = "Shift tracking is on",
+            color = "#3366FF",
+            priority = NotificationPriority.HIGH,
+            channelId = NotificationConfig.DEFAULT_CHANNEL_ID,
+        )
+
+        val initial = factory.buildInitial(spec)
+
+        assertEquals(spec, initial.config)
+        val channel = notificationManager.getNotificationChannel(NotificationConfig.DEFAULT_CHANNEL_ID)
+        assertEquals("the first creation fixes the importance", NotificationManager.IMPORTANCE_HIGH, channel.importance)
+        assertEquals("Field Force", initial.notification.title)
+        assertEquals("Shift tracking is on", initial.notification.text)
+        assertEquals(Color.parseColor("#3366FF"), initial.notification.color)
+    }
+
+    @Test
+    fun `initial notification from command fields uses a custom channel and creates no default channel`() {
+        val initial = factory.buildInitial(NotificationConfig(channelId = "shift", channelName = "Shift"))
+
+        assertEquals("shift", initial.notification.channelId)
+        assertEquals("Shift", notificationManager.getNotificationChannel("shift").name.toString())
+        assertNull(notificationManager.getNotificationChannel(NotificationConfig.DEFAULT_CHANNEL_ID))
+    }
+
+    @Test
+    fun `initial notification from command fields leaves an existing channel unchanged`() {
+        factory.build(NotificationConfig(channelId = "shift", channelName = "Shift", priority = NotificationPriority.LOW))
+
+        factory.buildInitial(NotificationConfig(channelId = "shift", channelName = "Renamed"))
+
+        val channel = notificationManager.getNotificationChannel("shift")
+        assertEquals("Shift", channel.name.toString())
+        assertEquals(NotificationManager.IMPORTANCE_LOW, channel.importance)
+    }
+
+    @Test
+    fun `initial notification with a blank channel id in the command fields uses the default channel`() {
+        val initial = factory.buildInitial(NotificationConfig(channelId = ""))
+
+        assertEquals(NotificationConfig.DEFAULT_CHANNEL_ID, initial.notification.channelId)
+        assertNotNull(notificationManager.getNotificationChannel(NotificationConfig.DEFAULT_CHANNEL_ID))
+    }
 }

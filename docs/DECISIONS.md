@@ -80,7 +80,7 @@ deep idle.
 |---|---|
 | Units verified without a phone: Robolectric/JVM tests, okhttp `MockWebServer`, and building the example APK for `gms,hms`, `gms` and `hms`. | This environment has no emulator (no KVM) and no device. A manual on-device plan is in [device-test-checklist.md](device-test-checklist.md). |
 | At most 3 Gradle builds at once (`scripts/gradle-slot.sh`). | 18 parallel builds on a 4-CPU / 15 GB machine would run out of memory. |
-| Base branch for the review: a new branch `main` with one empty commit, merged into the feature branch with `--allow-unrelated-histories`; the pull request goes from `claude/background-geolocation-gms-hms-9ijqdo` into `main`. | The repository had no base branch (the feature branch was the first branch). This shows the whole plugin as one diff without rewriting pushed history. |
+| Base branch for the review: a new branch with one empty commit, merged into the feature branch with `--allow-unrelated-histories`; the pull request goes from `claude/background-geolocation-gms-hms-9ijqdo` into it. It was first named `main`; at the owner's request it is now `master` (same commit, `abca418`), and the pull request targets `master`. | The repository had no base branch (the feature branch was the first branch). This shows the whole plugin as one diff without rewriting pushed history. |
 
 ---
 

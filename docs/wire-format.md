@@ -60,7 +60,7 @@ Timestamps are ISO-8601 in UTC with milliseconds, for example `2026-09-26T10:15:
 ## Record fields
 
 Every record has all of these keys; values that are unknown are `null`. The only exceptions are the optional `extras`
-and the event-specific keys `geofence`, `provider` and `reason`, which appear only when they apply.
+and the event-specific keys `geofence`, `provider`, `reason` and `heartbeat`, which appear only when they apply.
 
 | Key | Type | Meaning |
 |---|---|---|
@@ -82,6 +82,7 @@ and the event-specific keys `geofence`, `provider` and `reason`, which appear on
 | `geofence` | object | Only for `geofence`: `{ "identifier", "action": "ENTER" \| "EXIT" \| "DWELL", "extras"? }`. |
 | `provider` | object | Only for `providerchange`: the new provider state (see below). |
 | `reason` | string | Only for `tracking_start` and `tracking_stop` (see the reason tables below). |
+| `heartbeat` | object | Only for `heartbeat`, and optional: how heartbeats are scheduled (see [`heartbeat`](#heartbeat)). |
 
 `coords`:
 
@@ -196,6 +197,17 @@ seconds (default 180). See [heartbeat.md](heartbeat.md).
   plugin keeps the last known location up to date from its low-power fixes, but no records are created for them.)
 - `recorded_at` is when the heartbeat was created, and `sent_at` when it was uploaded.
 - `is_moving`, `odometer`, `activity` and `battery` are current values.
+- `heartbeat` (optional) says how the plugin schedules heartbeats on this phone, so the server knows which cadence
+  to expect. Older plugin versions don't send it.
+
+  | Key | Type | Meaning |
+  |---|---|---|
+  | `strategy` | `'exact'` \| `'listener_with_backup'` \| `'idle_paced'` | How the next heartbeat is scheduled (see [heartbeat.md](heartbeat.md)). `idle_paced` means Doze spaces heartbeats about 9 minutes apart. |
+  | `min_interval` | number (s) | `heartbeat.minInterval` when the heartbeat was created. |
+  | `max_interval` | number (s) | `heartbeat.maxInterval` when the heartbeat was created. |
+  | `next_at` | string \| null | When the next heartbeat is expected (ISO-8601 UTC), or `null` if unknown. |
+  | `battery_exempt` | boolean | The app is exempt from battery optimization. |
+  | `device_idle` | boolean | The phone was in deep Doze. |
 
 ```json
 {
@@ -223,7 +235,15 @@ seconds (default 180). See [heartbeat.md](heartbeat.md).
   "activity": { "type": "still", "confidence": 100 },
   "battery": { "level": 0.77, "is_charging": false },
   "backend": "gms",
-  "extras": { "driver_id": 7 }
+  "extras": { "driver_id": 7 },
+  "heartbeat": {
+    "strategy": "exact",
+    "min_interval": 180,
+    "max_interval": 300,
+    "next_at": "2026-09-26T10:47:05.310Z",
+    "battery_exempt": true,
+    "device_idle": false
+  }
 }
 ```
 

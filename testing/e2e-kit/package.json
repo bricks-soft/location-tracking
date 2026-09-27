@@ -1,0 +1,26 @@
+{
+  "name": "@bricks-soft/e2e-kit",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Android emulator (AVD) end-to-end test kit for @bricks-soft/capacitor-location-tracking: adb, WebView (CDP), debug-command and mock back office helpers around node:test.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p .",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "catalogue": "node src/cli/catalogue.ts",
+    "backoffice": "node src/cli/backoffice.ts"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.4",
+    "typescript": "5.9.3"
+  }
+}

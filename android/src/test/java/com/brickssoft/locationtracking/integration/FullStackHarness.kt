@@ -26,6 +26,7 @@ import com.brickssoft.locationtracking.config.SharedPrefsConfigStore
 import com.brickssoft.locationtracking.core.AppDispatchers
 import com.brickssoft.locationtracking.core.EventBus
 import com.brickssoft.locationtracking.core.Iso8601
+import com.brickssoft.locationtracking.core.RecordHooks
 import com.brickssoft.locationtracking.core.SimpleEventBus
 import com.brickssoft.locationtracking.core.TrackingEvent
 import com.brickssoft.locationtracking.data.GeofenceStore
@@ -55,6 +56,7 @@ import com.brickssoft.locationtracking.processing.DefaultRecordFactory
 import com.brickssoft.locationtracking.processing.LocationProcessor
 import com.brickssoft.locationtracking.processing.Odometer
 import com.brickssoft.locationtracking.processing.RecordFactory
+import com.brickssoft.locationtracking.provider.StationaryRegionSink
 import com.brickssoft.locationtracking.record.DefaultRecordSink
 import com.brickssoft.locationtracking.record.RecordSink
 import com.brickssoft.locationtracking.testing.FakeClock
@@ -156,9 +158,16 @@ internal class FullStackProcess(
             app, configStore, device, providers, locationStore, recordFactory, lazy { recordSink }, clock, scope,
         )
     }
-    val recordSink: RecordSink by lazy { DefaultRecordSink(locationStore, configStore, heartbeat, syncer, events) }
+    /** Round 2: mirrors `Components.recordHooks`. */
+    val recordHooks = RecordHooks()
+    val recordSink: RecordSink by lazy {
+        DefaultRecordSink(locationStore, configStore, heartbeat, syncer, events, recordHooks)
+    }
     val geofences: GeofenceManager by lazy {
-        DefaultGeofenceManager(geofenceStore, providers, configStore, recordFactory, recordSink, events, clock, scope)
+        DefaultGeofenceManager(
+            geofenceStore, providers, configStore, recordFactory, recordSink, events, clock, scope,
+            lazy<StationaryRegionSink> { engine },
+        )
     }
     val positions: PositionService by lazy {
         DefaultPositionService(providers, configStore, permissions, device, recordFactory, recordSink, clock, scope)

@@ -1,0 +1,25 @@
+{
+  "name": "@bricks-soft/capacitor-premise-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Fake companion plugin of the field-force example: monitors one circular premise with its own foreground service and audits every LocationTracking record and event natively.",
+  "main": "dist/plugin.js",
+  "unpkg": "dist/plugin.js",
+  "module": "dist/esm/index.js",
+  "types": "dist/esm/index.d.ts",
+  "files": [
+    "android/src/main/",
+    "android/build.gradle",
+    "dist/"
+  ],
+  "license": "UNLICENSED",
+  "peerDependencies": {
+    "@capacitor/core": ">=8.0.0",
+    "@bricks-soft/capacitor-location-tracking": "*"
+  },
+  "capacitor": {
+    "android": {
+      "src": "android"
+    }
+  }
+}

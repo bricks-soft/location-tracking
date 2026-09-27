@@ -46,6 +46,7 @@ function expectedDefaults() {
       params: {},
       autoSync: true,
       autoSyncThreshold: 0,
+      syncInterval: 0,
       batchSync: false,
       maxBatchSize: 100,
       disableAutoSyncOnCellular: false,
@@ -217,7 +218,7 @@ test('setConfig applies the Android clamps', async () => {
     config: {
       heartbeat: { minInterval: 10, maxInterval: 30 },
       activity: { minimumActivityRecognitionConfidence: 150 },
-      http: { maxBatchSize: 0 },
+      http: { maxBatchSize: 0, syncInterval: -30 },
       notification: {
         actions: [1, 2, 3, 4].map((n) => ({ id: `a${n}`, label: `A${n}` })),
       },
@@ -227,6 +228,7 @@ test('setConfig applies the Android clamps', async () => {
   assert.equal(state.config.heartbeat.maxInterval, 60);
   assert.equal(state.config.activity.minimumActivityRecognitionConfidence, 100);
   assert.equal(state.config.http.maxBatchSize, 1);
+  assert.equal(state.config.http.syncInterval, 0);
   assert.deepEqual(
     state.config.notification.actions.map((a) => a.id),
     ['a1', 'a2', 'a3'],

@@ -83,7 +83,7 @@ class RecordJsonTest {
             assertTrue("$key present", coords.has(key))
             assertTrue("$key null", coords.isNull(key))
         }
-        for (key in listOf("extras", "geofence", "provider", "reason")) assertFalse(key, json.has(key))
+        for (key in listOf("extras", "geofence", "provider", "reason", "heartbeat")) assertFalse(key, json.has(key))
     }
 
     @Test
@@ -124,6 +124,39 @@ class RecordJsonTest {
     }
 
     @Test
+    fun `heartbeat record carries its scheduling metadata`() {
+        val meta = HeartbeatMeta(
+            strategy = HeartbeatStrategy.IDLE_PACED,
+            minInterval = 180,
+            maxInterval = 300,
+            nextAt = 1_790_418_330_456L, // 2026-09-26T10:25:30.456Z
+            batteryExempt = false,
+            deviceIdle = true,
+        )
+        val record = Fixtures.record(event = RecordEvent.HEARTBEAT, isMoving = false, heartbeat = meta)
+
+        val json = RecordJson.toJson(record, sentAt)
+
+        assertJsonEquals(
+            """
+            {"strategy":"idle_paced","min_interval":180,"max_interval":300,"next_at":"2026-09-26T10:25:30.456Z",
+             "battery_exempt":false,"device_idle":true}
+            """,
+            json.getJSONObject("heartbeat"),
+        )
+        val unknownNext = RecordJson.toJson(record.copy(heartbeat = meta.copy(nextAt = null)))
+        assertTrue(unknownNext.getJSONObject("heartbeat").isNull("next_at"))
+    }
+
+    @Test
+    fun `heartbeat metadata with an unknown strategy is dropped when parsing`() {
+        val json = RecordJson.toJson(Fixtures.record(event = RecordEvent.HEARTBEAT))
+            .put("heartbeat", JSONObject().put("strategy", "warp_drive").put("min_interval", 60))
+
+        assertEquals(null, RecordJson.fromJson(json).heartbeat)
+    }
+
+    @Test
     fun `tracking_start carries its reason`() {
         val json = RecordJson.toJson(Fixtures.record(event = RecordEvent.TRACKING_START, reason = "boot"))
 
@@ -161,6 +194,14 @@ class RecordJsonTest {
             Fixtures.record(extras = """{"driver_id":7}"""),
             Fixtures.record(location = Fixtures.location(isMock = true, altitude = null, heading = null)),
             Fixtures.record(uuid = "hb", event = RecordEvent.HEARTBEAT, location = null, backend = null),
+            Fixtures.record(
+                event = RecordEvent.HEARTBEAT,
+                heartbeat = HeartbeatMeta(HeartbeatStrategy.EXACT, 60, 120, 1_790_417_790_456L, true, false),
+            ),
+            Fixtures.record(
+                event = RecordEvent.HEARTBEAT,
+                heartbeat = HeartbeatMeta(HeartbeatStrategy.LISTENER_WITH_BACKUP, 180, 300, null, false, true),
+            ),
             Fixtures.record(event = RecordEvent.TRACKING_STOP, reason = "stop_after_elapsed"),
             Fixtures.record(event = RecordEvent.PROVIDERCHANGE, provider = Fixtures.providerState(enabled = false)),
             Fixtures.record(

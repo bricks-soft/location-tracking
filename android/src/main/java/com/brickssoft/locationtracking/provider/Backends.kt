@@ -124,6 +124,23 @@ interface GeofenceTransitionSink {
     suspend fun onGeofenceTransitions(transitions: List<OsGeofenceTransition>)
 }
 
+/**
+ * Implemented by the TrackingEngine (round 2, stationary GPS-off mode). While STATIONARY the engine registers one OS
+ * geofence with id [com.brickssoft.locationtracking.core.Constants.STATIONARY_REGION_ID] directly with
+ * `providers.geofence()`. The GeofenceManager forwards every transition with that id here, and never stores, records
+ * or emits it.
+ */
+interface StationaryRegionSink {
+    suspend fun onStationaryRegionTransition(transition: OsGeofenceTransition)
+
+    companion object {
+        /** Ignores every transition (tests and callers without an engine). */
+        val NONE: StationaryRegionSink = object : StationaryRegionSink {
+            override suspend fun onStationaryRegionTransition(transition: OsGeofenceTransition) = Unit
+        }
+    }
+}
+
 /** Fully qualified class names used for reflective loading. Strings only: never reference SDK types here. */
 object ProviderBundles {
     const val GMS_BUNDLE = "com.brickssoft.locationtracking.provider.gms.GmsProviderBundle"

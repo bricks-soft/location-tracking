@@ -1036,6 +1036,7 @@ internal class FullStackIntegrationTest : FullStackTestBase() {
         override val configStore get() = p.configStore
         override val events get() = p.events
         override val dispatchers get() = p.dispatchers
+        override val recordHooks get() = p.recordHooks
     }
 
     private suspend fun assertRejects(code: ErrorCode, block: suspend () -> Unit) {

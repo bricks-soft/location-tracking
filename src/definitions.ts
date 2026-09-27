@@ -194,6 +194,11 @@ export interface HttpConfig {
    * @default 0
    */
   autoSyncThreshold?: number;
+  /**
+   * s; upload normal records once the oldest queued one is this old; 0 = off
+   * @default 0
+   */
+  syncInterval?: number;
   /** @default false */
   batchSync?: boolean;
   /** @default 100 */
@@ -379,6 +384,23 @@ export interface Location {
    * tracking_stop: stop|stop_on_stationary|stop_after_elapsed|terminate|permission_denied|service_start_failed|reboot|package_replaced
    */
   reason?: string;
+  /** event 'heartbeat' only, optional: how the heartbeat is scheduled */
+  heartbeat?: HeartbeatMeta;
+}
+
+/** Scheduling metadata of a `heartbeat` record (snake_case = wire format). */
+export interface HeartbeatMeta {
+  strategy: 'exact' | 'listener_with_backup' | 'idle_paced';
+  /** heartbeat.minInterval (s) when the heartbeat was created */
+  min_interval: number;
+  /** heartbeat.maxInterval (s) when the heartbeat was created */
+  max_interval: number;
+  /** when the next heartbeat is expected (ISO-8601 UTC ms); null if unknown */
+  next_at: string | null;
+  /** the app is exempt from battery optimization */
+  battery_exempt: boolean;
+  /** the device was in deep Doze */
+  device_idle: boolean;
 }
 
 export type LocationRecord = Location;

@@ -21,6 +21,7 @@ import com.brickssoft.locationtracking.provider.GeofenceBackend
 import com.brickssoft.locationtracking.provider.OsGeofence
 import com.brickssoft.locationtracking.provider.OsGeofenceTransition
 import com.brickssoft.locationtracking.provider.ProviderFactory
+import com.brickssoft.locationtracking.provider.StationaryRegionSink
 import com.brickssoft.locationtracking.record.RecordSink
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -68,6 +69,9 @@ class DefaultGeofenceManager(
     private val events: EventBus,
     private val clock: Clock,
     private val scope: CoroutineScope,
+    // Unit 2 routes STATIONARY_REGION_ID transitions here (never stored, recorded or emitted).
+    @Suppress("unused")
+    private val stationarySink: Lazy<StationaryRegionSink> = lazyOf(StationaryRegionSink.NONE),
 ) : GeofenceManager {
     private class Entry(val spec: GeofenceSpec, var runtime: GeofenceRuntime) {
         /** Circle: the OS reported (or a fix confirmed) the state in this process; restored state may be stale. */

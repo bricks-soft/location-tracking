@@ -34,7 +34,7 @@ class ConfigValidatorTest {
             geolocation = GeolocationConfig(distanceFilter = 0.0, stationaryRadius = 1.0, locationTimeout = 1),
             activity = ActivityConfig(minimumActivityRecognitionConfidence = 100),
             heartbeat = HeartbeatConfig(minInterval = 60, maxInterval = 60),
-            http = HttpConfig(maxBatchSize = 1, autoSyncThreshold = 0, timeout = 1),
+            http = HttpConfig(maxBatchSize = 1, autoSyncThreshold = 0, syncInterval = 0, timeout = 1),
             persistence = PersistenceConfig(maxDaysToPersist = 1, maxRecordsToPersist = -1),
             notification = NotificationConfig(
                 actions = List(3) { NotificationActionButton("a$it", "A$it") },
@@ -79,7 +79,7 @@ class ConfigValidatorTest {
     fun `distances, counts and days are clamped to their minimums`() {
         val input = Config(
             geolocation = GeolocationConfig(distanceFilter = -1.0, stationaryRadius = 0.5),
-            http = HttpConfig(maxBatchSize = 0, autoSyncThreshold = -3),
+            http = HttpConfig(maxBatchSize = 0, autoSyncThreshold = -3, syncInterval = -60),
             persistence = PersistenceConfig(maxDaysToPersist = 0, maxRecordsToPersist = -5),
             logger = LoggerConfig(logMaxDays = -2),
         )
@@ -90,10 +90,11 @@ class ConfigValidatorTest {
         assertEquals(1.0, result.geolocation.stationaryRadius, 0.0)
         assertEquals(1, result.http.maxBatchSize)
         assertEquals(0, result.http.autoSyncThreshold)
+        assertEquals(0, result.http.syncInterval)
         assertEquals(1, result.persistence.maxDaysToPersist)
         assertEquals(-1, result.persistence.maxRecordsToPersist)
         assertEquals(1, result.logger.logMaxDays)
-        assertEquals(7, warnings.size)
+        assertEquals(8, warnings.size)
     }
 
     @Test

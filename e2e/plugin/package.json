@@ -1,0 +1,19 @@
+{
+  "name": "capacitor-location-tracking-e2e-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AVD end-to-end suite of @bricks-soft/capacitor-location-tracking, run against the example app (example/).",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p .",
+    "test:e2e": "node --test --test-concurrency=1 \"*.test.ts\"",
+    "dry-run": "E2E_DRY_RUN=1 node --test --test-concurrency=1 \"*.test.ts\""
+  },
+  "dependencies": {
+    "@bricks-soft/e2e-kit": "file:../../testing/e2e-kit"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.4",
+    "typescript": "5.9.3"
+  }
+}

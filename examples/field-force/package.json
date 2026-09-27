@@ -1,0 +1,19 @@
+{
+  "name": "capacitor-location-tracking-field-force-example",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Field-force audit example: auto start at launch, stop at 02:00, live location, and the fake PremiseMonitor companion plugin.",
+  "scripts": {
+    "copy-vendor": "node scripts/copy-vendor.mjs",
+    "sync": "npm run copy-vendor && cap sync android"
+  },
+  "dependencies": {
+    "@bricks-soft/capacitor-location-tracking": "file:../..",
+    "@bricks-soft/capacitor-premise-monitor": "file:./plugins/premise-monitor",
+    "@capacitor/android": "8.5.2",
+    "@capacitor/core": "8.5.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.2"
+  }
+}

@@ -1,4 +1,5 @@
 apply plugin: 'com.android.application'
+apply plugin: 'kotlin-android'
 
 android {
     namespace = "com.brickssoft.locationtracking.example"
@@ -16,12 +17,29 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    // Round 2: every debug build (local and CI) is signed with the shared testing/debug.keystore, so
+    // `adb install -r` of a CI-built APK over a locally built one (and vice versa) keeps the app's data.
+    signingConfigs {
+        debug {
+            storeFile rootProject.file('../../testing/debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
     buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }
+}
+
+kotlin {
+    jvmToolchain(21)
 }
 
 repositories {

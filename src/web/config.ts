@@ -64,6 +64,7 @@ export function defaultConfig(): Config {
       params: {},
       autoSync: true,
       autoSyncThreshold: 0,
+      syncInterval: 0,
       batchSync: false,
       maxBatchSize: 100,
       disableAutoSyncOnCellular: false,
@@ -225,6 +226,9 @@ function clamp(config: Config): void {
   const http = config.http;
   if (http && typeof http.maxBatchSize === 'number' && http.maxBatchSize < 1) {
     http.maxBatchSize = 1;
+  }
+  if (http && typeof http.syncInterval === 'number' && http.syncInterval < 0) {
+    http.syncInterval = 0;
   }
   const notification = config.notification;
   if (notification && Array.isArray(notification.actions) && notification.actions.length > 3) {

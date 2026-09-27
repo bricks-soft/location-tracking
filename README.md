@@ -397,6 +397,7 @@ numbers that are not finite become the default.
 | `params` | object | `{}` | Merged into the **root** of every request body. Keys that the body already has are not overwritten. Ignored for a batch with `rootProperty: '.'`. |
 | `autoSync` | boolean | `true` | Uploads normal records automatically. Priority records (heartbeat and audit records) are always uploaded immediately, and take queued normal records along. |
 | `autoSyncThreshold` | number (≥ 0) | `0` | Uploads normal records when the queue holds at least this many records. `0` uploads every record. |
+| `syncInterval` | number (s, ≥ 0) | `0` | Uploads normal records once the oldest queued one is this old, so the server's live location is at most this stale (the field-force setup uses `300`). `0` turns it off; priority records are not affected. |
 | `batchSync` | boolean | `false` | Sends several records per request, as an array, oldest first. |
 | `maxBatchSize` | number (≥ 1) | `100` | Maximum records per batch request. |
 | `disableAutoSyncOnCellular` | boolean | `false` | On cellular, uploads only priority records. `sync()` ignores it. |
@@ -1626,22 +1627,23 @@ removeAllListeners() => Promise<void>
 
 #### HttpConfig
 
-| Prop                            | Type                                                                        | Description                                               | Default                 |
-| ------------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------- | ----------------------- |
-| **`url`**                       | <code>string \| null</code>                                                 | No url =&gt; nothing is uploaded (records stay queued).   |                         |
-| **`method`**                    | <code><a href="#httpmethod">HttpMethod</a></code>                           |                                                           | <code>'POST'</code>     |
-| **`headers`**                   | <code><a href="#record">Record</a>&lt;string, string&gt;</code>             |                                                           | <code>{}</code>         |
-| **`params`**                    | <code><a href="#record">Record</a>&lt;string, unknown&gt;</code>            | merged into the ROOT of every request body                | <code>{}</code>         |
-| **`autoSync`**                  | <code>boolean</code>                                                        |                                                           | <code>true</code>       |
-| **`autoSyncThreshold`**         | <code>number</code>                                                         | upload when queue &gt;= threshold; 0 = every record       | <code>0</code>          |
-| **`batchSync`**                 | <code>boolean</code>                                                        |                                                           | <code>false</code>      |
-| **`maxBatchSize`**              | <code>number</code>                                                         |                                                           | <code>100</code>        |
-| **`disableAutoSyncOnCellular`** | <code>boolean</code>                                                        |                                                           | <code>false</code>      |
-| **`rootProperty`**              | <code>string</code>                                                         | '.' = no wrapping                                         | <code>'location'</code> |
-| **`locationTemplate`**          | <code>string \| null</code>                                                 | JSON text with `&lt;%= name %&gt;` placeholders           |                         |
-| **`geofenceTemplate`**          | <code>string \| null</code>                                                 | used for event 'geofence'; falls back to locationTemplate |                         |
-| **`timeout`**                   | <code>number</code>                                                         | ms                                                        | <code>60000</code>      |
-| **`authorization`**             | <code><a href="#authorizationconfig">AuthorizationConfig</a> \| null</code> |                                                           |                         |
+| Prop                            | Type                                                                        | Description                                                              | Default                 |
+| ------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ----------------------- |
+| **`url`**                       | <code>string \| null</code>                                                 | No url =&gt; nothing is uploaded (records stay queued).                  |                         |
+| **`method`**                    | <code><a href="#httpmethod">HttpMethod</a></code>                           |                                                                          | <code>'POST'</code>     |
+| **`headers`**                   | <code><a href="#record">Record</a>&lt;string, string&gt;</code>             |                                                                          | <code>{}</code>         |
+| **`params`**                    | <code><a href="#record">Record</a>&lt;string, unknown&gt;</code>            | merged into the ROOT of every request body                               | <code>{}</code>         |
+| **`autoSync`**                  | <code>boolean</code>                                                        |                                                                          | <code>true</code>       |
+| **`autoSyncThreshold`**         | <code>number</code>                                                         | upload when queue &gt;= threshold; 0 = every record                      | <code>0</code>          |
+| **`syncInterval`**              | <code>number</code>                                                         | s; upload normal records once the oldest queued one is this old; 0 = off | <code>0</code>          |
+| **`batchSync`**                 | <code>boolean</code>                                                        |                                                                          | <code>false</code>      |
+| **`maxBatchSize`**              | <code>number</code>                                                         |                                                                          | <code>100</code>        |
+| **`disableAutoSyncOnCellular`** | <code>boolean</code>                                                        |                                                                          | <code>false</code>      |
+| **`rootProperty`**              | <code>string</code>                                                         | '.' = no wrapping                                                        | <code>'location'</code> |
+| **`locationTemplate`**          | <code>string \| null</code>                                                 | JSON text with `&lt;%= name %&gt;` placeholders                          |                         |
+| **`geofenceTemplate`**          | <code>string \| null</code>                                                 | used for event 'geofence'; falls back to locationTemplate                |                         |
+| **`timeout`**                   | <code>number</code>                                                         | ms                                                                       | <code>60000</code>      |
+| **`authorization`**             | <code><a href="#authorizationconfig">AuthorizationConfig</a> \| null</code> |                                                                          |                         |
 
 
 #### AuthorizationConfig
@@ -1753,6 +1755,7 @@ removeAllListeners() => Promise<void>
 | **`geofence`**            | <code>{ identifier: string; action: <a href="#geofenceaction">GeofenceAction</a>; extras?: <a href="#record">Record</a>&lt;string, unknown&gt;; }</code> | event 'geofence' only                                                                                                                                                                                              |
 | **`provider`**            | <code><a href="#providerstate">ProviderState</a></code>                                                                                                  | event 'providerchange' only                                                                                                                                                                                        |
 | **`reason`**              | <code>string</code>                                                                                                                                      | tracking_start: start\|start_geofences\|boot\|restore\|package_replaced; tracking_stop: stop\|stop_on_stationary\|stop_after_elapsed\|terminate\|permission_denied\|service_start_failed\|reboot\|package_replaced |
+| **`heartbeat`**           | <code><a href="#heartbeatmeta">HeartbeatMeta</a></code>                                                                                                  | event 'heartbeat' only, optional: how the heartbeat is scheduled                                                                                                                                                   |
 
 
 #### Coords
@@ -1780,6 +1783,20 @@ removeAllListeners() => Promise<void>
 | **`permission`** | <code>'always' \| 'when_in_use' \| 'denied'</code>          |
 | **`accuracy`**   | <code>'precise' \| 'approximate' \| 'none'</code>           |
 | **`backend`**    | <code><a href="#locationbackend">LocationBackend</a></code> |
+
+
+#### HeartbeatMeta
+
+Scheduling metadata of a `heartbeat` record (snake_case = wire format).
+
+| Prop                 | Type                                                           | Description                                                            |
+| -------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| **`strategy`**       | <code>'exact' \| 'listener_with_backup' \| 'idle_paced'</code> |                                                                        |
+| **`min_interval`**   | <code>number</code>                                            | heartbeat.minInterval (s) when the heartbeat was created               |
+| **`max_interval`**   | <code>number</code>                                            | heartbeat.maxInterval (s) when the heartbeat was created               |
+| **`next_at`**        | <code>string \| null</code>                                    | when the next heartbeat is expected (ISO-8601 UTC ms); null if unknown |
+| **`battery_exempt`** | <code>boolean</code>                                           | the app is exempt from battery optimization                            |
+| **`device_idle`**    | <code>boolean</code>                                           | the device was in deep Doze                                            |
 
 
 #### CurrentPositionOptions
@@ -2044,7 +2061,9 @@ the computed enclosing circle.
 
 Construct a type with a set of properties K of type T
 
-<code>{ [P in K]: T; }</code>
+<code>{
+ [P in K]: T;
+ }</code>
 
 
 #### NotificationPriority
@@ -2098,14 +2117,18 @@ Rejection `code` of every failed promise.
 
 From T, pick a set of properties whose keys are in the union K
 
-<code>{ [P in K]: T[P]; }</code>
+<code>{
+ [P in K]: T[P];
+ }</code>
 
 
 #### Partial
 
 Make all properties in T optional
 
-<code>{ [P in keyof T]?: T[P]; }</code>
+<code>{
+ [P in keyof T]?: T[P];
+ }</code>
 
 
 #### HeartbeatStrategy

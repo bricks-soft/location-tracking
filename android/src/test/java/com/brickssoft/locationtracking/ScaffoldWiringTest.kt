@@ -35,12 +35,13 @@ class ScaffoldWiringTest {
             c.clock, c.dispatchers, c.scope, c.events, c.http, c.logStore, c.configStore, c.permissions,
             c.deviceSettings, c.providers, c.device, c.deviceInfo, c.locationStore, c.geofenceStore, c.processor,
             c.odometer, c.recordFactory, c.syncer, c.heartbeat, c.recordSink, c.geofences, c.positions,
-            c.serviceController, c.engine,
+            c.serviceController, c.engine, c.recordHooks, c.stationarySink,
         )
         all.forEach { assertNotNull(it) }
         assertSame(c.logStore, Logger.sink)
         assertNotNull(c.engine.state())
         assertNotNull(c.providers.kind)
+        assertSame(c.engine, c.stationarySink)
     }
 
     @Test

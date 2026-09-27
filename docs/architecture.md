@@ -4,6 +4,8 @@ This document is the contract between the scaffold and all work units. The scaff
 
 **Status: as built (0.1.0).** All units are merged, and this document was updated after integration to describe the contracts as implemented, including the accepted contract change requests (`TrackingEngine.onServiceStartFailed` and the `service_start_failed` reason, geofence re-registration on provider changes, the web stub's extra methods, the R8 keep rules and the docgen config). User-facing behavior is documented in `README.md` and `docs/*.md`; this document keeps only what the components promise each other.
 
+**Round 2** (field-force audit: companion native API, stationary GPS-off mode, `http.syncInterval`, heartbeat metadata, AVD end-to-end tests) is specified in [docs/e2e/architecture.md](e2e/architecture.md), which overrides this document where they differ.
+
 ## Product decisions
 
 - This is a clean-room implementation with the feature set of `transistorsoft/capacitor-background-geolocation`. Its native engine is closed-source and commercial, and **none of it is copied**.

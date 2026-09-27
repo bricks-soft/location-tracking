@@ -3,6 +3,7 @@ package com.brickssoft.locationtracking.record
 import com.brickssoft.locationtracking.config.ConfigStore
 import com.brickssoft.locationtracking.core.EventBus
 import com.brickssoft.locationtracking.core.Logger
+import com.brickssoft.locationtracking.core.RecordHooks
 import com.brickssoft.locationtracking.core.TrackingEvent
 import com.brickssoft.locationtracking.data.LocationStore
 import com.brickssoft.locationtracking.heartbeat.HeartbeatScheduler
@@ -29,6 +30,8 @@ interface RecordSink {
  *
  * If the insert fails, the failure is logged, steps 2-4 still run (live listeners still get the record) and
  * step 5 is skipped because the record is not queued.
+ *
+ * Round 2: [hooks] receives every record right after step 1 (see [RecordHooks]); unit 5 adds that call.
  */
 class DefaultRecordSink(
     private val store: LocationStore,
@@ -36,6 +39,8 @@ class DefaultRecordSink(
     private val heartbeat: HeartbeatScheduler,
     private val syncer: HttpSyncer,
     private val events: EventBus,
+    @Suppress("unused") // Unit 5 (companion native API) calls hooks.dispatch(record) right after the insert.
+    private val hooks: RecordHooks = RecordHooks(),
 ) : RecordSink {
     override suspend fun submit(record: Record): Record {
         val stored = try {

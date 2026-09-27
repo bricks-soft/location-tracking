@@ -18,6 +18,13 @@ object Constants {
     /** Maximum number of registered geofences. */
     const val MAX_GEOFENCES = 100
 
+    /**
+     * Id of the engine's own OS geofence while STATIONARY (GPS off): a circle around the stationary anchor whose EXIT
+     * wakes the engine. It is never stored, never counted against [MAX_GEOFENCES], never recorded and never emitted;
+     * `DefaultGeofenceManager` routes its transitions to `StationaryRegionSink` (architecture round 2, §3).
+     */
+    const val STATIONARY_REGION_ID = "__lt_stationary__"
+
     /** Maximum number of notification action buttons. */
     const val MAX_NOTIFICATION_ACTIONS = 3
 

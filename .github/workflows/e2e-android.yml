@@ -1,0 +1,201 @@
+# AVD end-to-end tests (docs/e2e/architecture.md §9 and §11) on GitHub-hosted Ubuntu runners with KVM.
+#
+# build-apks builds the two debug APKs once; every emulator job downloads them (artifact `e2e-apks`) and runs one suite
+# through e2e-android-run.yml. Each emulator job uploads `e2e-artifacts-<label>` (always, also on success).
+#
+#   plugin              plugin suite (e2e/plugin), API 34 google_apis: every non-long scenario. The main job.
+#   plugin-api-levels   plugin subset on API 29 and API 35 google_apis (--test-name-pattern, see the matrix).
+#   plugin-no-gms       P-P08 on an API 34 `default` image (no Google Play services).
+#   field-force         field-force suite (examples/field-force/e2e), API 34 google_apis.
+#   long                scenarios that require `long` (E2E_INCLUDE_LONG=1), both suites, API 34; only on the nightly
+#                       schedule and on workflow_dispatch.
+name: E2E (Android emulator)
+
+on:
+  pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+  push:
+    branches: [master]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+  workflow_dispatch:
+    inputs:
+      test-name-pattern:
+        description: 'Regular expression for node --test-name-pattern in the "plugin" and "field-force" jobs, e.g. P-(L01|H05)\b|F-0[17]\b. Empty = the whole suite.'
+        type: string
+        default: ''
+      include-long:
+        description: Also run the "long" job (scenarios that require long, E2E_INCLUDE_LONG=1; up to 5 hours per suite).
+        type: boolean
+        default: false
+  schedule:
+    # Nightly at 01:23 UTC. Scheduled runs use the workflow file of the default branch.
+    - cron: '23 1 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push to a pull request cancels the older run of that pull request. Push, schedule and manual runs have their
+  # own groups and are never cancelled.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-apks:
+    name: Build debug APKs
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          check-latest: true
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            example/package-lock.json
+            examples/field-force/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.14.3
+
+      - name: Use the preinstalled Android SDK
+        run: echo "ANDROID_HOME=${ANDROID_HOME:-$ANDROID_SDK_ROOT}" >> "$GITHUB_ENV"
+
+      - name: Build the plugin (TypeScript)
+        run: |
+          npm ci
+          npm run build
+
+      # GMS + HMS as in example/android/gradle.properties: on an emulator without HMS Core, `auto` selects GMS, and on
+      # the no-GMS image (P-P08) it falls through GMS and HMS to the Android backend.
+      - name: Build example app (debug, GMS + HMS)
+        working-directory: example
+        run: |
+          npm ci
+          npm run sync
+          cd android
+          gradle assembleDebug -PlocationTracking.providers=gms,hms --console=plain
+
+      - name: Build field-force app (debug, GMS)
+        working-directory: examples/field-force
+        run: |
+          npm ci
+          npm run sync
+          cd android
+          gradle assembleDebug --console=plain
+
+      - name: Collect APKs
+        run: |
+          mkdir -p apks
+          cp example/android/app/build/outputs/apk/debug/app-debug.apk apks/plugin-example-debug.apk
+          cp examples/field-force/android/app/build/outputs/apk/debug/app-debug.apk apks/field-force-debug.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: e2e-apks
+          path: apks/
+          retention-days: 7
+          if-no-files-found: error
+
+  plugin:
+    name: Plugin suite (API 34)
+    needs: build-apks
+    uses: ./.github/workflows/e2e-android-run.yml
+    with:
+      label: plugin-api34
+      api-level: 34
+      target: google_apis
+      suite-dir: e2e/plugin
+      apk: plugin-example-debug.apk
+      test-name-pattern: ${{ inputs.test-name-pattern || '' }}
+      timeout-minutes: 180
+
+  # The scenarios whose behavior depends on the API level. The kit skips a scenario whose `requires.api` the device
+  # does not meet, so the same ids are safe on both levels; the lists differ to keep each run short.
+  # API 29: FGS start, kill -9 and alarm restore, boot, stationary heartbeat, GPS on when moving, Doze exempt,
+  #         background location and ACTIVITY_RECOGNITION revocation (both new in API 29), location off/on, geofences.
+  # API 35: the same core plus POST_NOTIFICATIONS (33+), background FGS start limits (31+), busy main thread around a
+  #         cold service start, approximate location (31+).
+  plugin-api-levels:
+    name: Plugin subset (API ${{ matrix.api-level }})
+    needs: build-apks
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - api-level: 29
+            pattern: 'P-(L01|L03|L08|L12|H01|H03|H05|P03|P04|P06|P10)\b'
+          - api-level: 35
+            pattern: 'P-(L01|L03|L06|L08|L11|L12|L13|H01|H03|H05|P01|P05|P06|P10)\b'
+    uses: ./.github/workflows/e2e-android-run.yml
+    with:
+      label: plugin-api${{ matrix.api-level }}
+      api-level: ${{ matrix.api-level }}
+      target: google_apis
+      suite-dir: e2e/plugin
+      apk: plugin-example-debug.apk
+      test-name-pattern: ${{ matrix.pattern }}
+      timeout-minutes: 120
+
+  plugin-no-gms:
+    name: Plugin P-P08 (API 34, no Google Play services)
+    needs: build-apks
+    uses: ./.github/workflows/e2e-android-run.yml
+    with:
+      label: plugin-api34-no-gms
+      api-level: 34
+      target: default
+      suite-dir: e2e/plugin
+      apk: plugin-example-debug.apk
+      test-name-pattern: 'P-P08\b'
+      timeout-minutes: 45
+
+  field-force:
+    name: Field-force suite (API 34)
+    needs: build-apks
+    uses: ./.github/workflows/e2e-android-run.yml
+    with:
+      label: field-force-api34
+      api-level: 34
+      target: google_apis
+      suite-dir: examples/field-force/e2e
+      apk: field-force-debug.apk
+      test-name-pattern: ${{ inputs.test-name-pattern || '' }}
+      timeout-minutes: 150
+
+  long:
+    name: Long scenarios (${{ matrix.label }})
+    needs: build-apks
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.include-long)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: long-plugin-api34
+            suite-dir: e2e/plugin
+            apk: plugin-example-debug.apk
+          - label: long-field-force-api34
+            suite-dir: examples/field-force/e2e
+            apk: field-force-debug.apk
+    uses: ./.github/workflows/e2e-android-run.yml
+    with:
+      label: ${{ matrix.label }}
+      api-level: 34
+      target: google_apis
+      suite-dir: ${{ matrix.suite-dir }}
+      apk: ${{ matrix.apk }}
+      only-long: true
+      timeout-minutes: 300

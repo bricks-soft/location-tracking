@@ -1,0 +1,134 @@
+# One AVD end-to-end run: boots one emulator, installs one debug APK and runs one suite with .github/scripts/run-e2e.sh.
+# Called only by e2e-android.yml (workflow_call); it downloads the `e2e-apks` artifact of the calling run.
+name: E2E emulator run
+
+on:
+  workflow_call:
+    inputs:
+      label:
+        description: Job name and suffix of the uploaded artifact (e2e-artifacts-<label>); unique per workflow run.
+        type: string
+        required: true
+      api-level:
+        description: Android API level of the system image.
+        type: number
+        required: true
+      target:
+        description: System image target. google_apis = Google Play services and `adb root`; default = no Google Play services.
+        type: string
+        default: google_apis
+      suite-dir:
+        description: Suite directory (e2e/plugin or examples/field-force/e2e).
+        type: string
+        required: true
+      apk:
+        description: File name of the APK inside the e2e-apks artifact.
+        type: string
+        required: true
+      test-name-pattern:
+        description: Regular expression for node --test-name-pattern (test names are "<id> <title>"); empty = all.
+        type: string
+        default: ''
+      only-long:
+        description: Run only the scenarios that require `long`, with E2E_INCLUDE_LONG=1.
+        type: boolean
+        default: false
+      timeout-minutes:
+        description: Job timeout.
+        type: number
+        default: 120
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    name: ${{ inputs.label }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    env:
+      E2E_SUITE_DIR: ${{ inputs.suite-dir }}
+      E2E_APK: ${{ github.workspace }}/apks/${{ inputs.apk }}
+      E2E_ARTIFACTS_DIR: ${{ github.workspace }}/e2e-artifacts
+      E2E_TEST_NAME_PATTERN: ${{ inputs.test-name-pattern }}
+      E2E_ONLY_LONG: ${{ inputs.only-long && '1' || '' }}
+      # reactivecircus/android-emulator-runner starts the emulator on its default port 5554.
+      E2E_SERIAL: emulator-5554
+      # The suites start the mock back office on this host port; the emulator reaches it at 10.0.2.2.
+      E2E_BACKEND_PORT: '8787'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - uses: actions/setup-node@v4
+        with:
+          # The kit and the suites run their .ts files directly (type stripping needs Node >= 22.18).
+          node-version: 22
+          check-latest: true
+          cache: npm
+          cache-dependency-path: |
+            testing/e2e-kit/package-lock.json
+            ${{ inputs.suite-dir }}/package-lock.json
+
+      # sdkmanager and avdmanager (used by the emulator runner) need a JDK.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Download the debug APKs
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-apks
+          path: apks
+
+      - name: Install the e2e kit
+        working-directory: testing/e2e-kit
+        run: npm ci
+
+      - name: Install the suite
+        working-directory: ${{ inputs.suite-dir }}
+        run: npm ci
+
+      # A long-only run of a suite without long scenarios would boot an emulator for nothing.
+      - name: Find the long scenarios
+        id: long
+        if: inputs.only-long
+        run: |
+          ids="$(bash .github/scripts/run-e2e.sh --list-long)"
+          count="$(printf '%s' "$ids" | grep -c . || true)"
+          echo "Scenarios that require long in $E2E_SUITE_DIR: ${count} ${ids//$'\n'/ }"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+
+      # Cold boot every run (-no-snapshot) and no AVD snapshot cache: an AVD with a boot snapshot is about 2-4 GB
+      # (disk image plus RAM snapshot), and the five images of e2e-android.yml would fill most of the repository's
+      # 10 GB Actions cache and evict the npm and Gradle caches. A cold boot also starts every run from the same
+      # device state. `script` runs every line as a separate `sh -c` command, so it calls one committed script.
+      - name: Run the suite on the emulator (API ${{ inputs.api-level }}, ${{ inputs.target }})
+        if: ${{ !inputs.only-long || steps.long.outputs.count != '0' }}
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ inputs.api-level }}
+          target: ${{ inputs.target }}
+          arch: x86_64
+          ram-size: 3072M
+          emulator-boot-timeout: 900
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -camera-back none -camera-front none
+          disable-animations: true
+          script: bash .github/scripts/run-e2e.sh
+
+      # Always: the kit's per-scenario failure artifacts (<id>/: logcat, dumpsys, plugin logs, backoffice.log,
+      # records.json, premise.json, screenshot) and _run/ (logcat of the whole run, test output, device info).
+      - name: Upload e2e artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts-${{ inputs.label }}
+          path: e2e-artifacts/
+          retention-days: 14
+          if-no-files-found: warn

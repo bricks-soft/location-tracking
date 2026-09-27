@@ -58,10 +58,54 @@ internal class NotificationFactory(context: Context) {
     /** Ensures the channel, then builds the notification. */
     fun build(config: NotificationConfig): Notification {
         ensureChannel(config)
+        return compose(config)
+    }
+
+    /**
+     * The notification for the first `startForeground` of a service command. It is built without loading the config
+     * (no config store, no SharedPreferences, no JSON), so it is ready within milliseconds on a cold start:
+     * - [spec] is the notification fields that the sender copied into the start command (channel id and name,
+     *   priority, title, text, small icon, color; no action buttons, no large icon). Its channel is created with the
+     *   configured importance only if it does not exist yet (Android fixes a channel's importance at creation, so this
+     *   first creation must use the configured priority); an existing channel is left unchanged.
+     * - Without [spec] (a restart with a null intent), the default channel ([NotificationConfig.DEFAULT_CHANNEL_ID],
+     *   created only if it does not exist), the app label as title, `lt_notification_text` as text and the plugin icon:
+     *   the same content as [build] of `NotificationConfig()`.
+     *
+     * If [spec] cannot be built, the defaults are used. The service replaces this notification with the configured
+     * one (same id) once the config is loaded.
+     */
+    fun buildInitial(spec: NotificationConfig? = null): Initial {
+        if (spec != null) {
+            try {
+                ensureChannelExists(spec)
+                return Initial(spec, compose(spec))
+            } catch (e: Exception) {
+                Logger.e(TAG, "invalid notification fields in the start command; using the defaults", e)
+            }
+        }
+        val defaults = NotificationConfig()
+        ensureChannelExists(defaults)
+        return Initial(defaults, compose(defaults, R.drawable.lt_ic_notification))
+    }
+
+    /** A notification from [buildInitial] and the config whose content it shows. */
+    data class Initial(val config: NotificationConfig, val notification: Notification)
+
+    /** Creates the channel of [config] if it does not exist; an existing channel is not changed. No-op below API 26. */
+    private fun ensureChannelExists(config: NotificationConfig) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        if (NotificationManagerCompat.from(context).getNotificationChannelCompat(channelId(config)) == null) {
+            ensureChannel(config)
+        }
+    }
+
+    /** The notification for [config]; its channel must exist. [smallIcon] skips the icon lookup when given. */
+    private fun compose(config: NotificationConfig, @DrawableRes smallIcon: Int? = null): Notification {
         val builder = NotificationCompat.Builder(context, channelId(config))
             .setContentTitle(title(config))
             .setContentText(text(config))
-            .setSmallIcon(resolveSmallIcon(config.smallIcon))
+            .setSmallIcon(smallIcon ?: resolveSmallIcon(config.smallIcon))
             .setPriority(compatPriorityFor(config.priority))
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setOngoing(true)

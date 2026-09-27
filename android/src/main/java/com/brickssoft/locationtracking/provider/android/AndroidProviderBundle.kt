@@ -1,59 +1,31 @@
-// STUB — owned by Unit 6 (Android fallback + factory). Replace this implementation.
 package com.brickssoft.locationtracking.provider.android
 
 import android.content.Context
-import com.brickssoft.locationtracking.model.DesiredAccuracy
+import android.location.LocationManager
 import com.brickssoft.locationtracking.model.ProviderKind
-import com.brickssoft.locationtracking.model.TrackedLocation
 import com.brickssoft.locationtracking.provider.ActivityBackend
 import com.brickssoft.locationtracking.provider.GeofenceBackend
 import com.brickssoft.locationtracking.provider.LocationBackend
-import com.brickssoft.locationtracking.provider.LocationListener
-import com.brickssoft.locationtracking.provider.LocationRequestSpec
-import com.brickssoft.locationtracking.provider.OsGeofence
 import com.brickssoft.locationtracking.provider.ProviderBundle
 
-/** Created reflectively via its public (Context) constructor. Stub: always available, no-op backends. */
-class AndroidProviderBundle(@Suppress("unused") private val context: Context) : ProviderBundle {
+/**
+ * The platform `LocationManager` backends, the fallback when neither GMS nor HMS is usable. Created reflectively via
+ * its public (Context) constructor. Each backend is created once, on first use.
+ */
+class AndroidProviderBundle(context: Context) : ProviderBundle {
+    private val appContext: Context = context.applicationContext ?: context
     override val kind: ProviderKind = ProviderKind.ANDROID
 
-    override fun isAvailable(): Boolean = true
+    private val location by lazy { AndroidLocationBackend(appContext) }
+    private val activity by lazy { AndroidActivityBackend() }
+    private val geofence by lazy { AndroidGeofenceBackend(appContext) }
 
-    override fun location(): LocationBackend = NoopLocation
+    /** True if the device has a [LocationManager]. */
+    override fun isAvailable(): Boolean = appContext.getSystemService(Context.LOCATION_SERVICE) is LocationManager
 
-    override fun activity(): ActivityBackend = NoopActivity
+    override fun location(): LocationBackend = location
 
-    override fun geofence(): GeofenceBackend = NoopGeofence
+    override fun activity(): ActivityBackend = activity
 
-    private object NoopLocation : LocationBackend {
-        override val kind = ProviderKind.ANDROID
-
-        override fun requestUpdates(spec: LocationRequestSpec, listener: LocationListener) = Unit
-
-        override fun removeUpdates(listener: LocationListener) = Unit
-
-        override suspend fun getLastLocation(): TrackedLocation? = null
-
-        override suspend fun getCurrentLocation(accuracy: DesiredAccuracy, timeoutMs: Long): TrackedLocation? = null
-    }
-
-    private object NoopActivity : ActivityBackend {
-        override val kind = ProviderKind.ANDROID
-        override val isSupported = false
-
-        override fun start(intervalMs: Long): Boolean = false
-
-        override fun stop() = Unit
-    }
-
-    private object NoopGeofence : GeofenceBackend {
-        override val kind = ProviderKind.ANDROID
-        override val supportsDwell = false
-
-        override suspend fun add(regions: List<OsGeofence>) = Unit
-
-        override suspend fun remove(ids: List<String>) = Unit
-
-        override suspend fun removeAll() = Unit
-    }
+    override fun geofence(): GeofenceBackend = geofence
 }

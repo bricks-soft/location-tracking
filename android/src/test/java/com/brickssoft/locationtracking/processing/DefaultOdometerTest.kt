@@ -178,7 +178,7 @@ class DefaultOdometerTest {
     }
 
     @Test
-    fun `a new tracking session starts from its own first fix`() {
+    fun `a new tracking session without a recorded start position starts from its own first fix`() {
         startSession(configStore, startedAt = 1_000L)
         val home = Fixtures.location(accuracy = 5f)
         odometer.onLocation(home)
@@ -195,6 +195,77 @@ class DefaultOdometerTest {
         odometer.onLocation(next)
 
         assertEquals(before + Geo.distance(far, next), odometer.value, 1e-9)
+    }
+
+    @Test
+    fun `a later session in the same process is measured from its start position`() {
+        startSession(configStore, startedAt = 1_000L)
+        val home = Fixtures.location(accuracy = 5f, time = 2_000L)
+        odometer.onLocation(home)
+        odometer.onLocation(Fixtures.moved(home, northMeters = 100.0))
+        val before = odometer.value
+
+        // Stop, travel untracked, start again: the engine records the start position (initial motionchange) as
+        // runtime.lastLocation and feeds the odometer only from the first moving fix on.
+        val start = Fixtures.moved(home, northMeters = 50_000.0, timeDeltaMs = 9_000_000L)
+        configStore.runtimeFlow.value =
+            configStore.runtimeFlow.value.copy(enabled = true, trackingStartedAt = start.time, lastLocation = start)
+        val firstMoving = Fixtures.moved(start, northMeters = 100.0)
+        odometer.onLocation(firstMoving)
+
+        assertEquals(before + Geo.distance(start, firstMoving), odometer.value, 1e-9)
+    }
+
+    @Test
+    fun `a later session is not measured from a last location of the previous session`() {
+        startSession(configStore, startedAt = 1_000L)
+        val home = Fixtures.location(accuracy = 5f, time = 2_000L)
+        odometer.onLocation(home)
+        val lastOfFirst = Fixtures.moved(home, northMeters = 100.0)
+        odometer.onLocation(lastOfFirst)
+        val before = odometer.value
+
+        configStore.runtimeFlow.value =
+            configStore.runtimeFlow.value.copy(enabled = true, trackingStartedAt = 9_000_000L, lastLocation = lastOfFirst)
+        val far = Fixtures.moved(home, northMeters = 50_000.0, timeDeltaMs = 9_500_000L)
+        odometer.onLocation(far)
+
+        assertEquals(before, odometer.value, 0.0)
+    }
+
+    @Test
+    fun `a last location newer than the fix is not an anchor`() {
+        val fix = Fixtures.location(accuracy = 5f, time = 2_000_000L)
+        val newer = Fixtures.moved(fix, northMeters = 300.0, timeDeltaMs = 5_000L)
+        val store = FakeConfigStore(runtime = RuntimeState(enabled = true, trackingStartedAt = 1_000_000L, lastLocation = newer))
+        val o = DefaultOdometer(store)
+
+        o.onLocation(fix)
+        assertEquals(0.0, o.value, 0.0)
+        val next = Fixtures.moved(fix, northMeters = 20.0)
+        o.onLocation(next)
+
+        assertEquals(Geo.distance(fix, next), o.value, 1e-9)
+    }
+
+    @Test
+    fun `reset right after a new session starts is not seeded from a location recorded before the reset`() {
+        startSession(configStore, startedAt = 1_000L)
+        val home = Fixtures.location(accuracy = 5f, time = 2_000L)
+        odometer.onLocation(home)
+        odometer.onLocation(Fixtures.moved(home, northMeters = 100.0))
+
+        val start = Fixtures.moved(home, northMeters = 5_000.0, timeDeltaMs = 9_000_000L)
+        configStore.runtimeFlow.value =
+            configStore.runtimeFlow.value.copy(enabled = true, trackingStartedAt = start.time, lastLocation = start)
+        odometer.reset()
+        val next = Fixtures.moved(start, northMeters = 100.0)
+        odometer.onLocation(next)
+        assertEquals(0.0, odometer.value, 0.0)
+        val after = Fixtures.moved(next, northMeters = 40.0)
+        odometer.onLocation(after)
+
+        assertEquals(Geo.distance(next, after), odometer.value, 1e-9)
     }
 
     @Test
@@ -249,7 +320,7 @@ class DefaultOdometerTest {
     }
 
     @Test
-    fun `restore happens only once per process`() {
+    fun `the anchor is seeded once per session, not on later lastLocation updates`() {
         val last = Fixtures.location(accuracy = 5f, time = 2_000_000L)
         val store = FakeConfigStore(runtime = RuntimeState(enabled = true, trackingStartedAt = 1_000_000L, lastLocation = last))
         val o = DefaultOdometer(store)

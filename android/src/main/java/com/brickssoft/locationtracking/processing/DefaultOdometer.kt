@@ -14,10 +14,15 @@ import com.brickssoft.locationtracking.model.TrackedLocation
  * `geolocation.filter.odometerAccuracyThreshold`; a less accurate fix is skipped and the previous anchor is
  * kept. [reset] also clears the anchor; [set] keeps it.
  *
- * The anchor belongs to one tracking session (`runtime.trackingStartedAt`): a new session starts from its
- * own first fix, so distance travelled while tracking was off is never counted. After a cold process start
- * (e.g. an OEM task killer and `restore`), the first anchor is `runtime.lastLocation` if it was recorded in
- * the current session, so the distance across the restart is kept. Thread-safe.
+ * The anchor belongs to one tracking session (`runtime.trackingStartedAt`), so distance travelled while tracking
+ * was off is never counted. The first fix of a session in this process is measured from `runtime.lastLocation` if
+ * that was recorded in the same session (and is accurate enough and not newer than the fix), otherwise it only
+ * becomes the anchor:
+ * - after `start()`, `lastLocation` is the session's start position (the initial `motionchange`), which the engine
+ *   does not feed to the odometer while stationary, so the leg to the first moving fix is counted in every session;
+ * - after a cold process start (e.g. an OEM task killer and `restore`), it is where the previous process left off.
+ *
+ * [reset] clears the anchor for the rest of the current session. Thread-safe.
  */
 class DefaultOdometer(private val configStore: ConfigStore) : Odometer {
     private val lock = Any()
@@ -25,11 +30,8 @@ class DefaultOdometer(private val configStore: ConfigStore) : Odometer {
     /** The last fix that passed the accuracy gate. In memory only. */
     private var anchor: TrackedLocation? = null
 
-    /** `trackingStartedAt` of the session [anchor] belongs to. */
+    /** `trackingStartedAt` of the session [anchor] belongs to; null until this process's first fix or [reset]. */
     private var anchorSession: Long? = null
-
-    /** False until the first fix or [reset] of this process; after that no restore seeding happens. */
-    private var started = false
 
     override val value: Double get() = configStore.runtime.value.odometer
 
@@ -42,13 +44,10 @@ class DefaultOdometer(private val configStore: ConfigStore) : Odometer {
         synchronized(lock) {
             val runtime = configStore.runtime.value
             val session = runtime.trackingStartedAt
-            if (!started) {
-                started = true
-                anchor = restoredAnchor(runtime, threshold)
-                anchorSession = session
-            }
             if (anchorSession != session) {
-                anchor = null
+                // Every new session is seeded, not only the first fix of the process: a later session used to start
+                // from a null anchor, which dropped the leg from its start position to its first moving fix.
+                anchor = sessionAnchor(runtime, threshold, location)
                 anchorSession = session
             }
             val previous = anchor
@@ -71,8 +70,10 @@ class DefaultOdometer(private val configStore: ConfigStore) : Odometer {
 
     override fun reset() {
         synchronized(lock) {
-            started = true
             anchor = null
+            // The cleared anchor belongs to the current session: its next fix is not seeded from a lastLocation that
+            // may predate the reset.
+            anchorSession = configStore.runtime.value.trackingStartedAt
             configStore.updateRuntime { it.copy(odometer = 0.0) }
         }
     }
@@ -80,12 +81,15 @@ class DefaultOdometer(private val configStore: ConfigStore) : Odometer {
     private fun passes(location: TrackedLocation, threshold: Double): Boolean =
         location.accuracy.toDouble() <= threshold && Geo.isValid(location.latitude, location.longitude)
 
-    /** The persisted last location, if it was recorded in the current tracking session and is accurate enough. */
-    private fun restoredAnchor(runtime: RuntimeState, threshold: Double): TrackedLocation? {
+    /**
+     * The persisted last location, if it was recorded in the current tracking session, is accurate enough and is not
+     * newer than [next] (the fix about to be measured from it).
+     */
+    private fun sessionAnchor(runtime: RuntimeState, threshold: Double, next: TrackedLocation): TrackedLocation? {
         val session = runtime.trackingStartedAt ?: return null
         val last = runtime.lastLocation ?: return null
-        if (!runtime.enabled || last.time < session || !passes(last, threshold)) return null
-        Logger.d(TAG, "odometer resumes from the last recorded location of this session")
+        if (!runtime.enabled || last.time < session || last.time > next.time || !passes(last, threshold)) return null
+        Logger.d(TAG, "odometer starts from the last recorded location of this session")
         return last
     }
 

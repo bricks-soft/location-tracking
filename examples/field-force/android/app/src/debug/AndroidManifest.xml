@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug build only: merged into the debug APK, never into the release APK. docs/e2e/architecture.md §6. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application android:networkSecurityConfig="@xml/network_security_config">
+    <!-- e2e command hook, driven by the e2e kit with an explicit "am broadcast" from the adb shell (action
+         com.brickssoft.fieldforce.example.E2E, extras id, cmd and json64). Exported so the shell can reach it. -->
+    <receiver android:name="com.brickssoft.fieldforce.example.e2e.E2eCommandReceiver" android:exported="true">
+      <intent-filter>
+        <action android:name="com.brickssoft.fieldforce.example.E2E"/>
+      </intent-filter>
+    </receiver>
+  </application>
+</manifest>

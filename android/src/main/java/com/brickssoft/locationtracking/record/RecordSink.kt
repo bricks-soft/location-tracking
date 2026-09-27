@@ -20,7 +20,7 @@ interface RecordSink {
 
 /**
  * Default [RecordSink]. Order of operations:
- * 1. `store.insert(record)`;
+ * 1. `store.insert(record)`, then `hooks.dispatch(record)` (round 2, see below);
  * 2. `updateRuntime { lastRecordAt/Elapsed/BootCount, lastLocation = record.location ?: it.lastLocation,
  *    lastHeartbeatAt if HEARTBEAT }`;
  * 3. `heartbeat.onRecordRecorded(record)`;
@@ -31,7 +31,10 @@ interface RecordSink {
  * If the insert fails, the failure is logged, steps 2-4 still run (live listeners still get the record) and
  * step 5 is skipped because the record is not queued.
  *
- * Round 2: [hooks] receives every record right after step 1 (see [RecordHooks]); unit 5 adds that call.
+ * Round 2: [hooks] receives every record right after step 1, also when the insert failed or the caller was cancelled
+ * during the insert (a companion listener keeps its own audit trail, so a local database failure must not hide the
+ * record from it). Because this happens before step 4, a native listener receives a record before the events that
+ * carry it (see `api/NativeListeners`).
  */
 class DefaultRecordSink(
     private val store: LocationStore,
@@ -39,7 +42,6 @@ class DefaultRecordSink(
     private val heartbeat: HeartbeatScheduler,
     private val syncer: HttpSyncer,
     private val events: EventBus,
-    @Suppress("unused") // Unit 5 (companion native API) calls hooks.dispatch(record) right after the insert.
     private val hooks: RecordHooks = RecordHooks(),
 ) : RecordSink {
     override suspend fun submit(record: Record): Record {
@@ -47,11 +49,17 @@ class DefaultRecordSink(
             store.insert(record)
             true
         } catch (e: CancellationException) {
+            // The caller was cancelled during the insert; the row may be committed already (a blocking SQLite write
+            // finishes before the coroutine sees the cancellation). The companion keeps its own audit, so it gets the
+            // record in either case, like after a failed insert.
+            hooks.dispatch(record)
             throw e
         } catch (e: Exception) {
             Logger.e(TAG, "failed to persist ${record.event.wire} record ${record.uuid}", e)
             false
         }
+
+        hooks.dispatch(record)
 
         configStore.updateRuntime { runtime ->
             runtime.copy(

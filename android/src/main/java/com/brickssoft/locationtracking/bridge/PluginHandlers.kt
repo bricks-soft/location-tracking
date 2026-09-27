@@ -221,6 +221,9 @@ internal class PluginHandlers(
     /**
      * `insertLocation({location})` -> `{uuid}`. The record is queued (and handed to the upload policy) like any
      * other record, but it does not count as tracking activity: no event, no runtime or heartbeat update.
+     * Round 2: after a successful insert the record goes to `recordHooks` (native companion listeners receive it
+     * in `onRecord`), because inserted records do not pass through the record sink. A failed insert rejects the
+     * call and is not dispatched: the caller receives the error and may retry.
      */
     suspend fun insertLocation(options: JSONObject): JSONObject {
         gate("insertLocation")
@@ -233,6 +236,7 @@ internal class PluginHandlers(
             throw TrackingException(ErrorCode.INVALID_ARGUMENT, e.message ?: "invalid location", e)
         }
         services.locationStore.insert(record)
+        services.recordHooks.dispatch(record)
         services.syncer.onRecordInserted(record)
         return JSONObject().put("uuid", record.uuid)
     }

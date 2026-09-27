@@ -18,13 +18,19 @@ import org.json.JSONObject
  * - **Programmatically**: [LocationTrackingNative.addListener]; receives only what is emitted after the call.
  *
  * Methods run on the plugin's single `LT-native` background thread, in emission order (a record's [onRecord] comes
- * before the events that carry it). Exceptions are caught and logged. Delivery never blocks the engine; keep the
- * methods short and hand long work (I/O, uploads) to your own executor.
+ * before the events that carry it). Every exception (also an Error) thrown by a method is caught and logged, and the
+ * other listeners still receive the call. Delivery never blocks the engine, but one slow listener delays every later
+ * delivery to every listener: keep the methods short and hand long work (I/O, uploads) to your own executor.
+ *
+ * Both methods receive the application context and a JSONObject built for this listener alone (changing it does not
+ * affect other listeners). Guide: `docs/native-api.md`.
  */
 interface LocationTrackingListener {
     /**
      * Every record queued for upload, including `tracking_start`/`tracking_stop`, `providerchange`, `heartbeat`,
-     * `geofence` and `insertLocation()` records: the wire JSON of `RecordJson.toJson(record)` (no `sent_at`).
+     * `geofence` and `insertLocation()` records: the wire JSON of `RecordJson.toJson(record)` (no `sent_at`). A record
+     * the plugin creates is delivered also when the plugin failed to store it in its database; an `insertLocation()`
+     * whose insert fails is rejected instead and not delivered.
      */
     fun onRecord(context: Context, record: JSONObject) {}
 

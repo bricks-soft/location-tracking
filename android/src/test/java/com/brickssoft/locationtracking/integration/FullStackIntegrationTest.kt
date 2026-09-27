@@ -223,14 +223,18 @@ internal class FullStackIntegrationTest : FullStackTestBase() {
         val moved = gps.fix(140.0)
         emit(p, moved)
         assertEquals(listOf("motionchange", "location"), server.receivedEvents().takeLast(2))
-        assertEquals(t1 + 100_000 + MIN_MS, alarms.listener()!!.triggerAtMs)
-        assertEquals(t1 + 100_000 + MIN_MS, alarms.intent()!!.triggerAtMs)
+        // The 100 s record moved the due time by 1 s only (< 30 s): the alarms stay at the 99 s record's due time.
+        assertEquals(t1 + 99_000 + MIN_MS, alarms.listener()!!.triggerAtMs)
+        assertEquals(t1 + 99_000 + MIN_MS, alarms.intent()!!.triggerAtMs)
+        assertEquals(clock.now() + MIN_MS, p.heartbeat.status().nextHeartbeatAt)
 
-        // A stale backup delivery at the old due time (t + 180 s) creates nothing.
+        // A backup delivery at the old due time (t + 180 s, 100 s before the real due time) creates nothing.
         advance(80_000)
         p.deliverHeartbeatIntent(alarms.intent()!!)
         runCurrent()
         assertEquals(1, heartbeatsReceived().size)
+        // An alarm delivered before the due time arms the real one.
+        assertEquals(t1 + 100_000 + MIN_MS, alarms.listener()!!.triggerAtMs)
 
         advance(100_000)
         alarms.fireListener()

@@ -82,6 +82,13 @@ class HeartbeatHttpEndToEndTest {
         assertEquals(Iso8601.format(h.lastKnown.time), location.getString("timestamp"))
         assertEquals(Iso8601.format(h.t0Wall + MIN_MS), location.getString("recorded_at"))
         assertEquals(Iso8601.format(h.t0Wall + MIN_MS), location.getString("sent_at"))
+        val meta = location.getJSONObject("heartbeat")
+        assertEquals("listener_with_backup", meta.getString("strategy"))
+        assertEquals(180, meta.getInt("min_interval"))
+        assertEquals(300, meta.getInt("max_interval"))
+        assertEquals(Iso8601.format(h.t0Wall + 2 * MIN_MS), meta.getString("next_at"))
+        assertEquals(false, meta.getBoolean("battery_exempt"))
+        assertEquals(false, meta.getBoolean("device_idle"))
         assertEquals(0, h.scheduler.status().pendingHeartbeats)
         assertEquals(listOf(200), syncer.statuses)
     }

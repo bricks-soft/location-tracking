@@ -3,6 +3,7 @@ package com.brickssoft.locationtracking.heartbeat
 import android.app.AlarmManager
 import android.app.Application
 import android.app.PendingIntent
+import android.os.Handler
 import androidx.test.core.app.ApplicationProvider
 import com.brickssoft.locationtracking.config.Config
 import com.brickssoft.locationtracking.config.RuntimeState
@@ -142,5 +143,49 @@ internal class HeartbeatHarness(
 
         /** Allow-while-idle backup spacing while idle, ms. */
         const val IDLE_SPACING_MS = 9 * 60_000L
+    }
+}
+
+/** Delegates to the real alarms and counts every set and cancel call. */
+internal class CountingAlarms(private val real: HeartbeatAlarms) : HeartbeatAlarms by real {
+    var sets = 0
+    var cancels = 0
+
+    override fun setExactAndAllowWhileIdle(type: Int, triggerAtMillis: Long, operation: PendingIntent) {
+        sets++
+        real.setExactAndAllowWhileIdle(type, triggerAtMillis, operation)
+    }
+
+    override fun setExact(
+        type: Int,
+        triggerAtMillis: Long,
+        tag: String,
+        listener: AlarmManager.OnAlarmListener,
+        handler: Handler,
+    ) {
+        sets++
+        real.setExact(type, triggerAtMillis, tag, listener, handler)
+    }
+
+    override fun setAndAllowWhileIdle(type: Int, triggerAtMillis: Long, operation: PendingIntent) {
+        sets++
+        real.setAndAllowWhileIdle(type, triggerAtMillis, operation)
+    }
+
+    override fun cancel(operation: PendingIntent) {
+        cancels++
+        real.cancel(operation)
+    }
+
+    override fun cancel(listener: AlarmManager.OnAlarmListener) {
+        cancels++
+        real.cancel(listener)
+    }
+}
+
+/** Delegates to the real alarms but refuses exact alarms, like a device where `canScheduleExactAlarms()` is wrong. */
+internal class RefusingExactAlarms(private val real: HeartbeatAlarms) : HeartbeatAlarms by real {
+    override fun setExactAndAllowWhileIdle(type: Int, triggerAtMillis: Long, operation: PendingIntent) {
+        throw SecurityException("Caller needs SCHEDULE_EXACT_ALARM")
     }
 }

@@ -670,3 +670,149 @@ test('runStartup: a session that ended during ready() is started with fresh minu
   assert.equal(result.stopMinutesKept, false);
   assert.equal(result.started, true);
 });
+
+/* ------------------------------------------------------------------ createAutoStarter (load and resume) */
+
+/** A promise with its resolve/reject exposed. */
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/** Lets pending promise callbacks run. */
+function tick() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+/**
+ * Auto starter with fake plugins. `env.enabled` is what getState() answers; each start() call gets a deferred that
+ * the test settles, so a run can be kept "in progress".
+ */
+function fakeStarter(options) {
+  const opts = options || {};
+  const log = { starts: [], begins: [], resumes: [], getStateCalls: 0, runs: [] };
+  const env = { enabled: opts.enabled || false, autoStartOff: false, getStateError: null };
+  const starter = core.createAutoStarter({
+    start(reason) {
+      log.starts.push(reason);
+      const run = deferred();
+      log.runs.push(run);
+      return run.promise;
+    },
+    async getState() {
+      log.getStateCalls += 1;
+      if (env.getStateError) throw env.getStateError;
+      return { enabled: env.enabled };
+    },
+    autoStartOff: () => env.autoStartOff,
+    onBegin: (reason, promise) => log.begins.push({ reason, promise }),
+    onResume: (entry) => log.resumes.push(entry),
+  });
+  return { starter, log, env };
+}
+
+test('autoStarter: load() begins run 1 with reason load', async () => {
+  const { starter, log } = fakeStarter();
+  const run = starter.load();
+  assert.equal(starter.count, 1);
+  assert.equal(starter.reason, 'load');
+  assert.equal(starter.running(), true);
+  assert.equal(log.begins.length, 1);
+  assert.equal(log.begins[0].promise, run, 'onBegin gets the run promise that load() returns');
+  await tick();
+  assert.deepEqual(log.starts, ['load']);
+  log.runs[0].resolve({ ok: true });
+  assert.deepEqual(await run, { ok: true });
+  await tick();
+  assert.equal(starter.running(), false);
+});
+
+test('autoStarter: resume while tracking is enabled does nothing', async () => {
+  const { starter, log } = fakeStarter({ enabled: true });
+  starter.load();
+  await tick();
+  log.runs[0].resolve({});
+  await tick();
+  assert.equal(await starter.resume('resume'), 'enabled');
+  assert.equal(starter.count, 1);
+  assert.deepEqual(log.starts, ['load']);
+  assert.equal(log.getStateCalls, 1);
+  assert.deepEqual(log.resumes.map((e) => [e.trigger, e.outcome]), [['resume', 'enabled']]);
+});
+
+test('autoStarter: resume while tracking is not enabled begins exactly one new run (reason resume)', async () => {
+  const { starter, log, env } = fakeStarter({ enabled: true });
+  starter.load();
+  await tick();
+  log.runs[0].resolve({});
+  await tick();
+  env.enabled = false; // the 02:00 stop happened during the night
+  // The same foregrounding fires both the document 'resume' event and 'visibilitychange'.
+  const [a, b] = await Promise.all([starter.resume('resume'), starter.resume('visibilitychange')]);
+  assert.equal(a, 'started');
+  assert.equal(b, 'busy');
+  assert.equal(starter.count, 2);
+  assert.equal(starter.reason, 'resume');
+  assert.equal(log.getStateCalls, 1, 'the second trigger joined the first check');
+  await tick();
+  assert.deepEqual(log.starts, ['load', 'resume']);
+  assert.deepEqual(log.begins.map((x) => x.reason), ['load', 'resume']);
+  assert.equal(starter.running(), true);
+  log.runs[1].resolve({});
+  await tick();
+  assert.equal(starter.running(), false);
+});
+
+test('autoStarter: resume during a running startup (e.g. back from a permission dialog) runs no second startup', async () => {
+  const { starter, log } = fakeStarter({ enabled: false });
+  starter.load();
+  await tick();
+  assert.equal(await starter.resume('resume'), 'busy');
+  assert.equal(await starter.resume('visibilitychange'), 'busy');
+  assert.equal(log.getStateCalls, 0, 'no state read while a run is in progress');
+  assert.equal(starter.count, 1);
+  // The run fails (e.g. PERMISSION_DENIED); the next foregrounding tries again.
+  log.runs[0].reject(coded('PERMISSION_DENIED', 'denied'));
+  await tick();
+  assert.equal(await starter.resume('resume'), 'started');
+  assert.equal(starter.count, 2);
+});
+
+test('autoStarter: a run that begins while the state is read makes the check answer busy', async () => {
+  let release;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const starts = [];
+  const starter = core.createAutoStarter({
+    start: (reason) => {
+      starts.push(reason);
+      return new Promise(() => {});
+    },
+    getState: () => gate.then(() => ({ enabled: false })),
+  });
+  const check = starter.resume('resume');
+  starter.load();
+  release();
+  assert.equal(await check, 'busy');
+  await tick();
+  assert.deepEqual(starts, ['load']);
+});
+
+test('autoStarter: autoStart false (tests) and a failed getState never start a run', async () => {
+  const { starter, log, env } = fakeStarter({ enabled: false });
+  env.autoStartOff = true;
+  assert.equal(await starter.resume('resume'), 'autostart_off');
+  assert.equal(log.getStateCalls, 0);
+  env.autoStartOff = false;
+  env.getStateError = new Error('bridge gone');
+  assert.equal(await starter.resume('resume'), 'error');
+  assert.equal(starter.count, 0);
+  assert.deepEqual(log.resumes.map((e) => e.outcome), ['autostart_off', 'error']);
+  assert.equal(typeof log.resumes[0].at, 'number');
+});

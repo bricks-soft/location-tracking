@@ -308,6 +308,28 @@ broadcasts with `--include-stopped-packages`, background by default (`--receiver
 
 An unknown `cmd` or invalid JSON answers `BAD_COMMAND`. Commands never touch JS.
 
+**Test-mode files (coordinator addendum).** The web pages must know they run under the e2e kit *before* their
+first startup code runs; `localStorage` can only be written after a page has loaded, which is too late (the
+field-force page auto-starts on its first load, and a running session keeps its stop time). So:
+- The kit writes JSON files into the app's internal storage **before it launches the app** (after `pm clear` when it
+  clears data): `adb shell run-as <appId> sh -c 'mkdir -p files/e2e && cat > files/e2e/<name>.json'` with the JSON on
+  stdin (`Adb.runAsWrite(appId, relativePath, text)` and `Adb.runAsRemove(appId, relativePath)`, unit 7).
+- The page reads a file at startup with
+  `fetch(Capacitor.convertFileSrc('/data/data/<appId>/files/e2e/<name>.json'))` (Capacitor's local server serves
+  `/_capacitor_file_/` paths from the app's storage). Any failure (fetch error, non-2xx status, empty body, invalid
+  JSON, a non-object value) means "no file". Release builds never have these files.
+- **Plugin example** (unit 8): `files/e2e/example.json` = `{"e2e": true}` turns on **e2e mode**: the page never calls a
+  plugin method that changes state on its own (`ready`, `setConfig`, `reset`, `start`, `startGeofences`, `stop`,
+  `changePace`, geofence add/remove, `sync`, `destroyLocations`, `destroyLog`); auto-ready is off; it still subscribes
+  its event listeners; it shows a visible "E2E mode" banner. `localStorage['lt.e2e'] === '1'` also turns it on (for
+  manual use).
+- **Field-force** (unit 12): `files/e2e/ff-overrides.json` = `FieldForceOverrides`; it takes precedence over
+  `localStorage['ff.e2e.overrides']` (see §10 step 1).
+- Kit (unit 7): `AppUnderTest.prepare(...)` accepts `testFiles?: Record<string, unknown>` (file name → JSON) and writes
+  them before launching; for the plugin app it writes `example.json` `{"e2e": true}` unless
+  `testFiles['example.json'] === null`. `AppUnderTest.writeTestFile(name, value)` / `removeTestFile(name)` change them
+  later (the page reads them again on its next load: `WebViewDriver.reload()` or a relaunch).
+
 **Cleartext.** Debug-only `app/src/debug/res/xml/network_security_config.xml`, referenced from the debug manifest's
 `<application android:networkSecurityConfig="@xml/network_security_config">`:
 
@@ -537,7 +559,8 @@ example app, so it does not depend on the field-force app. The field-force suite
 (`locationTracking.providers=gms`), Kotlin applied, shared debug keystore.
 
 **Startup (every page load; this is the auto start):**
-1. Read overrides: `JSON.parse(localStorage['ff.e2e.overrides'] || '{}')` (`FieldForceOverrides`, fixtures.ts).
+1. Read overrides: the test-mode file `files/e2e/ff-overrides.json` (§6), else
+   `JSON.parse(localStorage['ff.e2e.overrides'] || '{}')` (`FieldForceOverrides`, fixtures.ts).
 2. `state = await LocationTracking.getState()` (allowed before `ready`).
 3. `stopAfterElapsedMinutes`: if `state.enabled`, keep `state.config.geolocation.stopAfterElapsedMinutes` (the engine
    measures it from the session start, so recomputing it would move the stop); otherwise

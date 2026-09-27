@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug build type only (docs/e2e/architecture.md §6). Merged over src/main/AndroidManifest.xml in debug builds;
+  release builds contain neither the receiver nor the network security config.
+  - E2eCommandReceiver: the e2e kit's command channel (adb shell am broadcast ... -> one "LT-E2E" logcat line).
+    The sender needs android.permission.DUMP: the adb shell user holds it (and root passes every permission
+    check), other apps on the device do not, so they cannot stop tracking or inject locations through it.
+  - network_security_config: allows plain HTTP to the mock back office on the host (10.0.2.2 from the emulator,
+    localhost with adb reverse). Every other host still requires HTTPS. Because a network security config exists,
+    Android ignores android:usesCleartextTraffic in debug builds (for example the one `cap run -l` adds for a LAN
+    live-reload server); add such a host to network_security_config.xml when needed.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application android:networkSecurityConfig="@xml/network_security_config">
+        <receiver
+            android:name="com.brickssoft.locationtracking.example.e2e.E2eCommandReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="com.brickssoft.locationtracking.example.E2E" />
+            </intent-filter>
+        </receiver>
+    </application>
+
+</manifest>

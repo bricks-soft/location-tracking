@@ -210,6 +210,35 @@ main {
   color: var(--err);
 }
 
+/* E2E mode strip at the top of the sticky top bar (shown only in e2e mode, see app.js). */
+.e2e-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 0 -12px 6px;
+  padding: 6px 12px;
+  background: var(--warn-bg);
+  color: var(--warn);
+  border-bottom: 2px solid var(--warn);
+  font-size: 13px;
+}
+
+.e2e-banner[hidden] {
+  display: none;
+}
+
+.e2e-banner code {
+  overflow-wrap: anywhere;
+}
+
+.e2e-banner button {
+  min-height: 32px;
+  padding: 4px 10px;
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
 /* ---------- forms ---------- */
 .form-grid {
   display: grid;

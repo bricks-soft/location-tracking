@@ -772,24 +772,45 @@ scenario(
     const { startDevice } = await readyAndStart(ctx, office, config);
     await sleep(3_000, ctx.signal);
 
+    const pidBefore = await ctx.app.pid();
     await ctx.adb.forceStop(ctx.appId);
-    await ctx.app.waitForNoProcess({ timeoutMs: 15_000, signal: ctx.signal });
+    // The stopped process is gone (a broadcast may already have started a new one, see below).
+    await waitUntil(async () => (await ctx.app.pid()) !== pidBefore, {
+      timeoutMs: 15_000,
+      intervalMs: 250,
+      message: `process ${pidBefore} still running after am force-stop`,
+      signal: ctx.signal,
+    });
     // Taken once the process is gone: a record created during the force-stop itself is older than this boundary.
     const forceStopDevice = await deviceNow(ctx);
 
-    // Force-stop cancels the app's alarms: past the time the next heartbeat was due, the process is still gone and
-    // nothing was recorded (the audit trail shows a gap that only the restore explains).
+    // Force-stop cancels the app's alarms, so no heartbeat alarm restarts tracking. A Play services activity update
+    // that was already on its way can still start the process (CI emulator, API 34: 0.3 s after the force stop); in
+    // that process the plugin must not restart tracking. Past the time the next heartbeat was due: no tracking service
+    // and nothing recorded (the audit trail shows a gap that only the restore explains).
     const quietUntil = forceStopDevice + (MIN_S + 20) * 1000;
+    let cameBack: number | null = null;
     while ((await deviceNow(ctx)) < quietUntil) {
       const pid = await ctx.app.pid();
-      assert.equal(pid, null, `the process came back (pid ${pid}) after am force-stop, before the app was opened again`);
+      if (pid !== null && cameBack === null) cameBack = pid;
+      assert.equal(
+        await ctx.app.isForegroundServiceRunning(SERVICES.tracking),
+        false,
+        `the tracking service runs after am force-stop, before the app was opened again (pid ${pid})`,
+      );
       await sleep(3_000, ctx.signal);
+    }
+    if (cameBack !== null) {
+      const lines = (await pluginLog(ctx, new Date(forceStopDevice - 1_000)))
+        .split('\n')
+        .filter((line) => /force stop|restor/i.test(line));
+      ctx.log(`the process came back (pid ${cameBack}) after am force-stop:\n${lines.join('\n') || '(no plugin log lines)'}`);
     }
     const whileStopped = recordsAfter(office, forceStopDevice);
     assert.equal(
       whileStopped.length,
       0,
-      `records were created after am force-stop although the app was not running:\n${timeline(whileStopped)}`,
+      `records were created after am force-stop, before the app was opened again:\n${timeline(whileStopped)}`,
     );
 
     // The user opens the app; the app calls ready() at startup.

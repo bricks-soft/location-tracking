@@ -87,6 +87,7 @@ emulator. Decisions: [docs/DECISIONS.md](docs/DECISIONS.md#round-2-field-force-a
 
 ### Changed
 
+- After a user force stop, a background event that still reaches the app (an activity update or a stationary-region exit already on its way) no longer restarts tracking (Android 11+); tracking resumes when the app is opened (`ready()`).
 - **Stationary no longer polls:** before, the stationary state kept a `'balanced'` request with up to one fix per
   minute, and accepted fixes refreshed the heartbeat's location; now GPS and the plugin's own location requests are
   off while stationary (see "Stationary GPS-off mode"), and the heartbeat carries the anchor fix. The exit rule

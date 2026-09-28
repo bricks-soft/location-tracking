@@ -363,6 +363,7 @@ broadcasts with `--include-stopped-packages`, background by default (`--receiver
 | `getGeofences` | `{}` | array of JS Geofences |
 | `blockMainThread` | `{ms, delayMs? = 0}` | `{blockedMs}`: logged first, then a posted main-thread runnable sleeps `ms` after `delayMs` (simulates a busy main thread around a service start) |
 | `otherAppLocation` (plugin example only; added after the first CI run) | `{enabled, intervalMs? = 1000}` (0–60000) | `{enabled, intervalMs, fixes}`: requests GPS updates through the platform `LocationManager` from the app's own process, the way another app would, or stops them; `fixes` counts the fixes received since it was turned on |
+| `finishActivities` (field-force only; added after the first full CI run) | `{}` | `{finished}`: finishes the app's live activities on the main thread (a debug-only content provider remembers them from process start), so the activity and its WebView are destroyed while the process keeps running (F-08) |
 | `premise.start` (field-force) | `{premise, auditUrl?}` | PremiseStatus |
 | `premise.stop` / `premise.status` (field-force) | `{}` | PremiseStatus |
 | `premise.auditLog` (field-force) | `{limit?}` | array of PremiseAuditEntry |

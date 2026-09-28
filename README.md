@@ -326,6 +326,13 @@ plugin refreshed are replaced by the ones in the config you pass (see
 after the app was force-stopped or its process was killed), `ready()` resumes it and records a `tracking_start` with
 reason `restore`.
 
+**Force stop.** After the user force-stops the app (Settings → Force stop), Android cancels its alarms and does not
+restart its service, so tracking stays off until the app is opened again; `ready()` then resumes it. On Android 11
+and newer the plugin also ignores a background event that reaches the stopped app anyway (an activity update or a
+stationary-region exit that was already on its way): it does not restart tracking from it, and it releases the leftover
+activity, location and geofence registrations so they stop waking the app. The server sees a gap without a
+`tracking_stop` record, followed by `tracking_start` with reason `restore` when the app is opened.
+
 **`setConfig()`** deep-merges: arrays and map-like objects (`headers`, `params`, `extras`, ...) are replaced as a
 whole, and `null` resets a key or a group to its default. Unknown keys are ignored with a warning in the log. Enum
 values are case-insensitive, and numeric or boolean strings (`"15"`, `"false"`) are accepted. A wrong type or an

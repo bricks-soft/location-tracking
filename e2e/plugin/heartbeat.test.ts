@@ -1714,8 +1714,9 @@ scenario(
     assert.equal(valueAt(started.readyState.config, ['http', 'maxBatchSize']), MAX_BATCH, 'http.maxBatchSize in the ready() state');
 
     // Stationary: the initial motionchange (a normal record) is not uploaded on its own before syncInterval; it goes out
-    // with a priority record: the first heartbeat, or the tracking_start when the fix came before that upload read the
-    // queue.
+    // in the upload pass of a priority record, which takes the whole queue along (§4): the first heartbeat's, or the
+    // tracking_start's. A record created while the tracking_start request is in flight follows in the next request of
+    // the same pass (API 34 run: that request took 8 s and the motionchange arrived 23 ms after it).
     await waitForRecord(ctx, office, (r) => r.event === 'heartbeat' && createdAfter(r, started.trackingStart), {
       sinceHost: started.sinceHost,
       timeoutMs: (MAX_S + TOLERANCE_S) * 1000 + 30_000,
@@ -1724,13 +1725,14 @@ scenario(
     const anchor = received(office, started.sinceHost).find((r) => r.event === 'motionchange' && !r.is_moving);
     assert.ok(anchor !== undefined, `the initial motionchange must be uploaded by the first heartbeat:\n${timeline(received(office, started.sinceHost))}`);
     const anchorRequest = storedOf(office, anchor.uuid).requestId;
-    const sameRequest = stored(office, started.sinceHost)
-      .filter((s) => s.requestId === anchorRequest)
-      .map((s) => s.record);
+    const startRequests = sortedRequests(office, '/locations', started.sinceHost);
+    // 2 s: the requests of one pass follow each other within milliseconds; the initial fix comes about 4 s after the
+    // start, so a motionchange uploaded alone after an already finished tracking_start upload is not grouped with it.
+    const anchorPass = uploadDrains(startRequests, 2_000).find((d) => d.requests.some((r) => r.id === anchorRequest));
     assert.ok(
-      sameRequest.some((r) => PRIORITY_EVENTS.has(r.event)),
-      `the initial motionchange must be uploaded together with a priority record (heartbeat or tracking_start), ` +
-        `not alone before syncInterval; its request held:\n${timeline(sameRequest)}`,
+      anchorPass !== undefined && anchorPass.records.some((r) => PRIORITY_EVENTS.has(r.event)),
+      `the initial motionchange must be uploaded in the pass of a priority record (heartbeat or tracking_start), ` +
+        `not alone before syncInterval; the requests since the start:\n${requestLog(startRequests)}`,
     );
 
     // Moving: location records every few seconds; the syncInterval timer uploads them in batches.

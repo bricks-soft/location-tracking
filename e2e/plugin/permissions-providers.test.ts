@@ -1195,6 +1195,7 @@ async function startTracking(
   config: Record<string, unknown>,
   at: LatLon,
 ): Promise<TrackingSession> {
+  await settleFusedPosition(ctx);
   const since = await mark(ctx);
   const ready = await ctx.commands.ready(config);
   assert.equal(ready.enabled, false, 'ready() right after prepare() (cleared data) must report tracking off');
@@ -1218,6 +1219,25 @@ async function startTracking(
       `got ${describeRecord(initial)}. The emulator did not deliver the geo fix to the app.`,
   );
   return { since, state, started, initial };
+}
+
+/** How long GPS is requested at a new emulated position before tracking starts ([settleFusedPosition]). */
+const FUSED_SETTLE_MS = 20_000;
+
+/**
+ * The scenarios move the emulator by kilometres between scenarios in one step. Google Play services' fused provider
+ * smooths such a jump over several seconds (first API 29 CI run: fused fixes 0.6–1 km from the new position, moving
+ * towards it at about 50 m/s), so the plugin's initial motionchange carried a point in between. Requesting GPS the way
+ * another app would (`otherAppLocation`) for [FUSED_SETTLE_MS] lets the fused estimate reach the new position first;
+ * the request is stopped again before tracking starts. A phone never jumps like this, so the plugin needs no change.
+ */
+async function settleFusedPosition(ctx: ScenarioContext): Promise<void> {
+  await ctx.commands.otherAppLocation(true);
+  try {
+    await sleep(FUSED_SETTLE_MS, ctx.signal);
+  } finally {
+    await bestEffort(ctx, "stop the other app's GPS request", () => ctx.commands.otherAppLocation(false));
+  }
 }
 
 /** changePace(true) and the motionchange (is_moving true) created since [since] (also one the plugin made itself). */
@@ -1335,9 +1355,12 @@ async function expectGeofenceRefusedWithoutBackground(ctx: ScenarioContext): Pro
     return;
   }
   await bestEffort(ctx, `remove geofence ${fence.identifier}`, () => ctx.commands.removeGeofence(fence.identifier));
-  assert.fail(
-    'addGeofence succeeded with only while-in-use location on the gms backend; GMS geofencing requires ' +
-      'ACCESS_BACKGROUND_LOCATION on Android 10+, so the premise geofence would never fire in the background',
+  // Whether Google Play services refuses the geofence is its own decision and differs by Android version (first CI
+  // runs: refused on API 34, accepted on API 29); the plugin passes the OS answer through either way. Only the refusal
+  // path has plugin behavior to check (PERMISSION_DENIED, nothing stored), so an acceptance is documented, not failed.
+  ctx.log(
+    `documented: on API ${await ctx.adb.apiLevel()} Google Play services accepted addGeofence with only while-in-use ` +
+      'location; such a geofence may not fire while the app is in the background',
   );
 }
 

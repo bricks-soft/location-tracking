@@ -69,6 +69,11 @@ const OFFLINE_S = MAX_SILENCE_S + 10;
 const APPROACH_SPEED_MPS = 10;
 /** Speed of the F-04 city loop (3 km), m/s (54 km/h). */
 const TRIP_SPEED_MPS = 15;
+/**
+ * A record whose fix was acquired more than this long before the record (a last known position, for example on a
+ * motionchange recorded before the first GPS fix) is not a point of the route, s.
+ */
+const STALE_FIX_S = 30;
 /** `BatteryManager.BATTERY_STATUS_DISCHARGING`. */
 const BATTERY_STATUS_DISCHARGING = 3;
 
@@ -389,6 +394,21 @@ async function readStartup(ctx: ScenarioContext, web: WebViewDriver): Promise<Fi
 
 function recordedMs(record: WireRecord): number {
   return Date.parse(record.recorded_at);
+}
+
+/** True when the record carries a fix acquired more than STALE_FIX_S before the record (a last known position). */
+function hasStaleFix(record: WireRecord): boolean {
+  if (record.coords === null || record.timestamp === null) return false;
+  return recordedMs(record) - Date.parse(record.timestamp) > STALE_FIX_S * 1000;
+}
+
+/**
+ * The records as a back office draws the route: records with a stale fix keep their event and time (motion, travel
+ * time) but lose their coordinates. The test moves the emulator between scenarios while tracking is off, so the last
+ * known position at the next start can be kilometres from the route.
+ */
+function withoutStaleFixes(records: readonly WireRecord[]): WireRecord[] {
+  return records.map((r) => (hasStaleFix(r) ? { ...r, coords: null } : r));
 }
 
 function byRecordedAt(a: WireRecord, b: WireRecord): number {
@@ -1354,9 +1374,14 @@ scenario(
         () => `received: ${describeRecords(records(s))}`,
       );
       const trip = records(s).filter((r) => recordedMs(r) >= recordedMs(begin) && recordedMs(r) <= recordedMs(end));
+      const stale = trip.filter(hasStaleFix);
+      if (stale.length > 0) {
+        ctx.log(`route: ${stale.length} record(s) with a last known fix left out: ${describeRecords(stale)}`);
+      }
+      const drawn = withoutStaleFixes(trip);
 
       // The tracked route has no holes: consecutive fixes at most 150 m apart (distanceFilter 20 m at 15 m/s).
-      const fixes = trip.filter((r) => (r.event === 'location' || r.event === 'motionchange') && r.coords);
+      const fixes = drawn.filter((r) => (r.event === 'location' || r.event === 'motionchange') && r.coords);
       check(fixes.length >= 10, `only ${fixes.length} fixes in the trip; ${describeRecords(trip)}`);
       let largestStepM = 0;
       for (let i = 1; i < fixes.length; i++) {
@@ -1371,7 +1396,7 @@ scenario(
       check(largestStepM <= 150, `the uploaded route has a ${largestStepM.toFixed(0)} m hole between consecutive fixes (max 150 m)`);
 
       // Distance and travel time as the back office computes them.
-      const summary = assertions.travelSummary(trip);
+      const summary = assertions.travelSummary(drawn);
       ctx.log(
         `trip: odometer ${summary.odometerM.toFixed(0)} m, path ${summary.pathM.toFixed(0)} m, moving ` +
           `${summary.movingS.toFixed(0)} s, span ${summary.spanS.toFixed(0)} s, ${fixes.length} fixes`,

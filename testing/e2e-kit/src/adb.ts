@@ -814,8 +814,8 @@ export class Adb {
    * Waits (root only) until the device's persisted runtime-permission file lists every one of [permissions] as granted
    * for [appId]. Android writes permission changes to disk in the background; on the CI emulator a reboot about 15-20 s
    * after `pm grant` came back without the grants (P-L08, P-P11: the boot restore recorded `permission_denied`), which
-   * a phone never sees because its permissions are granted long before a reboot. Resolves with whether the file showed
-   * the grants before [timeoutMs] (false without root or when the file cannot be read; the caller continues then).
+   * a phone never sees because its permissions are granted long before a reboot. Resolves true once the file shows the
+   * grants, false without root (nothing is read). Rejects when [timeoutMs] passes first, with what the last read found.
    */
   async waitForPersistedPermissions(
     appId: string,
@@ -829,11 +829,19 @@ export class Adb {
         : '/data/system/users/0/runtime-permissions.xml';
     // Android 12+ stores it as binary XML (ABX); abx2xml converts it, and a text file makes abx2xml fail, so cat it.
     const read = `abx2xml ${path} - 2>/dev/null || cat ${path}`;
-    const deadline = Date.now() + (options.timeoutMs ?? 90_000);
+    const timeoutMs = options.timeoutMs ?? 90_000;
+    const deadline = Date.now() + timeoutMs;
     for (;;) {
       const out = await this.exec(['shell', read], { allowFailure: true, timeoutMs: 30_000 });
       if (persistedPermissionsGranted(out.stdout, appId, permissions)) return true;
-      if (Date.now() >= deadline) return false;
+      if (Date.now() >= deadline) {
+        const section = packageSection(out.stdout, appId);
+        throw new Error(
+          `${path} did not list ${permissions.join(', ')} as granted for ${appId} within ${timeoutMs / 1000} s ` +
+            `(read ${out.stdout.length} characters; ` +
+            `${section === undefined ? 'no section for the app' : `app section: ${tail(section, 600)}`})`,
+        );
+      }
       await sleep(options.intervalMs ?? 2000);
     }
   }
@@ -991,16 +999,25 @@ export class Adb {
 }
 
 /**
- * True when the runtime-permission XML [xml] has a `<pkg name="[appId]">` section in which every one of [permissions]
- * is a `<perm … granted="true" …>` entry (attribute order does not matter).
+ * True when the runtime-permission XML [xml] has a section for [appId] in which every one of [permissions] is granted
+ * (attribute order does not matter). Two formats: Android 10 (`/data/system/users/0/runtime-permissions.xml`) writes
+ * `<pkg name=…>` with `<item name=… granted="true" …/>`; the permission module of Android 11+ writes
+ * `<package name=…>` with `<permission name=… granted="true" …/>`.
  */
 export function persistedPermissionsGranted(xml: string, appId: string, permissions: readonly string[]): boolean {
-  const start = xml.indexOf(`<pkg name="${appId}"`);
-  if (start < 0) return false;
-  const end = xml.indexOf('</pkg>', start);
-  const section = xml.slice(start, end < 0 ? undefined : end);
-  const tags = section.match(/<perm\b[^>]*>/g) ?? [];
+  const section = packageSection(xml, appId);
+  if (section === undefined) return false;
+  const tags = section.match(/<(?:item|perm|permission)\b[^>]*>/g) ?? [];
   return permissions.every((permission) =>
     tags.some((tag) => tag.includes(`name="${permission}"`) && /\bgranted="true"/.test(tag)),
   );
+}
+
+/** The `<pkg name="[appId]">…</pkg>` or `<package name="[appId]">…</package>` section of [xml], or undefined. */
+function packageSection(xml: string, appId: string): string | undefined {
+  const open = new RegExp(`<(pkg|package)\\s[^>]*\\bname="${appId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`);
+  const match = open.exec(xml);
+  if (!match) return undefined;
+  const end = xml.indexOf(`</${match[1]}>`, match.index);
+  return xml.slice(match.index, end < 0 ? undefined : end);
 }

@@ -553,14 +553,15 @@ describe('DeviceIdle and Logcat', () => {
   });
 });
 
-test('persistedPermissionsGranted reads the app section of the runtime-permission XML', () => {
+test('persistedPermissionsGranted reads the app section of the Android 11+ runtime-permission XML', () => {
   const xml = [
-    '<runtime-permissions version="10">',
-    '<pkg name="com.other"><perm name="android.permission.ACCESS_FINE_LOCATION" granted="true" flags="0" /></pkg>',
-    '<pkg name="com.app">',
-    '<perm flags="0" granted="true" name="android.permission.ACCESS_FINE_LOCATION" />',
-    '<perm name="android.permission.ACCESS_BACKGROUND_LOCATION" granted="false" flags="0" />',
-    '</pkg>',
+    '<runtime-permissions version="10" fingerprint="x">',
+    '<package name="com.other"><permission name="android.permission.ACCESS_FINE_LOCATION" granted="true" flags="0" /></package>',
+    '<package name="com.app.extra"><permission name="android.permission.ACCESS_BACKGROUND_LOCATION" granted="true" /></package>',
+    '<package name="com.app">',
+    '<permission flags="0" granted="true" name="android.permission.ACCESS_FINE_LOCATION" />',
+    '<permission name="android.permission.ACCESS_BACKGROUND_LOCATION" granted="false" flags="0" />',
+    '</package>',
     '</runtime-permissions>',
   ].join('\n');
   assert.equal(persistedPermissionsGranted(xml, 'com.app', ['android.permission.ACCESS_FINE_LOCATION']), true);
@@ -571,12 +572,30 @@ test('persistedPermissionsGranted reads the app section of the runtime-permissio
   assert.equal(persistedPermissionsGranted(xml, 'com.missing', ['android.permission.ACCESS_FINE_LOCATION']), false);
 });
 
+test('persistedPermissionsGranted reads the Android 10 format (pkg and item tags)', () => {
+  const xml = [
+    '<runtime-permissions version="8" fingerprint="x">',
+    '<pkg name="com.app">',
+    '<item name="android.permission.ACCESS_FINE_LOCATION" granted="true" flags="0" />',
+    '<item name="android.permission.ACCESS_BACKGROUND_LOCATION" granted="true" flags="0" />',
+    '</pkg>',
+    '<shared-user name="android.uid.system"><item name="android.permission.CAMERA" granted="true" /></shared-user>',
+    '</runtime-permissions>',
+  ].join('\n');
+  assert.equal(
+    persistedPermissionsGranted(xml, 'com.app', ['android.permission.ACCESS_FINE_LOCATION', 'android.permission.ACCESS_BACKGROUND_LOCATION']),
+    true,
+  );
+  assert.equal(persistedPermissionsGranted(xml, 'com.app', ['android.permission.CAMERA']), false);
+});
+
 test('waitForPersistedPermissions polls the persisted file until the grants appear (root)', async () => {
-  const granted = '<pkg name="com.app"><perm name="android.permission.ACCESS_FINE_LOCATION" granted="true" flags="0" /></pkg>';
+  const granted =
+    '<package name="com.app"><permission name="android.permission.ACCESS_FINE_LOCATION" granted="true" flags="0" /></package>';
   const { fake, adb } = setup([
     { match: '^shell id -u$', stdout: '0\n' },
     { match: 'getprop ro\\.build\\.version\\.sdk', stdout: '34\n' },
-    { match: 'runtime-permissions\\.xml', stdout: '<pkg name="com.app"></pkg>', times: 2 },
+    { match: 'runtime-permissions\\.xml', stdout: '<package name="com.app"></package>', times: 2 },
     { match: 'runtime-permissions\\.xml', stdout: granted },
   ]);
   const ok = await adb.waitForPersistedPermissions('com.app', ['android.permission.ACCESS_FINE_LOCATION'], { intervalMs: 10 });
@@ -584,6 +603,18 @@ test('waitForPersistedPermissions polls the persisted file until the grants appe
   const reads = fake.commandLines().filter((line) => line.includes('runtime-permissions.xml'));
   assert.equal(reads.length, 3);
   assert.match(reads[0]!, /apexdata\/com\.android\.permission\/runtime-permissions\.xml/);
+});
+
+test('waitForPersistedPermissions rejects with what it read when the grants do not appear in time', async () => {
+  const { adb } = setup([
+    { match: '^shell id -u$', stdout: '0\n' },
+    { match: 'getprop ro\\.build\\.version\\.sdk', stdout: '29\n' },
+    { match: 'runtime-permissions\\.xml', stdout: '<pkg name="com.app"><item name="x" granted="true" /></pkg>' },
+  ]);
+  await assert.rejects(
+    adb.waitForPersistedPermissions('com.app', ['android.permission.ACCESS_FINE_LOCATION'], { timeoutMs: 30, intervalMs: 10 }),
+    /users\/0\/runtime-permissions\.xml did not list android\.permission\.ACCESS_FINE_LOCATION as granted for com\.app .*app section: <pkg name="com\.app">/,
+  );
 });
 
 test('waitForPersistedPermissions returns false without root and does not read the file', async () => {

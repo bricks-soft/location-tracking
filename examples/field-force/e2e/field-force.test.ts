@@ -61,8 +61,13 @@ const STOP_TIMEOUT_MIN = 1;
 const STOP_LATE_S = 60;
 /** ... and this many seconds earlier: `trackingStartedAt` is taken a few hundred ms before `tracking_start` is created. */
 const STOP_EARLY_S = 3;
-/** Minutes until the planned stop in F-03 (enough for a kill, a restore and a cold emulator reboot). */
-const F03_STOP_MINUTES = 10;
+/**
+ * Minutes until the planned stop in F-03 (enough for a kill, a restore and a cold emulator reboot: on a local AVD the
+ * boot restore was done 35 s after the session start).
+ */
+const F03_STOP_MINUTES = 5;
+/** F-03 reboots only while at least this much time remains before the planned stop, ms. */
+const F03_REBOOT_MARGIN_MS = 150_000;
 /** F-06: how long tracking stays off; longer than MAX_SILENCE_S, so the pause is a gap the audit must explain. */
 const OFFLINE_S = MAX_SILENCE_S + 10;
 /** Speed of the drive into and out of the premise (400 m), m/s. */
@@ -1282,7 +1287,7 @@ scenario(
       // 2. reboot: restored by BOOT_COMPLETED (startOnBoot true).
       const remainingMs = dueHostMs - Date.now();
       check(
-        remainingMs >= 5 * 60_000,
+        remainingMs >= F03_REBOOT_MARGIN_MS,
         `only ${Math.round(remainingMs / 1000)} s remain before the planned stop, too little for a reboot ` +
           `(the kill and restore took too long; raise F03_STOP_MINUTES)`,
       );

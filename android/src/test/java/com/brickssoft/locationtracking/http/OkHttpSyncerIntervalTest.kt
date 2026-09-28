@@ -124,6 +124,9 @@ class OkHttpSyncerIntervalTest {
 
     private fun ok() = MockResponse().setResponseCode(200).setBody("ok")
 
+    /** The next upload fails: its first try and its 3 retries (ending [RETRIES_MS] after the first try) get 503. */
+    private fun failNextUpload() = repeat(4) { server.enqueue(MockResponse().setResponseCode(503)) }
+
     private fun TestScope.advance(ms: Long) {
         advanceTimeBy(ms)
         runCurrent()
@@ -477,43 +480,44 @@ class OkHttpSyncerIntervalTest {
     @Test
     fun `a failed upload is retried once per syncInterval by the timer, not on every insert`() = test {
         http { it.copy(batchSync = true) }
-        server.enqueue(MockResponse().setResponseCode(503))
+        failNextUpload()
         server.enqueue(ok())
         val syncer = syncer()
         insert(syncer, rec(1))
 
-        advance(INTERVAL_MS)
-        assertEquals(listOf("r1"), recordsOf(takeRequest()).map { it.first })
+        advance(INTERVAL_MS + RETRIES_MS)
+        assertEquals(List(4) { listOf("r1") }, takeUuids(4))
         assertEquals(1, store.attempts("r1"))
 
         advance(1_000)
         insert(syncer, rec(2))
         advance(INTERVAL_MS - 1_000 - 1)
-        assertEquals(1, server.requestCount)
+        assertEquals(4, server.requestCount)
         advance(1)
 
+        // The next interval starts when the last try failed (R2-Q18).
         val retry = recordsOf(takeRequest())
         assertEquals(listOf("r1", "r2"), retry.map { it.first })
-        assertEquals(iso(2 * INTERVAL_MS), retry.first().second)
+        assertEquals(iso(2 * INTERVAL_MS + RETRIES_MS), retry.first().second)
         assertTrue(store.all.isEmpty())
         assertNoTimerArmed()
     }
 
     @Test
     fun `connectivity regained retries a failed upload at once`() = test {
-        server.enqueue(MockResponse().setResponseCode(503))
+        failNextUpload()
         server.enqueue(ok())
         val syncer = syncer()
         syncer.start()
         insert(syncer, rec(1))
-        advance(INTERVAL_MS)
-        takeRequest()
+        advance(INTERVAL_MS + RETRIES_MS)
+        takeUuids(4)
 
         advance(5_000)
         events.emit(TrackingEvent.ConnectivityChange(Connectivity(connected = true, type = ConnectivityType.WIFI)))
         runCurrent()
 
-        assertEquals(iso(INTERVAL_MS + 5_000), recordsOf(takeRequest()).single().second)
+        assertEquals(iso(INTERVAL_MS + RETRIES_MS + 5_000), recordsOf(takeRequest()).single().second)
         assertTrue(store.all.isEmpty())
         assertNoTimerArmed()
     }
@@ -521,12 +525,12 @@ class OkHttpSyncerIntervalTest {
     @Test
     fun `a priority record is not held back by a pending retry`() = test {
         http { it.copy(batchSync = true) }
-        server.enqueue(MockResponse().setResponseCode(503))
+        failNextUpload()
         server.enqueue(ok())
         val syncer = syncer()
         insert(syncer, rec(1))
-        advance(INTERVAL_MS)
-        takeRequest()
+        advance(INTERVAL_MS + RETRIES_MS)
+        takeUuids(4)
 
         advance(5_000)
         insert(syncer, rec(2, RecordEvent.HEARTBEAT))
@@ -539,19 +543,19 @@ class OkHttpSyncerIntervalTest {
     @Test
     fun `the retry wait is measured on elapsed time, so a wall clock set forward does not shorten it`() = test {
         http { it.copy(batchSync = true) }
-        server.enqueue(MockResponse().setResponseCode(503))
+        failNextUpload()
         server.enqueue(ok())
         val syncer = syncer()
         insert(syncer, rec(1))
-        advance(INTERVAL_MS)
-        takeRequest()
+        advance(INTERVAL_MS + RETRIES_MS)
+        takeUuids(4)
 
         clock.nowMs += 3_600_000 // the wall clock jumps one hour forward; elapsed realtime does not
         insert(syncer, rec(2))
-        assertEquals(1, server.requestCount)
+        assertEquals(4, server.requestCount)
 
         advance(INTERVAL_MS - 1)
-        assertEquals(1, server.requestCount)
+        assertEquals(4, server.requestCount)
         advance(1)
 
         assertEquals(listOf("r1", "r2"), recordsOf(takeRequest()).map { it.first })
@@ -665,6 +669,9 @@ class OkHttpSyncerIntervalTest {
     private companion object {
         const val INTERVAL_S = 120
         const val INTERVAL_MS = INTERVAL_S * 1_000L
+
+        /** How long a failing upload keeps retrying after its first try: 2 + 4 + 8 s (R2-Q18). */
+        const val RETRIES_MS = 14_000L
 
         /** Start of the debug log line the syncer writes when it arms the timer. */
         const val TIMER_ARMED = "syncInterval check armed"

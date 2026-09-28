@@ -39,7 +39,7 @@ export const ROUTES = {
 export const TEST_HEARTBEAT = { minInterval: 60, maxInterval: 120 } as const;
 
 /** `http.syncInterval` of the e2e configs (production field-force preset: 300). */
-export const TEST_SYNC_INTERVAL_S = 120;
+export const TEST_SYNC_INTERVAL_S = 60;
 
 export interface PluginTestConfigOptions {
   /** records endpoint as the emulator sees it, e.g. office.url('/locations') */

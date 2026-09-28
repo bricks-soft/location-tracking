@@ -267,6 +267,8 @@ export class Adb {
   private rooted = false;
   private apiCache: number | undefined;
   private readonly launcherCache = new Map<string, string>();
+  /** Grants per app that the next reboot() waits for in the persisted file (see rememberGrants). */
+  private readonly grantsToPersist = new Map<string, readonly string[]>();
 
   constructor(options: AdbOptions = {}) {
     this.serial = options.serial;
@@ -424,6 +426,13 @@ export class Adb {
    * kit had root before. Default timeout 300 s.
    */
   async reboot(options: { timeoutMs?: number } = {}): Promise<void> {
+    // Grants not yet written to disk are lost by a reboot (see rememberGrants). A timeout is reported, not fatal.
+    for (const [appId, permissions] of this.grantsToPersist) {
+      await this.waitForPersistedPermissions(appId, permissions).catch((error: unknown) => {
+        console.warn(`reboot(): ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
+    this.grantsToPersist.clear();
     const timeoutMs = options.timeoutMs ?? 300_000;
     const deadline = Date.now() + timeoutMs;
     const hadRoot = this.rooted || (await this.isRoot().catch(() => false));
@@ -617,6 +626,8 @@ export class Adb {
   /** `pm revoke`: Android kills the app process when a granted location permission is revoked. */
   async revoke(appId: string, permission: string): Promise<void> {
     await this.shell(`pm revoke ${shellQuote(appId)} ${shellQuote(permission)}`);
+    const remembered = this.grantsToPersist.get(appId);
+    if (remembered) this.grantsToPersist.set(appId, remembered.filter((p) => p !== permission));
   }
 
   /** `appops set <appId> <op> <mode>`, e.g. ('RUN_ANY_IN_BACKGROUND', 'ignore'). */
@@ -863,6 +874,15 @@ export class Adb {
       }
     }
     return this.shellChecked(command);
+  }
+
+  /**
+   * Remembers [permissions] just granted to [appId] (replacing earlier ones for the app). Android writes runtime grants
+   * to disk in the background, and a reboot soon after `pm grant` can lose them, so the next reboot() first waits until
+   * the persisted file has them (waitForPersistedPermissions). Scenarios that do not reboot do not wait.
+   */
+  rememberGrants(appId: string, permissions: readonly string[]): void {
+    this.grantsToPersist.set(appId, permissions);
   }
 
   /**

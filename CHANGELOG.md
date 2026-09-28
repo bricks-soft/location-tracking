@@ -25,8 +25,8 @@ emulator. Decisions: [docs/DECISIONS.md](docs/DECISIONS.md#round-2-field-force-a
   is at most about `syncInterval` seconds old with one upload per interval. A timer in the tracking process checks
   it; the timer holds no wake lock, so in deep sleep it is late, and the next location record or heartbeat uploads the
   queue. Audit records are still uploaded at once. `autoSyncThreshold` above 0 becomes a size limit. While tracking is
-  off, normal records upload as with `syncInterval: 0`. After a failed automatic upload, normal records are retried
-  once per `syncInterval`, not on every insert (the network coming back, an audit record and `sync()` still upload at
+  off, normal records upload as with `syncInterval: 0`. After a failed automatic upload (after its retries), normal
+  records are retried once per `syncInterval`, not on every insert (the network coming back, an audit record and `sync()` still upload at
   once).
 - **Heartbeat metadata:** every `heartbeat` record carries an optional `heartbeat` object (`strategy`,
   `min_interval`, `max_interval`, `next_at`, `battery_exempt`, `device_idle`), so a server can tell an expected gap
@@ -88,6 +88,12 @@ emulator. Decisions: [docs/DECISIONS.md](docs/DECISIONS.md#round-2-field-force-a
 
 ### Changed
 
+- **Upload retries:** a request answered `5xx` or `429`, or without an answer (timeout, network error), is tried
+  again in the same upload after 2, 4 and 8 seconds (at most 4 tries, one `http` event per try; owner decision
+  R2-Q18). Other answers are not tried again, and a `401` still refreshes the JWT and retries once (at most one
+  refresh per upload, also across the tries). After the last failed try the records stay queued as before, with one
+  attempt counted, and with `syncInterval` above 0 normal records wait `syncInterval` counted from that try. Before,
+  every failed request ended the upload at once.
 - After a user force stop, a background event that still reaches the app (an activity update or a stationary-region exit already on its way) no longer restarts tracking (Android 11+); tracking resumes when the app is opened (`ready()`).
 - When the geofence backend answers `UNAVAILABLE` while the stored geofences are registered (Google Play services' `GEOFENCE_NOT_AVAILABLE`, for example right after location services come back on, before Play services has switched its network location on again), the plugin registers them again after 10, 30, 60, 120 and 300 s, and stops at the first registration without `UNAVAILABLE`, when tracking stops, or after the last try. Before, they stayed unregistered until tracking started again.
 - **Stationary no longer polls:** before, the stationary state kept a `'balanced'` request with up to one fix per

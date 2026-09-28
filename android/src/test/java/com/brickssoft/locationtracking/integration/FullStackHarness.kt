@@ -564,6 +564,17 @@ internal abstract class FullStackTestBase {
         runCurrent()
     }
 
+    /**
+     * Advances until no upload was tried for [RETRIES_MS]: every failing upload has ended its retries (the longest
+     * wait between two tries is 8 s).
+     */
+    protected fun TestScope.endFailingUploads() {
+        do {
+            val before = server.uploads.size
+            advance(RETRIES_MS)
+        } while (server.uploads.size != before)
+    }
+
     /** The GPS delivers [fixes] (one batch); the pipeline, the sink and the uploads run. */
     protected fun TestScope.emit(p: FullStackProcess, vararg fixes: TrackedLocation) {
         p.providers.locationBackend.emit(*fixes)
@@ -597,6 +608,9 @@ internal abstract class FullStackTestBase {
 
         /** `heartbeat.minInterval` of [config], ms. */
         const val MIN_MS = 180_000L
+
+        /** How long a failing upload keeps retrying after its first try: 2 + 4 + 8 s (OkHttpSyncer, R2-Q18). */
+        const val RETRIES_MS = 14_000L
         const val PARAMS = """{"device_id":"abc","fleet":7}"""
         val PARAMS_MAP: Map<String, Any> = mapOf("device_id" to "abc", "fleet" to 7)
     }

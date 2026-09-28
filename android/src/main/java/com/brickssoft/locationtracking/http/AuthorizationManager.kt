@@ -58,11 +58,14 @@ internal class AuthorizationManager(
     fun appliesTo(http: HttpConfig): Boolean =
         http.authorization != null && !HttpSupport.hasHeader(http.headers, HttpSupport.AUTHORIZATION)
 
-    /** The token for the next request, refreshing first if it is missing or about to expire (and refreshable). */
-    suspend fun tokenForRequest(client: OkHttpClient): Token {
+    /**
+     * The token for the next request, refreshing first if it is missing or about to expire (and refreshable), unless
+     * [mayRefresh] is false.
+     */
+    suspend fun tokenForRequest(client: OkHttpClient, mayRefresh: Boolean = true): Token {
         val auth = configStore.config.value.http.authorization ?: return Token(null, false)
         val current = auth.accessToken.nonBlank()
-        if (!needsRefresh(auth) || !canRefresh(auth)) return Token(current, false)
+        if (!mayRefresh || !needsRefresh(auth) || !canRefresh(auth)) return Token(current, false)
         return Token(refresh(client, current) ?: current, true)
     }
 

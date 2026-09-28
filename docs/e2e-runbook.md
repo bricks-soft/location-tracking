@@ -753,6 +753,26 @@ E2E_DRY_RUN=1 E2E_SUITE_DIR=examples/field-force/e2e .github/scripts/run-e2e.sh 
 The `node --test` commands in [6.1](#61-full-runs)–[6.3](#63-long-scenarios) do not set the device baseline; use the
 script when a scenario fails only locally.
 
+**Several AVDs at once.** Jobs on different AVDs can run at the same time. Each job needs its own emulator console
+port, adb serial, back-office port and artifacts directory; nothing else in the kit is shared. An AVD cannot run twice at
+once, so two jobs on the same image need two AVDs (for example a copy of `e2e-34` named `e2e-34b`, created as in
+[3.4](#34-create-the-avds)). Stop only your own emulator (`adb -s <serial> emu kill`), never all of them.
+
+```bash
+emulator -avd e2e-34b -port 5556 -no-snapshot -wipe-data -no-boot-anim -no-audio -no-window \
+  -gpu swiftshader_indirect -memory 4096 -cores 4 > ~/lt-runs/emulator-e2e-34b.log 2>&1 &
+adb -s emulator-5556 wait-for-device
+until [ "$(adb -s emulator-5556 shell getprop sys.boot_completed | tr -d '\r')" = "1" ]; do sleep 2; done
+E2E_SERIAL=emulator-5556 E2E_BACKEND_PORT=8788 E2E_ARTIFACTS_DIR=~/lt-runs/field-force-api34 \
+  E2E_SUITE_DIR=examples/field-force/e2e \
+  E2E_APK=examples/field-force/android/app/build/outputs/apk/debug/app-debug.apk .github/scripts/run-e2e.sh
+```
+
+The round-2 follow-up ran the whole matrix in three lanes on a 12-core host with 62 GB of memory (4 cores and 4 GB
+per emulator, boots 60 s apart): API 34 plugin suite (ports 5554/8787); field-force suite on `e2e-34b`, then P-P08
+on `e2e-34-nogms` (5556/8788); API 29 subset, then API 35 subset (5558/8789). Results and times:
+[DECISIONS.md](DECISIONS.md), section R2F.
+
 ### 6.5 The image without Google Play services (P-P08)
 
 P-P08 needs the `default` image; on a `google_apis` image it is skipped ("needs an image without Google Play

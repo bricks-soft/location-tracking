@@ -479,9 +479,10 @@ General rules:
   - then `Authorization: Bearer <accessToken>` when authorization is configured and a token is available, unless the headers already contain `Authorization` (which disables the JWT handling).
 - Outcomes:
   - 2xx: the records are deleted (an unreadable body still counts as success).
-  - 401: refresh the token, then retry once, unless a refresh was already attempted for this upload (at most one refresh per upload).
-  - Any other status, or an I/O error: the records stay queued, and `attempts` and `last_attempt_at` are updated once per upload.
-- One `http` event is emitted per HTTP request (401 + refresh + retry = 2 events). An invalid `http.url` is treated as no URL.
+  - 401: refresh the token, then retry once, unless a refresh was already attempted for this upload (at most one refresh per upload, across all tries).
+  - 5xx, 429, or an I/O error (timeout, no connection): the same upload tries again after 2, 4 and 8 s (at most 4 tries, R2-Q18), holding the upload lock; then as below.
+  - Any other status, or the last failed try: the records stay queued, and `attempts` and `last_attempt_at` are updated once per upload.
+- One `http` event is emitted per HTTP request (401 + refresh + retry = 2 events; one per try). An invalid `http.url` is treated as no URL.
 
 **Templates.**
 - `<%= name %>` tolerates surrounding whitespace. It is substituted as a raw JSON literal:

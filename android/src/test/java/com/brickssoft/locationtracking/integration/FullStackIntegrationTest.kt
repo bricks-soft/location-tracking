@@ -251,7 +251,7 @@ internal class FullStackIntegrationTest : FullStackTestBase() {
 
     @Test
     fun `e - a failed heartbeat stays queued and is re-sent with its recorded_at and a later sent_at`() = runTest {
-        val heartbeatFailures = AtomicInteger(1)
+        val heartbeatFailures = AtomicInteger(4) // the first try and its 3 retries
         server.respond = { _, _, body ->
             if (IngestServer.contains(body, "heartbeat") && heartbeatFailures.getAndDecrement() > 0) {
                 IngestServer.status(500)
@@ -267,18 +267,20 @@ internal class FullStackIntegrationTest : FullStackTestBase() {
         advance(MIN_MS)
         alarms.fireListener()
         runCurrent()
-        val failed = server.uploads.last()
-        assertEquals(500, failed.status)
-        assertEquals(listOf("heartbeat"), failed.events)
+        advance(RETRIES_MS)
+        val tries = server.uploads.takeLast(4)
+        assertTrue(tries.all { it.status == 500 && it.events == listOf("heartbeat") })
+        val failed = tries.last()
         val heartbeat = failed.records.single()
+        assertEquals(1, tries.map { it.records.single().getString("uuid") }.distinct().size)
         assertEquals(1, p.locationStore.count(setOf(RecordEvent.HEARTBEAT)))
         assertEquals(1, p.heartbeat.status().pendingHeartbeats)
         val failure = p.eventsOf<TrackingEvent.Http>().last().result
         assertFalse(failure.success)
         assertEquals(500, failure.status)
 
-        // Connectivity returns 45 s later (the monitor's default-network callback): the queue is retried.
-        advance(45_000)
+        // Connectivity returns 45 s after the first try (the monitor's default-network callback): the queue is retried.
+        advance(45_000 - RETRIES_MS)
         env.reconnectWifi(ShadowNetwork.newInstance(7))
         runCurrent()
         val retry = server.uploads.last()
@@ -296,15 +298,16 @@ internal class FullStackIntegrationTest : FullStackTestBase() {
         )
 
         // The next heartbeat fails too; the one after it delivers both, oldest first.
-        heartbeatFailures.set(1)
+        heartbeatFailures.set(4)
         advance(MIN_MS - 45_000)
         alarms.fireListener()
         runCurrent()
+        advance(RETRIES_MS)
         assertEquals(500, server.uploads.last().status)
         val late = server.uploads.last().records.single()
         assertEquals(1, p.heartbeat.status().pendingHeartbeats)
 
-        advance(MIN_MS)
+        advance(MIN_MS - RETRIES_MS)
         alarms.fireListener()
         runCurrent()
         val (lateAgain, newest) = server.uploads.takeLast(2).map { it.records.single() }
@@ -577,8 +580,8 @@ internal class FullStackIntegrationTest : FullStackTestBase() {
         assertTrue(server.uploads.all { it.isBatch && it.records.size in 1..2 })
 
         // Back online: the queue drains in batches of two, oldest first.
+        endFailingUploads()
         serverUp.set(true)
-        advance(30_000)
         env.reconnectWifi(ShadowNetwork.newInstance(9))
         runCurrent()
         val batches = server.uploads.filter { it.accepted }
@@ -1100,6 +1103,7 @@ internal class FullStackIntegrationTest : FullStackTestBase() {
         ).getString("uuid")
         runCurrent()
         assertEquals(3, js.getCount().getInt("count"))
+        endFailingUploads()
 
         serverUp.set(true)
         val synced = js.sync().getJSONArray("locations")

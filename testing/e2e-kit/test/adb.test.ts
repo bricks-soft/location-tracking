@@ -123,6 +123,31 @@ describe('Adb device and package methods', () => {
     assert.ok(lines.indexOf('root') > lines.lastIndexOf('shell pm path android'), lines.join('\n'));
   });
 
+  test('reboot first waits until the remembered grants are persisted, once', async () => {
+    const granted =
+      '<package name="com.app"><permission name="android.permission.ACCESS_FINE_LOCATION" granted="true" flags="0" /></package>';
+    const { fake, adb } = setup([
+      { match: '^shell id -u$', stdout: '0\n' },
+      { match: 'getprop ro\\.build\\.version\\.sdk', stdout: '34\n' },
+      { match: 'runtime-permissions\\.xml', stdout: granted },
+      { match: 'boot_id', stdout: 'boot-a\n', times: 2 },
+      { match: 'boot_id', stdout: 'boot-b\n', times: 3 },
+      { match: 'boot_id', stdout: 'boot-c\n' },
+      { match: 'getprop sys\\.boot_completed', stdout: '1\n1\n' },
+      { match: '^shell pm path android$', stdout: 'package:x\n' },
+      { match: '^root$', stdout: 'restarting adbd as root\n' },
+    ]);
+    adb.rememberGrants('com.app', ['android.permission.ACCESS_FINE_LOCATION', 'android.permission.CAMERA']);
+    await adb.revoke('com.app', 'android.permission.CAMERA');
+    await adb.reboot({ timeoutMs: 30_000 });
+    const lines = fake.commandLines();
+    const read = lines.findIndex((line) => line.includes('runtime-permissions.xml'));
+    assert.ok(read >= 0 && read < lines.indexOf('shell svc power reboot'), lines.join('\n'));
+
+    await adb.reboot({ timeoutMs: 30_000 }); // nothing granted since: no wait
+    assert.equal(fake.commandLines().filter((line) => line.includes('runtime-permissions.xml')).length, 1);
+  });
+
   test('reboot falls back to adb reboot when svc power reboot is not available', async () => {
     const { fake, adb } = setup([
       { match: '^shell id -u$', stdout: '0\n' },

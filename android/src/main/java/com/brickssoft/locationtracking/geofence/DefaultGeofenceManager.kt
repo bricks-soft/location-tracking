@@ -212,6 +212,7 @@ class DefaultGeofenceManager(
         mutex.withLock {
             ensureLoadedLocked()
             val ids = entries.keys.toList()
+            val registered = registrableIdsLocked()
             try {
                 geofenceStore.removeAll()
             } catch (e: CancellationException) {
@@ -220,15 +221,11 @@ class DefaultGeofenceManager(
                 throw e.toTrackingException(ErrorCode.IO_ERROR, "failed to remove geofences")
             }
             if (configStore.runtime.value.enabled) {
+                // The stored ids only: `backend.removeAll()` would also drop the engine's stationary region, which
+                // shares the backend's PendingIntent (round 2, §1 and §3).
                 val current = providers.geofence()
                 for (backend in listOfNotNull(registeredBackend, current).distinctBy { it.kind }) {
-                    try {
-                        backend.removeAll()
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Logger.w(TAG, "failed to unregister all geofences from ${backend.kind.wire}", e)
-                    }
+                    removeFromOsLocked(backend, registered)
                 }
                 registeredBackend = current
             }
@@ -316,33 +313,49 @@ class DefaultGeofenceManager(
 
     override suspend fun onGeofenceTransitions(transitions: List<OsGeofenceTransition>) {
         if (transitions.isEmpty()) return
-        mutex.withLock {
-            if (session == false || !configStore.runtime.value.enabled) {
-                Logger.w(TAG, "ignoring ${transitions.size} geofence transition(s): tracking is stopped")
-                return
+        // The engine's stationary region (round 2, §3) is routed before any other check: its transitions are never
+        // stored, recorded, emitted or counted. They are handed to the engine after the user geofences of the same
+        // batch, so the engine's work (a restore, OS calls) does not delay the geofence audit records, and outside
+        // [mutex], because the engine holds its own lock while it calls onTrackingStarted / onTrackingStopped.
+        val (stationary, others) = transitions.partition { it.id == Constants.STATIONARY_REGION_ID }
+        if (others.isNotEmpty()) {
+            mutex.withLock {
+                if (session == false || !configStore.runtime.value.enabled) {
+                    Logger.w(TAG, "ignoring ${others.size} geofence transition(s): tracking is stopped")
+                    return@withLock
+                }
+                try {
+                    ensureLoadedLocked()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Logger.e(TAG, "cannot load geofences; dropping ${others.size} transition(s)", e)
+                    return@withLock
+                }
+                for (transition in others) {
+                    val entry = entries[transition.id]
+                    if (entry == null) {
+                        Logger.w(TAG, "ignoring ${transition.action} for unknown geofence '${transition.id}'")
+                        continue
+                    }
+                    Logger.d(TAG, "OS transition ${transition.action} '${transition.id}'")
+                    if (entry.spec.isPolygon) {
+                        onPolygonCircleTransitionLocked(entry, transition)
+                    } else {
+                        onCircleTransitionLocked(entry, transition)
+                    }
+                }
+                refreshDerivedLocked()
             }
+        }
+        for (transition in stationary) {
             try {
-                ensureLoadedLocked()
+                stationarySink.value.onStationaryRegionTransition(transition)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Logger.e(TAG, "cannot load geofences; dropping ${transitions.size} transition(s)", e)
-                return
+                Logger.e(TAG, "failed to deliver ${transition.action} of the stationary region", e)
             }
-            for (transition in transitions) {
-                val entry = entries[transition.id]
-                if (entry == null) {
-                    Logger.w(TAG, "ignoring ${transition.action} for unknown geofence '${transition.id}'")
-                    continue
-                }
-                Logger.d(TAG, "OS transition ${transition.action} '${transition.id}'")
-                if (entry.spec.isPolygon) {
-                    onPolygonCircleTransitionLocked(entry, transition)
-                } else {
-                    onCircleTransitionLocked(entry, transition)
-                }
-            }
-            refreshDerivedLocked()
         }
     }
 

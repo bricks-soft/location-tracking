@@ -83,7 +83,8 @@ class DefaultTrackingEngineTest {
 
     private val origin = Fixtures.location(accuracy = 5f, speed = 0f)
     private val geolocation get() = configStore.config.value.geolocation
-    private val stationarySpec get() = LocationRequests.stationary(geolocation)
+    /** STATIONARY with the stationary region registered (the fake geofence backend accepts it). */
+    private val stationarySpec get() = LocationRequests.passive(geolocation)
     private val movingSpec get() = LocationRequests.moving(geolocation)
 
     @After
@@ -156,7 +157,7 @@ class DefaultTrackingEngineTest {
         assertSame(origin, recordSink.records[1].location)
         assertEquals(listOf(TrackingEvent.EnabledChange(true)), events.events)
         assertEquals(stationarySpec, activeSpec())
-        assertEquals(DesiredAccuracy.BALANCED, activeSpec()?.accuracy)
+        assertEquals(DesiredAccuracy.PASSIVE, activeSpec()?.accuracy)
         assertEquals(listOf(DesiredAccuracy.HIGH to 30_000L), locationBackend.currentLocationCalls)
         assertEquals(listOf(10_000L), activityBackend.startCalls)
         assertEquals(1, service.startCalls)
@@ -278,7 +279,7 @@ class DefaultTrackingEngineTest {
     }
 
     @Test
-    fun `refused foreground service records tracking_stop permission_denied and throws`() = runTest {
+    fun `refused foreground service records tracking_stop service_start_failed and throws`() = runTest {
         val engine = newEngine()
         service.startResult = false
         locationBackend.lastLocation = origin
@@ -286,8 +287,10 @@ class DefaultTrackingEngineTest {
         val error = assertStartFails { engine.start() }
         runCurrent()
 
+        // Location permission is granted: Android refused the service. The JS error code stays PERMISSION_DENIED.
         assertEquals(ErrorCode.PERMISSION_DENIED, error.code)
-        assertEquals(listOf("tracking_stop:permission_denied"), records())
+        assertTrue(error.message!!.contains("background"))
+        assertEquals(listOf("tracking_stop:service_start_failed"), records())
         assertSame(origin, recordSink.records.single().location)
         assertFalse(configStore.runtime.value.enabled)
         assertTrue(events.events.isEmpty())
@@ -338,13 +341,15 @@ class DefaultTrackingEngineTest {
         started(engine)
 
         val near = Fixtures.moved(origin, 15.0)
-        advance(10_000) // runtime.lastLocation is refreshed at most every 10 s
+        advance(10_000)
         emit(near)
 
         assertEquals(listOf("tracking_start:start", "motionchange:false"), records())
         assertTrue(odometer.locations.isEmpty())
         assertEquals(listOf(origin, near), geofences.locations)
-        assertEquals(near, configStore.runtime.value.lastLocation)
+        // STATIONARY fixes never replace runtime.lastLocation, so heartbeats keep the anchor fix (round 2, §3); the
+        // fake sink does not persist the motionchange location, so nothing wrote it here.
+        assertNull(configStore.runtime.value.lastLocation)
         assertEquals(listOf(origin to false, near to false), processor.processed)
     }
 
@@ -802,6 +807,21 @@ class DefaultTrackingEngineTest {
     }
 
     @Test
+    fun `onServiceStartFailed after the location permission was revoked records permission_denied`() = runTest {
+        val engine = newEngine()
+        started(engine)
+        permissions.set(PermissionType.LOCATION, PermissionState.DENIED)
+
+        // Android 14+: the system's START_STICKY restart fails in startForeground without location permission.
+        engine.onServiceStartFailed("SecurityException: FOREGROUND_SERVICE_TYPE_LOCATION requires permissions")
+        runCurrent()
+
+        assertEquals("tracking_stop:permission_denied", records().last())
+        assertFalse(configStore.runtime.value.enabled)
+        assertFalse(locationBackend.isRequesting)
+    }
+
+    @Test
     fun `onServiceStartFailed does nothing when tracking is not enabled`() = runTest {
         val engine = newEngine()
 
@@ -996,6 +1016,7 @@ class DefaultTrackingEngineTest {
         advance(10 * MINUTE) // the stop timer of the location mode was cancelled
         assertEquals(5, recordSink.records.size)
 
+        locationBackend.currentLocation = origin.copy(time = clock.now()) // a current initial fix
         engine.start()
         runCurrent()
 

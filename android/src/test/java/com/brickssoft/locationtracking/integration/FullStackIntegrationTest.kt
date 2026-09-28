@@ -104,7 +104,7 @@ internal class FullStackIntegrationTest : FullStackTestBase() {
         assertEquals(t0, runtime.trackingStartedAt)
         assertEquals(t0, runtime.lastRecordAt)
         assertEquals(1, p.service.startCalls)
-        assertEquals(DesiredAccuracy.BALANCED, p.providers.locationBackend.active.values.single().accuracy)
+        assertEquals(DesiredAccuracy.PASSIVE, p.providers.locationBackend.active.values.single().accuracy)
         assertEquals(listOf(10_000L), p.providers.activityBackend.startCalls)
         assertHealthy(p)
     }
@@ -160,7 +160,7 @@ internal class FullStackIntegrationTest : FullStackTestBase() {
             assertEquals(gps.latitudeAt(230.0), Wire.latitude(stopped), 1e-9)
             assertFalse(p.configStore.runtime.value.isMoving)
             assertEquals(listOf(false, true, false), p.eventsOf<TrackingEvent.MotionChange>().map { it.isMoving })
-            assertEquals(DesiredAccuracy.BALANCED, p.providers.locationBackend.active.values.single().accuracy)
+            assertEquals(DesiredAccuracy.PASSIVE, p.providers.locationBackend.active.values.single().accuracy)
             assertEquals(0, p.locationStore.count())
             assertHealthy(p)
         }
@@ -173,7 +173,7 @@ internal class FullStackIntegrationTest : FullStackTestBase() {
         p.engine.ready(config(), reset = true)
         val t0 = clock.elapsedRealtime()
         val w0 = clock.now()
-        start(p)
+        val origin = start(p)
 
         // The window runs from the last record (the initial motionchange): listener alarm + allow-while-idle backup.
         assertEquals(t0 + MIN_MS, alarms.listener()!!.triggerAtMs)
@@ -182,7 +182,7 @@ internal class FullStackIntegrationTest : FullStackTestBase() {
         assertEquals(HeartbeatStrategy.LISTENER_WITH_BACKUP, armed.strategy)
         assertEquals(w0 + MIN_MS, armed.nextHeartbeatAt)
 
-        // Parked: a jittery fix is not recorded but becomes the last known location.
+        // Parked: a jittery fix is not recorded and does not replace the anchor as the heartbeat's location.
         advance(60_000)
         val parked = gps.fix(5.0, speed = 0f)
         emit(p, parked)
@@ -200,8 +200,8 @@ internal class FullStackIntegrationTest : FullStackTestBase() {
         runCurrent()
         val heartbeat = heartbeatsReceived().single()
         assertEquals(1, server.uploads.count { "heartbeat" in it.events })
-        assertEquals(parked.latitude, Wire.latitude(heartbeat), 1e-9)
-        assertEquals(Iso8601.format(parked.time), heartbeat.getString("timestamp"))
+        assertEquals(origin.latitude, Wire.latitude(heartbeat), 1e-9)
+        assertEquals(Iso8601.format(origin.time), heartbeat.getString("timestamp"))
         assertEquals(w0 + MIN_MS, Wire.recordedAt(heartbeat))
         assertEquals(w0 + MIN_MS, Wire.sentAt(heartbeat))
         assertFalse(heartbeat.getBoolean("is_moving"))

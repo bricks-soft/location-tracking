@@ -4,6 +4,7 @@ import com.brickssoft.locationtracking.config.Config
 import com.brickssoft.locationtracking.config.GeofenceConfig
 import com.brickssoft.locationtracking.config.RuntimeState
 import com.brickssoft.locationtracking.config.TrackingMode
+import com.brickssoft.locationtracking.core.Constants
 import com.brickssoft.locationtracking.core.ErrorCode
 import com.brickssoft.locationtracking.core.Logger
 import com.brickssoft.locationtracking.core.TrackingEvent
@@ -114,6 +115,7 @@ class DefaultGeofenceManagerTest {
             Fixtures.circle(identifier = ""),
             Fixtures.circle(identifier = "   "),
             Fixtures.circle(identifier = "x".repeat(101)),
+            Fixtures.circle(identifier = Constants.STATIONARY_REGION_ID),
             Fixtures.circle(radius = 0f),
             Fixtures.circle(radius = -5f),
             Fixtures.circle(radius = Float.NaN),

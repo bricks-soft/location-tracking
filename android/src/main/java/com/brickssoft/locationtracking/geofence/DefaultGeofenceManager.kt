@@ -794,6 +794,9 @@ class DefaultGeofenceManager(
         fun validated(spec: GeofenceSpec): GeofenceSpec {
             val id = spec.identifier
             if (id.isBlank()) invalid("geofence identifier is required")
+            if (id == Constants.STATIONARY_REGION_ID) {
+                invalid("geofence identifier '$id' is reserved for the plugin's stationary region")
+            }
             if (id.length > MAX_IDENTIFIER_LENGTH) {
                 invalid("geofence identifier is longer than $MAX_IDENTIFIER_LENGTH characters")
             }

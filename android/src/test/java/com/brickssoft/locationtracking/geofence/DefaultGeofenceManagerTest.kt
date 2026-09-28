@@ -265,7 +265,10 @@ class DefaultGeofenceManagerTest {
         h.manager.removeAll()
 
         assertEquals(0, h.store.count())
-        assertEquals(1, h.backend.removeAllCalls)
+        // The stored ids, not backend.removeAll(), which would also drop the engine's stationary region.
+        assertTrue(h.backend.registered.isEmpty())
+        assertEquals(0, h.backend.removeAllCalls)
+        assertEquals(listOf(listOf("a", "b")), h.backend.removeCalls)
         assertEquals(listOf(TrackingEvent.GeofencesChange(emptyList(), listOf("a", "b"))), h.changes)
     }
 

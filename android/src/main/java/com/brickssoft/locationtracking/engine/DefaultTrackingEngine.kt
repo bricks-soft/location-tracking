@@ -7,6 +7,7 @@ import com.brickssoft.locationtracking.config.RuntimeState
 import com.brickssoft.locationtracking.config.State
 import com.brickssoft.locationtracking.config.TrackingMode
 import com.brickssoft.locationtracking.core.Clock
+import com.brickssoft.locationtracking.core.Constants
 import com.brickssoft.locationtracking.core.ErrorCode
 import com.brickssoft.locationtracking.core.EventBus
 import com.brickssoft.locationtracking.core.Logger
@@ -19,6 +20,7 @@ import com.brickssoft.locationtracking.heartbeat.HeartbeatScheduler
 import com.brickssoft.locationtracking.http.HttpSyncer
 import com.brickssoft.locationtracking.model.ActivitySample
 import com.brickssoft.locationtracking.model.ActivityType
+import com.brickssoft.locationtracking.model.GeofenceAction
 import com.brickssoft.locationtracking.model.PermissionLevel
 import com.brickssoft.locationtracking.model.ProviderState
 import com.brickssoft.locationtracking.model.Record
@@ -30,9 +32,12 @@ import com.brickssoft.locationtracking.processing.LocationProcessor
 import com.brickssoft.locationtracking.processing.Odometer
 import com.brickssoft.locationtracking.processing.RecordFactory
 import com.brickssoft.locationtracking.provider.ActivityBackend
+import com.brickssoft.locationtracking.provider.GeofenceBackend
 import com.brickssoft.locationtracking.provider.LocationBackend
 import com.brickssoft.locationtracking.provider.LocationListener
 import com.brickssoft.locationtracking.provider.LocationRequestSpec
+import com.brickssoft.locationtracking.provider.OsGeofence
+import com.brickssoft.locationtracking.provider.OsGeofenceTransition
 import com.brickssoft.locationtracking.provider.ProviderFactory
 import com.brickssoft.locationtracking.record.RecordSink
 import com.brickssoft.locationtracking.service.ServiceController
@@ -61,6 +66,19 @@ import kotlin.coroutines.cancellation.CancellationException
  * `odometer` -> `geofences.onLocation` -> elastic distance check against the last recorded fix ->
  * `recordFactory` -> `recordSink`. While STATIONARY a fix only feeds the state machine and the geofences
  * (no odometer, no record), so GPS jitter while parked is neither recorded nor counted.
+ *
+ * Stationary GPS-off mode (architecture round 2, §3). While STATIONARY in the LOCATION mode the engine makes no
+ * location request that computes fixes: it registers the OS geofence [StationaryRegion] (id
+ * `Constants.STATIONARY_REGION_ID`, EXIT only) around the stationary anchor and requests PASSIVE updates, which only
+ * forward fixes that other apps cause. The foreground service and the heartbeat keep running. The heartbeat carries
+ * `runtime.lastLocation`, which is the anchor fix while STATIONARY (it changes only when the anchor changes, see
+ * [onStationaryFix]), so heartbeats show the anchor with the time it was acquired. STATIONARY ends (GPS on again,
+ * the configured request, a `motionchange` with `is_moving: true`) on the first of: the region's EXIT
+ * ([onStationaryRegionTransition]), a fix that is certainly outside the stationary radius (see
+ * [MotionStateMachine]), a confident moving activity lasting `motionTriggerDelay`, or `changePace(true)`. If the
+ * region cannot be registered (no background location permission, too many geofences, a backend error), or no
+ * current anchor is known (see [syncStationaryRegion]), a LOW-power request (at most one fix per 3 minutes) replaces
+ * the PASSIVE one. While `geofences.needsContinuousLocation` is true the configured request is used, as before.
  */
 class DefaultTrackingEngine(
     private val configStore: ConfigStore,
@@ -157,10 +175,16 @@ class DefaultTrackingEngine(
         stopLocked(reason)
     }
 
+    /**
+     * The `tracking_stop` reason is `permission_denied` when foreground location permission is no longer granted
+     * (on Android 14+ the system's START_STICKY restart after a revoked permission fails in `startForeground`),
+     * otherwise `service_start_failed`.
+     */
     override suspend fun onServiceStartFailed(error: String) = serialized {
         if (session == null && !runtime.enabled) return@serialized
-        Logger.w(TAG, "the foreground service failed to start ($error); stopping tracking")
-        stopLocked(REASON_SERVICE_START_FAILED)
+        val reason = if (permissions.hasForegroundLocation()) REASON_SERVICE_START_FAILED else REASON_PERMISSION_DENIED
+        Logger.w(TAG, "the foreground service failed to start ($error); stopping tracking with reason $reason")
+        stopLocked(reason)
     }
 
     override suspend fun onTerminate() = serialized {
@@ -179,6 +203,12 @@ class DefaultTrackingEngine(
     override suspend fun onActivitySamples(samples: List<ActivitySample>) {
         if (samples.isEmpty()) return
         serialized { handleActivity(samples) }
+    }
+
+    // ------------------------------------------------------------------ StationaryRegionSink
+
+    override suspend fun onStationaryRegionTransition(transition: OsGeofenceTransition) = serialized {
+        handleStationaryRegionTransition(transition)
     }
 
     // ------------------------------------------------------------------ start / stop / restore
@@ -206,12 +236,19 @@ class DefaultTrackingEngine(
             it.copy(enabled = true, trackingMode = mode, isMoving = false, trackingStartedAt = startedAt)
         }
         if (!startService()) {
+            // Foreground location is granted (checked above): Android refused the foreground service, for example a
+            // start from the background, or Android 14+ with only while-in-use location permission. The error code
+            // stays PERMISSION_DENIED for the JS API; the audit record gives the precise reason.
             configStore.updateRuntime { it.copy(enabled = false) }
             if (wasEnabled) releaseOrphanedRegistrations()
-            submit(RecordEvent.TRACKING_STOP, bestKnownLocation(null), reason = REASON_PERMISSION_DENIED)
-            throw TrackingException(ErrorCode.PERMISSION_DENIED, "The location foreground service could not be started")
+            submit(RecordEvent.TRACKING_STOP, bestKnownLocation(null), reason = REASON_SERVICE_START_FAILED)
+            throw TrackingException(
+                ErrorCode.PERMISSION_DENIED,
+                "The location foreground service could not be started (Android refused a start from the background)",
+            )
         }
-        val s = activate(mode, reason)
+        // A process that died while tracking may have left its stationary region with the OS.
+        val s = activate(mode, reason, leftoverRegion = wasEnabled)
         events.emit(TrackingEvent.EnabledChange(true))
         if (mode == TrackingMode.LOCATION) launchInitialFix(s)
     }
@@ -251,13 +288,18 @@ class DefaultTrackingEngine(
             stopLocked(REASON_SERVICE_START_FAILED)
             return
         }
-        val s = activate(mode, reason)
+        // GMS and HMS keep geofences across a process death: the stationary region of the dead process may remain.
+        val s = activate(mode, reason, leftoverRegion = true)
         if (mode == TrackingMode.LOCATION) launchInitialFix(s)
     }
 
-    /** Starts a new session: components, backends, location request, then the `tracking_start` record. */
-    private suspend fun activate(mode: TrackingMode, reason: String): Session {
+    /**
+     * Starts a new session: components, backends, location request, then the `tracking_start` record.
+     * [leftoverRegion]: an earlier process may have left the stationary region registered with the OS.
+     */
+    private suspend fun activate(mode: TrackingMode, reason: String, leftoverRegion: Boolean): Session {
         val s = Session(nextSessionId++, mode, MotionSettings.from(config))
+        s.leftoverRegion = leftoverRegion
         session = s
         guarded("processor.reset") { processor.reset() }
         guarded("device.start") { device.start() }
@@ -292,8 +334,11 @@ class DefaultTrackingEngine(
         if (mode == TrackingMode.LOCATION) launchInitialFix(s)
     }
 
-    /** Resets the motion state to STATIONARY and applies the mode's activity updates, request and timers. */
-    private fun configureMode(s: Session) {
+    /**
+     * Resets the motion state to STATIONARY (without an anchor until the initial fix) and applies the mode's activity
+     * updates, stationary region, request and timers.
+     */
+    private suspend fun configureMode(s: Session) {
         timers.cancel(TimerKind.STOP_TIMEOUT)
         timers.cancel(TimerKind.MOTION_TRIGGER)
         s.motion.reset()
@@ -302,7 +347,7 @@ class DefaultTrackingEngine(
         s.lastActivityType = null
         if (s.mode == TrackingMode.LOCATION) startActivityUpdates(s) else stopActivityUpdates(s)
         s.needsContinuousLocation = geofences.needsContinuousLocation.value
-        applyLocationRequest(s)
+        applyMotionRequests(s)
         scheduleElapsedStop(s)
     }
 
@@ -330,6 +375,9 @@ class DefaultTrackingEngine(
             stopActivityBackend()
         }
         submit(RecordEvent.TRACKING_STOP, bestKnownLocation(s), reason = reason)
+        // After the record, so a slow OS call cannot delay it. Without a session (cold process): GMS and HMS keep
+        // geofences across a process death, so the previous process may have left the region.
+        if (s != null) removeStationaryRegion(s) else removeStationaryRegionFrom(null)
         guarded("serviceController.stop") { serviceController.stop() }
         guarded("heartbeat.stop") { heartbeat.stop() }
         guarded("geofences.onTrackingStopped") { geofences.onTrackingStopped() }
@@ -341,6 +389,7 @@ class DefaultTrackingEngine(
     /** A refused start in a cold process: drop the previous process's activity, alarm and geofence registrations. */
     private suspend fun releaseOrphanedRegistrations() {
         stopActivityBackend()
+        removeStationaryRegionFrom(null)
         guarded("heartbeat.stop") { heartbeat.stop() }
         guarded("geofences.onTrackingStopped") { geofences.onTrackingStopped() }
     }
@@ -366,7 +415,7 @@ class DefaultTrackingEngine(
         }
         execute(s, s.motion.updateSettings(MotionSettings.from(new)))
         if (session !== s) return
-        applyLocationRequest(s)
+        applyMotionRequests(s)
         if (old.geolocation.stopAfterElapsedMinutes != new.geolocation.stopAfterElapsedMinutes) scheduleElapsedStop(s)
         if (old.notification != new.notification) {
             guarded("serviceController.refreshNotification") { serviceController.refreshNotification() }
@@ -378,13 +427,15 @@ class DefaultTrackingEngine(
             old.activity.activityRecognitionInterval != new.activity.activityRecognitionInterval
 
     /**
-     * `locationProvider` changed: re-selects the backend. While tracking, listeners, activity updates and
-     * geofences are removed from the current backend first and registered again on the selected one.
+     * `locationProvider` changed: re-selects the backend. While tracking, listeners, activity updates, the
+     * stationary region and geofences are removed from the current backend first and registered again on the
+     * selected one.
      */
     private suspend fun switchProvider(s: Session?, old: Config, new: Config) {
         if (s != null) {
             removeLocationUpdates(s)
             stopActivityUpdates(s)
+            removeStationaryRegion(s)
             guarded("geofences.onTrackingStopped") { geofences.onTrackingStopped() }
         }
         val changed = try {
@@ -401,15 +452,38 @@ class DefaultTrackingEngine(
         if (s != null) {
             guarded("geofences.onTrackingStarted") { geofences.onTrackingStarted(s.mode) }
             startActivityUpdates(s)
-            applyLocationRequest(s)
+            // The region is registered on the selected backend, also after a failure on the previous one.
+            applyMotionRequests(s, force = true)
         }
         if (changed) guarded("device.checkProviderState") { device.checkProviderState(PROVIDER_CHECK_REASON) }
     }
 
     // ------------------------------------------------------------------ backends
 
+    /**
+     * Brings the location request and the stationary region in line with the motion state. When the configured
+     * (MOVING) request is wanted it is applied first, so GPS is on before the OS call that removes the region.
+     * [force] and [checkLimit]: see [syncStationaryRegion].
+     */
+    private suspend fun applyMotionRequests(s: Session, force: Boolean = false, checkLimit: Boolean = false) {
+        if (!isStationary(s)) applyLocationRequest(s)
+        syncStationaryRegion(s, force, checkLimit)
+        applyLocationRequest(s)
+    }
+
+    /** STATIONARY in the LOCATION mode: the state in which the stationary region is wanted. */
+    private fun isStationary(s: Session): Boolean =
+        session === s && s.mode == TrackingMode.LOCATION && !s.motion.isMoving
+
     private fun applyLocationRequest(s: Session) {
-        val spec = LocationRequests.desired(s.mode, s.motion.isMoving, s.needsContinuousLocation, config.geolocation)
+        val spec = LocationRequests.desired(
+            s.mode,
+            s.motion.isMoving,
+            s.needsContinuousLocation,
+            config.geolocation,
+            // PASSIVE while the OS watches the region, and while the initial fix (its own request) is pending.
+            passive = s.region != null || !s.motionRecorded,
+        )
         val backend = providers.location()
         val current = s.locationBackend
         if (spec == s.appliedSpec && (spec == null || current === backend)) return
@@ -433,6 +507,168 @@ class DefaultTrackingEngine(
         s.locationBackend = null
         s.appliedSpec = null
         guarded("removeUpdates") { backend.removeUpdates(s.listener) }
+    }
+
+    /**
+     * Registers the stationary region while the session is STATIONARY in the LOCATION mode, and removes it otherwise.
+     *
+     * The region is centred on the motion anchor and is registered only when:
+     * - the initial `motionchange` after start / restore has been recorded (so the fresh initial fix is the centre);
+     * - the anchor was current when it became the anchor (see [isAnchorConfirmed]): with `initialTriggerEntry =
+     *   false` the OS never reports EXIT for a device that is already outside, so a region around an old fix could
+     *   leave the device STATIONARY with GPS off after it moved away;
+     * - it is not up to date already: registered on the current backend with the configured radius and a centre at
+     *   most [REGION_RECENTER_M] from the anchor. [force] registers it again anyway (location services came back,
+     *   and GMS / HMS may have dropped it);
+     * - no earlier registration of this stationary period failed (not retried until [force] or leaving STATIONARY);
+     * - the user geofences leave the OS a free slot (see [userGeofenceSlotsFull]; checked before registering and,
+     *   with [checkLimit], for a registered region, which is then removed).
+     * Otherwise STATIONARY uses the low-power fallback request. Never throws, except cancellation.
+     */
+    private suspend fun syncStationaryRegion(s: Session, force: Boolean = false, checkLimit: Boolean = false) {
+        if (!isStationary(s)) {
+            removeStationaryRegion(s)
+            s.regionFailed = false
+            return
+        }
+        if (!s.motionRecorded) return
+        val anchor = s.motion.anchor ?: return
+        if (checkLimit && s.region != null && userGeofenceSlotsFull()) {
+            Logger.w(TAG, "the user geofences need every OS geofence slot: removing the stationary region")
+            removeStationaryRegion(s)
+            return
+        }
+        val backend = try {
+            providers.geofence()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Logger.w(TAG, "no geofence backend for the stationary region; using the low-power request instead", e)
+            s.region = null
+            s.regionFailed = true
+            return
+        }
+        val radius = StationaryRegion.radius(config.geolocation.stationaryRadius)
+        val registered = s.region
+        val upToDate = registered != null &&
+            registered.radius == radius &&
+            s.regionBackend?.kind == backend.kind &&
+            distanceMeters(registered.latitude, registered.longitude, anchor.latitude, anchor.longitude) <=
+            REGION_RECENTER_M
+        if (upToDate && !force) return
+        if (s.regionFailed && !force) return
+        if (!isAnchorConfirmed(s, anchor)) {
+            Logger.i(TAG, "stationary anchor is ${ageMs(anchor) / 1000} s old: low-power requests until a current fix")
+            return
+        }
+        if (userGeofenceSlotsFull()) {
+            Logger.w(TAG, "the user geofences need every OS geofence slot: no stationary region, low-power requests")
+            removeStationaryRegion(s)
+            return
+        }
+        if (s.regionBackend?.let { it.kind != backend.kind } == true) removeStationaryRegion(s)
+        registerStationaryRegion(s, backend, StationaryRegion.around(anchor, config.geolocation.stationaryRadius))
+    }
+
+    /**
+     * True if [anchor] was current (at most [ANCHOR_MAX_AGE_MS] old) when it became the anchor. The device is
+     * believed not to have moved since, so a confirmed anchor stays confirmed for the whole stationary period.
+     */
+    private fun isAnchorConfirmed(s: Session, anchor: TrackedLocation): Boolean {
+        if (anchor === s.confirmedAnchor) return true
+        if (!isCurrent(anchor)) return false
+        s.confirmedAnchor = anchor
+        return true
+    }
+
+    /** At most [ANCHOR_MAX_AGE_MS] old by the wall clock (a fix from the future counts as current). */
+    private fun isCurrent(fix: TrackedLocation): Boolean = ageMs(fix) <= ANCHOR_MAX_AGE_MS
+
+    private fun ageMs(fix: TrackedLocation): Long = clock.now() - fix.time
+
+    /**
+     * True when the stored user geofences need every OS slot but one ([Constants.MAX_GEOFENCES] - 1 or more): GMS
+     * accepts at most 100 geofences per app, and the stationary region must not make the user's last `add` fail.
+     */
+    private suspend fun userGeofenceSlotsFull(): Boolean = try {
+        geofences.list().size >= Constants.MAX_GEOFENCES - 1
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Logger.w(TAG, "cannot count the user geofences", e)
+        false
+    }
+
+    /** Adds [region] to [backend] (adding the same id replaces it); on failure the low-power fallback applies. */
+    private suspend fun registerStationaryRegion(s: Session, backend: GeofenceBackend, region: OsGeofence) {
+        // Remembered before the call: after a timeout the OS may still complete the registration.
+        s.regionBackend = backend
+        s.leftoverRegion = false // the same id: a region left by an earlier process is replaced
+        val failure: Exception? = try {
+            val done = withTimeoutOrNull(OS_GEOFENCE_TIMEOUT_MS) { backend.add(listOf(region)) }
+            if (done != null) {
+                null
+            } else {
+                TrackingException(ErrorCode.TIMEOUT, "no answer within $OS_GEOFENCE_TIMEOUT_MS ms")
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            e
+        }
+        if (failure == null) {
+            s.region = region
+            s.regionFailed = false
+            Logger.i(
+                TAG,
+                "stationary region registered on ${backend.kind.wire}: radius ${region.radius} m around " +
+                    "(${region.latitude}, ${region.longitude}); GPS off, passive location updates",
+            )
+        } else {
+            s.region = null
+            s.regionFailed = true
+            Logger.w(
+                TAG,
+                "stationary region could not be registered on ${backend.kind.wire} (${failure.message}); " +
+                    "using a low-power request (at most one fix per 3 minutes) instead of passive updates",
+                failure,
+            )
+        }
+    }
+
+    /**
+     * Removes the stationary region this session registered (or tried to register), or one an earlier process may
+     * have left ([Session.leftoverRegion]), from the OS.
+     */
+    private suspend fun removeStationaryRegion(s: Session) {
+        val backend = s.regionBackend
+        if (backend == null && !s.leftoverRegion) return
+        s.regionBackend = null
+        s.region = null
+        s.leftoverRegion = false
+        removeStationaryRegionFrom(backend)
+    }
+
+    /**
+     * Removes [Constants.STATIONARY_REGION_ID] from [backend] (null: the current backend). Removing an id that is not
+     * registered is harmless. Failures are logged, never thrown (except cancellation).
+     */
+    private suspend fun removeStationaryRegionFrom(backend: GeofenceBackend?) {
+        try {
+            val target = backend ?: providers.geofence()
+            val done = withTimeoutOrNull(OS_GEOFENCE_TIMEOUT_MS) {
+                target.remove(listOf(Constants.STATIONARY_REGION_ID))
+            }
+            if (done == null) {
+                Logger.w(TAG, "removing the stationary region got no answer within $OS_GEOFENCE_TIMEOUT_MS ms")
+            } else {
+                Logger.d(TAG, "stationary region removed from ${target.kind.wire}")
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Logger.w(TAG, "failed to remove the stationary region", e)
+        }
     }
 
     private fun startActivityUpdates(s: Session) {
@@ -533,6 +769,10 @@ class DefaultTrackingEngine(
         when (event) {
             is TrackingEvent.Heartbeat -> scope.launch { mutex.withLock { fireDueTimers(s) } }
             is TrackingEvent.ProviderChange -> scope.launch { mutex.withLock { onProviderChange(s, event.state) } }
+            // The user geofences may now need the OS slot of the stationary region, or leave it free again.
+            is TrackingEvent.GeofencesChange -> scope.launch {
+                mutex.withLock { if (session === s) applyMotionRequests(s, checkLimit = true) }
+            }
             else -> Unit
         }
     }
@@ -541,6 +781,11 @@ class DefaultTrackingEngine(
      * GMS and HMS drop every registered geofence when location services are switched off, and geofences registered
      * without background permission may not fire. Registering all stored geofences again when location comes back
      * (or the permission level changes) keeps geofence audit records flowing. Re-adding the same ids is idempotent.
+     *
+     * The stationary region is registered again on every provider change while location is enabled (any change of
+     * the location settings or of the backend may have made the OS drop it). A registration that failed before (for
+     * example without background location permission) is tried again; on success the low-power fallback request
+     * becomes the passive one.
      */
     private suspend fun onProviderChange(s: Session, state: ProviderState) {
         if (session !== s) return
@@ -549,19 +794,15 @@ class DefaultTrackingEngine(
         s.providerEnabled = state.enabled
         s.providerPermission = state.permission
         if (!state.enabled) return
-        if (wasEnabled == true && oldPermission == state.permission) return
-        Logger.i(TAG, "location provider available again (${state.permission.wire}); re-registering geofences")
-        guarded("geofences.onTrackingStarted") { geofences.onTrackingStarted(s.mode) }
+        if (wasEnabled != true || oldPermission != state.permission) {
+            Logger.i(TAG, "location provider available again (${state.permission.wire}); re-registering geofences")
+            guarded("geofences.onTrackingStarted") { geofences.onTrackingStarted(s.mode) }
+        }
+        if (isStationary(s)) applyMotionRequests(s, force = true)
     }
 
     private suspend fun handleFix(s: Session, raw: TrackedLocation) {
-        val fix = when (val result = processor.process(raw, s.motion.isMoving)) {
-            is FilterResult.Accepted -> result.location
-            is FilterResult.Rejected -> {
-                Logger.d(TAG, "fix rejected: ${result.reason}")
-                return
-            }
-        }
+        val fix = acceptedOrNull(raw, isMoving = s.motion.isMoving, what = "fix") ?: return
         s.lastFix = fix
         if (s.mode == TrackingMode.GEOFENCES) {
             guarded("odometer") { odometer.onLocation(fix) }
@@ -570,10 +811,12 @@ class DefaultTrackingEngine(
             return
         }
         val wasMoving = s.motion.isMoving
+        val anchorBefore = s.motion.anchor
         val actions = s.motion.onLocation(fix)
         if (!wasMoving && !s.motion.isMoving) {
+            // STATIONARY: no record, no odometer; `runtime.lastLocation` changes only with the anchor.
             notifyGeofences(fix)
-            persistLastLocation(s, fix)
+            onStationaryFix(s, fix, anchorBefore)
             return
         }
         guarded("odometer") { odometer.onLocation(fix) }
@@ -594,7 +837,94 @@ class DefaultTrackingEngine(
         guarded("geofences.onLocation") { geofences.onLocation(fix) }
     }
 
-    /** Keeps `runtime.lastLocation` (used by heartbeats) fresh for fixes that are not recorded, at most every 10 s. */
+    /** The processed [raw] fix, or null (logged) if the processor rejects it. */
+    private fun acceptedOrNull(raw: TrackedLocation, isMoving: Boolean, what: String): TrackedLocation? =
+        when (val result = processor.process(raw, isMoving)) {
+            is FilterResult.Accepted -> result.location
+            is FilterResult.Rejected -> {
+                Logger.d(TAG, "$what rejected: ${result.reason}")
+                null
+            }
+        }
+
+    /**
+     * A STATIONARY fix that did not leave STATIONARY. It changes the anchor when:
+     * - there was none (nothing was known when STATIONARY began): the fix becomes the anchor;
+     * - the anchor is not confirmed (it was more than [ANCHOR_MAX_AGE_MS] old when it became the anchor) and the fix
+     *   is current and accurate enough: the fix replaces it;
+     * - the motion state machine replaced the anchor with this more accurate fix.
+     * A new anchor becomes `runtime.lastLocation` (the location of the heartbeats) and the stationary region follows
+     * it (registered around a new confirmed anchor, moved only when the centre is more than [REGION_RECENTER_M]
+     * away). Otherwise `runtime.lastLocation` keeps the anchor fix with its acquisition time.
+     */
+    private suspend fun onStationaryFix(s: Session, fix: TrackedLocation, anchorBefore: TrackedLocation?) {
+        var anchor = s.motion.anchor ?: return
+        val replacesOldAnchor = anchor === anchorBefore && !isAnchorConfirmed(s, anchor) && isCurrent(fix) &&
+            s.motion.isAccurateEnough(fix)
+        if (replacesOldAnchor) {
+            Logger.i(TAG, "a current fix replaces the stationary anchor, which was ${ageMs(anchor) / 1000} s old")
+            s.motion.setAnchor(fix)
+            anchor = fix
+        }
+        if (anchor === anchorBefore) return
+        configStore.updateRuntime { it.copy(lastLocation = anchor) }
+        applyMotionRequests(s)
+    }
+
+    /**
+     * An OS transition of the stationary region. Only EXIT matters: while STATIONARY it switches to MOVING (the
+     * transition's fix, when the processor accepts it, is the `motionchange` location and goes to the odometer and
+     * the geofences like the fix that leaves the stationary radius). An EXIT whose fix is certainly inside the
+     * registered region belongs to an earlier region (delivered late) and is ignored. In a process where tracking
+     * is enabled but not running (the geofence PendingIntent started it) tracking is restored first. A region
+     * reported while tracking is off, or while the session is not STATIONARY, is removed from the OS.
+     */
+    private suspend fun handleStationaryRegionTransition(transition: OsGeofenceTransition) {
+        if (transition.action != GeofenceAction.EXIT) {
+            Logger.d(TAG, "stationary region ${transition.action} ignored")
+            return
+        }
+        if (session == null) {
+            if (!runtime.enabled) {
+                Logger.i(TAG, "stationary region EXIT while tracking is off; removing the region")
+                removeStationaryRegionFrom(null)
+                return
+            }
+            Logger.i(TAG, "stationary region EXIT in a process where tracking is enabled but not running; restoring")
+            restoreLocked(REASON_RESTORE)
+        }
+        val s = session ?: return
+        // The OS has the region: this session removes it when it leaves STATIONARY or stops.
+        if (s.regionBackend == null) s.leftoverRegion = true
+        if (!isStationary(s)) {
+            Logger.d(TAG, "stationary region EXIT ignored: the session is not STATIONARY")
+            removeStationaryRegion(s)
+            return
+        }
+        val region = s.region
+        val reported = transition.location
+        if (region != null && reported != null &&
+            distanceMeters(region.latitude, region.longitude, reported.latitude, reported.longitude) +
+            reported.accuracyMeters <= region.radius
+        ) {
+            Logger.i(TAG, "stationary region EXIT ignored: its fix is inside the registered region (a late EXIT)")
+            return
+        }
+        Logger.i(TAG, "stationary region EXIT: leaving STATIONARY")
+        val fix = reported?.let { acceptedOrNull(it, isMoving = false, what = "stationary region EXIT fix") }
+        if (fix != null) {
+            s.lastFix = newest(s.lastFix, fix)
+            guarded("odometer") { odometer.onLocation(fix) }
+            notifyGeofences(fix)
+        }
+        execute(s, s.motion.force(true, fix ?: bestKnownLocation(s)))
+        fireDueTimers(s)
+    }
+
+    /**
+     * Keeps `runtime.lastLocation` (used by heartbeats) fresh for MOVING and GEOFENCES-mode fixes that are not
+     * recorded, at most every 10 s. STATIONARY fixes never call it: the heartbeats keep the anchor fix.
+     */
     private fun persistLastLocation(s: Session, fix: TrackedLocation) {
         val now = clock.elapsedRealtime()
         val last = s.lastLocationPersistedAt
@@ -656,14 +986,21 @@ class DefaultTrackingEngine(
                 is MotionAction.EnterMoving -> {
                     Logger.i(TAG, "motion: STATIONARY -> MOVING")
                     val location = action.location ?: bestKnownLocation(s)
+                    // The configured request (GPS on) at once; the stationary region is removed after the record,
+                    // so a slow OS call delays neither.
                     applyLocationRequest(s)
                     recordMotionChange(s, isMoving = true, location)
+                    applyMotionRequests(s)
                 }
                 is MotionAction.EnterStationary -> {
                     Logger.i(TAG, "motion: MOVING -> STATIONARY${if (action.automatic) " (stop timeout)" else ""}")
-                    applyLocationRequest(s)
                     recordMotionChange(s, isMoving = false, action.location)
-                    if (action.automatic && config.geolocation.stopOnStationary) stopLocked(REASON_STOP_ON_STATIONARY)
+                    if (action.automatic && config.geolocation.stopOnStationary) {
+                        stopLocked(REASON_STOP_ON_STATIONARY)
+                    } else {
+                        // The stationary region around the anchor and passive updates (GPS off).
+                        applyMotionRequests(s)
+                    }
                 }
             }
         }
@@ -704,22 +1041,21 @@ class DefaultTrackingEngine(
     }
 
     private suspend fun recordInitialMotionChange(s: Session, fresh: TrackedLocation?) {
-        val accepted = fresh?.let { raw ->
-            when (val result = processor.process(raw, false)) {
-                is FilterResult.Accepted -> result.location
-                is FilterResult.Rejected -> {
-                    Logger.d(TAG, "initial fix rejected: ${result.reason}")
-                    null
-                }
-            }
-        }
+        val accepted = fresh?.let { acceptedOrNull(it, isMoving = false, what = "initial fix") }
         if (accepted != null) {
             s.lastFix = newest(s.lastFix, accepted)
             notifyGeofences(accepted)
+            // The fresh fix is the anchor, also when a passive fix arrived first and became the anchor.
+            s.motion.setAnchor(accepted)
         }
         val location = accepted ?: bestKnownLocation(s)
         s.motion.offerAnchor(location)
         recordMotionChange(s, isMoving = false, location)
+        if (s.motion.anchor == null) {
+            Logger.i(TAG, "no location is known: low-power requests until a first fix becomes the stationary anchor")
+        }
+        // Entering STATIONARY after start / restore: the stationary region around the anchor, passive updates.
+        applyMotionRequests(s)
     }
 
     private suspend fun currentLocation(geolocation: GeolocationConfig): TrackedLocation? = try {
@@ -791,6 +1127,21 @@ class DefaultTrackingEngine(
         var activityBackend: ActivityBackend? = null
         var needsContinuousLocation = false
 
+        /** The stationary region registered with the OS (null: none; STATIONARY then uses the low-power request). */
+        var region: OsGeofence? = null
+
+        /** The backend the stationary region was added to (also after a failed or timed-out add), for its removal. */
+        var regionBackend: GeofenceBackend? = null
+
+        /** The last registration of the stationary region failed; not retried until this is cleared. */
+        var regionFailed = false
+
+        /** An earlier process may have left the stationary region with the OS; removed with this session's. */
+        var leftoverRegion = false
+
+        /** The motion anchor that was current when it became the anchor (see `isAnchorConfirmed`). */
+        var confirmedAnchor: TrackedLocation? = null
+
         /** Last fix accepted by the processor. */
         var lastFix: TrackedLocation? = null
 
@@ -830,6 +1181,18 @@ class DefaultTrackingEngine(
         const val CURRENT_LOCATION_GRACE_MS = 5_000L
         const val LAST_LOCATION_PERSIST_INTERVAL_MS = 10_000L
         const val ACTIVITY_PERSIST_INTERVAL_MS = 60_000L
+
+        /** Longest wait for the OS to add or remove the stationary region (the engine's mutex is held meanwhile). */
+        const val OS_GEOFENCE_TIMEOUT_MS = 10_000L
+
+        /**
+         * An anchor older than this when it becomes the anchor is not confirmed: no stationary region is registered
+         * around it until a current fix replaces it (the low-power request provides one).
+         */
+        const val ANCHOR_MAX_AGE_MS = 10 * MINUTE_MS
+
+        /** The stationary region is moved when the anchor is farther than this from its centre. */
+        const val REGION_RECENTER_M = 50.0
 
         fun newest(a: TrackedLocation?, b: TrackedLocation): TrackedLocation = if (a == null || b.time >= a.time) b else a
     }

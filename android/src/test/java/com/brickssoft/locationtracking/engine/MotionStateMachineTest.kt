@@ -3,6 +3,7 @@ package com.brickssoft.locationtracking.engine
 import com.brickssoft.locationtracking.config.ActivityConfig
 import com.brickssoft.locationtracking.config.Config
 import com.brickssoft.locationtracking.config.GeolocationConfig
+import com.brickssoft.locationtracking.config.LocationFilterConfig
 import com.brickssoft.locationtracking.engine.MotionAction.CancelMotionTrigger
 import com.brickssoft.locationtracking.engine.MotionAction.CancelStopTimer
 import com.brickssoft.locationtracking.engine.MotionAction.EnterMoving
@@ -91,8 +92,58 @@ class MotionStateMachineTest {
         assertSame(better, sm.anchor)
         assertEquals(emptyList<MotionAction>(), sm.onLocation(worse))
         assertSame(better, sm.anchor)
-        // 26 m from the new anchor, 46 m from the old one
-        assertEquals(EnterMoving::class, sm.onLocation(Fixtures.moved(better, 26.0).copy(accuracy = 4f)).first()::class)
+        // 30 m (26 m beyond the 4 m accuracy) from the new anchor, 50 m from the old one
+        assertEquals(EnterMoving::class, sm.onLocation(Fixtures.moved(better, 30.0).copy(accuracy = 4f)).first()::class)
+    }
+
+    @Test
+    fun `a fix leaves stationary only when it is certainly outside the radius`() {
+        sm.onLocation(origin)
+
+        // 40 m away with 16 m accuracy: 24 m beyond the accuracy, not more than the 25 m radius
+        assertEquals(emptyList<MotionAction>(), sm.onLocation(Fixtures.moved(origin, 40.0).copy(accuracy = 16f)))
+        assertFalse(sm.isMoving)
+        // 40 m away with 14 m accuracy: 26 m beyond it
+        val outside = Fixtures.moved(origin, 40.0).copy(accuracy = 14f)
+        assertEquals(EnterMoving(outside), sm.onLocation(outside).first())
+    }
+
+    @Test
+    fun `a coarse fix certainly outside the radius does not leave stationary`() {
+        sm.updateSettings(settings.copy(trackingAccuracyThreshold = 50.0))
+        sm.onLocation(origin)
+
+        val coarse = Fixtures.moved(origin, 2_000.0).copy(accuracy = 51f)
+        assertEquals(emptyList<MotionAction>(), sm.onLocation(coarse))
+        assertFalse(sm.isMoving)
+        assertSame(origin, sm.anchor) // and it does not replace the anchor
+
+        val precise = Fixtures.moved(origin, 2_000.0).copy(accuracy = 50f)
+        assertEquals(EnterMoving(precise), sm.onLocation(precise).first())
+    }
+
+    @Test
+    fun `a threshold of zero turns the accuracy check off`() {
+        sm.updateSettings(settings.copy(trackingAccuracyThreshold = 0.0))
+        sm.onLocation(origin)
+
+        val coarse = Fixtures.moved(origin, 2_000.0).copy(accuracy = 500f)
+        assertEquals(EnterMoving(coarse), sm.onLocation(coarse).first())
+    }
+
+    @Test
+    fun `setAnchor replaces the anchor only while stationary`() {
+        sm.onLocation(origin)
+        val fresh = Fixtures.moved(origin, 300.0)
+
+        sm.setAnchor(fresh)
+        assertSame(fresh, sm.anchor)
+        assertFalse(sm.isMoving)
+
+        sm.force(true, fresh)
+        sm.setAnchor(origin)
+        assertNull(sm.anchor)
+        assertTrue(sm.isMoving)
     }
 
     @Test
@@ -270,7 +321,11 @@ class MotionStateMachineTest {
             ),
         )
 
-        assertEquals(MotionSettings(40.0, 60, 15_000, 180_000, true), MotionSettings.from(config))
+        assertEquals(MotionSettings(40.0, 60, 15_000, 180_000, true, 100.0), MotionSettings.from(config))
+        val threshold = Config(
+            geolocation = GeolocationConfig(filter = LocationFilterConfig(trackingAccuracyThreshold = 50.0)),
+        )
+        assertEquals(50.0, MotionSettings.from(threshold).trackingAccuracyThreshold, 0.0)
         // stopTimeout 0 is floored to one minute
         val zero = Config(geolocation = GeolocationConfig(stopTimeout = 0))
         assertEquals(60_000L, MotionSettings.from(zero).stopTimeoutMs)

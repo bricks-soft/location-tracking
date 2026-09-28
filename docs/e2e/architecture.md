@@ -362,6 +362,7 @@ broadcasts with `--include-stopped-packages`, background by default (`--receiver
 | `removeGeofence` | `{identifier}` | `null` |
 | `getGeofences` | `{}` | array of JS Geofences |
 | `blockMainThread` | `{ms, delayMs? = 0}` | `{blockedMs}`: logged first, then a posted main-thread runnable sleeps `ms` after `delayMs` (simulates a busy main thread around a service start) |
+| `startDuringMainThreadBlock` (plugin example only; added after the CI runs) | `{ms, startAfterMs? = 100}` (0–60000; `startAfterMs` ≤ `ms`) | `{blockedMs, startCalledAfterMs, state}`: blocks the main thread for `ms` and, `startAfterMs` after the block began, calls the plugin's `start()` from a background thread, so the service creation waits for the blocked main thread while Android's startForeground deadline runs (P-L13); answers when `start()` resolved |
 | `otherAppLocation` (plugin example only; added after the first CI run) | `{enabled, intervalMs? = 1000}` (0–60000) | `{enabled, intervalMs, fixes}`: requests GPS updates through the platform `LocationManager` from the app's own process, the way another app would, or stops them; `fixes` counts the fixes received since it was turned on |
 | `finishActivities` (field-force only; added after the first full CI run) | `{}` | `{finished}`: finishes the app's live activities on the main thread (a debug-only content provider remembers them from process start), so the activity and its WebView are destroyed while the process keeps running (F-08) |
 | `premise.start` (field-force) | `{premise, auditUrl?}` | PremiseStatus |
@@ -581,6 +582,8 @@ refreshUrl: <origin>/auth/refresh, refreshPayload: {refresh_token: '{refreshToke
   (default `e2e-artifacts/_run/backoffice.log`; one line per request, prefixed with the scenario id).
 - `E2eCommands.otherAppLocation(enabled, intervalMs = 1000)` sends the `otherAppLocation` command (§6) and resolves
   with `{enabled, intervalMs, fixes}`.
+- `E2eCommands.startDuringMainThreadBlock(ms, startAfterMs = 100)` sends the `startDuringMainThreadBlock` command (§6)
+  and resolves with `{blockedMs, startCalledAfterMs, state}`.
 - Fixes after the first CI emulator run (API 35): `CrashScanner` reads the crash, main and system buffers with the
   device-side filters `AndroidRuntime:E ActivityManager:W libc:F DEBUG:F *:S` (`CRASH_LOGCAT_FILTERS`); the
   per-scenario artifact `logcat.txt` holds the last 20,000 lines (`LogcatDumpOptions.tailLines`, `logcat -t`), and

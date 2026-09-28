@@ -86,6 +86,8 @@ class DefaultServiceController(
                 return false
             }
             ServiceCommands.startSent(seq)
+            // Android's deadline for startForeground() runs from here (the e2e scenario P-L13 reads this line).
+            Logger.d(TAG, "foreground service start sent (seq $seq)")
             markServiceStarted()
             true
         } catch (e: Exception) {

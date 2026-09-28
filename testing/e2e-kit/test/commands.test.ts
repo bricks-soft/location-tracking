@@ -173,6 +173,7 @@ test('typed helpers send the documented args', async () => {
     [() => commands.addGeofence({ identifier: 'g', latitude: 1, longitude: 2, radius: 100 }), 'addGeofence', { geofence: { identifier: 'g', latitude: 1, longitude: 2, radius: 100 } }],
     [() => commands.removeGeofence('g'), 'removeGeofence', { identifier: 'g' }],
     [() => commands.blockMainThread(4000), 'blockMainThread', { ms: 4000, delayMs: 0 }],
+    [() => commands.startDuringMainThreadBlock(4000), 'startDuringMainThreadBlock', { ms: 4000, startAfterMs: 100 }],
     [() => commands.premiseStart({ id: 'hq', latitude: 1, longitude: 2, radius: 150 }, 'http://10.0.2.2:8787/premise-audit'), 'premise.start', { premise: { id: 'hq', latitude: 1, longitude: 2, radius: 150 }, auditUrl: 'http://10.0.2.2:8787/premise-audit' }],
     [() => commands.premiseAuditLog(10), 'premise.auditLog', { limit: 10 }],
     [() => commands.premiseStatus(), 'premise.status', {}],

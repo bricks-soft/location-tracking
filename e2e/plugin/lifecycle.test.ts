@@ -358,20 +358,6 @@ async function rawResponseNow(ctx: ScenarioContext, since: Date, id: string): Pr
   return undefined;
 }
 
-/** Waits for the LT-E2E response line of request [id]. */
-async function waitForRawResponse(ctx: ScenarioContext, since: Date, id: string, timeoutMs: number): Promise<RawResponse> {
-  try {
-    return await waitUntil(() => rawResponseNow(ctx, since, id), {
-      timeoutMs,
-      intervalMs: 500,
-      message: `LT-E2E response of ${id}`,
-      signal: ctx.signal,
-    });
-  } catch (error) {
-    throw new Error(`no LT-E2E response line with id ${id} within ${timeoutMs / 1000} s`, { cause: error });
-  }
-}
-
 function describeResponse(response: RawResponse | undefined): string {
   if (!response) return 'no response (process killed before it answered)';
   if (response.ok) return 'ok';
@@ -585,14 +571,15 @@ scenario(
 const P_L02_FORCE_STOP_AFTER_S = ['0.02', '0.05', '0.08', '0.12', '0.2', '0.35', '0.6', '1'] as const;
 
 /**
- * What a P-L02 round hit, from the start command's response line and the system's `am_create_service` event (written
- * when the system creates the service record, before the app's main thread runs the service).
+ * What a P-L02 round hit, from the start command's response line and the plugin's "foreground service start sent"
+ * line (LT.ServiceController, right after startForegroundService; the system's `am_create_service` event, used first,
+ * was not in the logcat of any CI image).
  */
-function classifyP02(response: RawResponse | undefined, serviceCreated: boolean): string {
+function classifyP02(response: RawResponse | undefined, startSent: boolean): string {
   if (response?.ok) return 'force-stop after start() completed';
   if (response) return 'start delivered after the force-stop (new background process)';
-  if (serviceCreated) return 'force-stop while start() ran and the service was being created';
-  return 'force-stop before the start created the service';
+  if (startSent) return 'force-stop while start() ran, after the foreground service start was sent';
+  return 'force-stop before the start sent the foreground service start';
 }
 
 scenario(
@@ -619,8 +606,8 @@ scenario(
       if (shellOutput.trim()) ctx.log(`round ${round} shell output: ${shellOutput.trim()}`);
       const roundLogSince = new Date(roundDevice - 1_000);
       const startResponse = await rawResponseNow(ctx, roundLogSince, startId);
-      const serviceCreated = parseLogcat(await ctx.adb.logcat.dump({ since: roundLogSince, buffers: ['events'] })).some(
-        (l) => l.tag === 'am_create_service' && l.message.includes('LocationTrackingService'),
+      const startSent = parseLogcat(await ctx.adb.logcat.dump({ since: roundLogSince, buffers: ['main'] })).some(
+        (l) => l.tag === 'LT.ServiceController' && l.message.includes('foreground service start sent'),
       );
       // A start broadcast still queued at the force-stop may have started a new (background) process afterwards.
       const pidBeforeLaunch = await ctx.app.pid();
@@ -675,7 +662,7 @@ scenario(
         assert.equal(state.enabled, false, `round ${round}: enabled=true without any tracking_start record`);
       }
       outcomes.push(
-        `round ${round}: force-stop after ${delayS} s -> ${classifyP02(startResponse, serviceCreated)}; ` +
+        `round ${round}: force-stop after ${delayS} s -> ${classifyP02(startResponse, startSent)}; ` +
           `start command: ${describeResponse(startResponse)}, process before relaunch: ${pidBeforeLaunch ?? 'none'}, ` +
           `trail [${trail.map(label).join(', ')}], enabled after ready()=${state.enabled}`,
       );
@@ -1401,57 +1388,9 @@ scenario(
 // P-L13
 
 const P_L13_BLOCK_MS = 4_000;
-const P_L13_MAX_ATTEMPTS = 16;
-const P_L13_WANTED_OVERLAPS = 2;
-/** First attempt: the block starts long after the service started; it measures when the service gets created. */
-const P_L13_CALIBRATION_DELAY_MS = 1_500;
-/** Aim the block start this many ms before the service creation measured in an earlier attempt. */
-const P_L13_AIM_MS = 8;
-/** Added to delayMs when the block started before the start command was received and no creation time is known. */
-const P_L13_STEP_MS = 12;
-
-type P13Outcome = 'overlap' | 'service-before-block' | 'start-after-block' | 'unknown';
-
-/**
- * Search state of P-L13, in ms after the block command's response line: the largest delay that started the block
- * before the start command was received ([tooEarlyMs]), and when the service was created in an attempt whose block
- * came too late ([createdMs]). The block must start between the two.
- */
-interface P13Search {
-  tooEarlyMs?: number;
-  createdMs?: number;
-}
-
-/** The next delayMs: the middle of the known window, or a step towards it from the one known side. */
-function nextP13Delay(search: P13Search, current: number): number {
-  const { tooEarlyMs, createdMs } = search;
-  if (tooEarlyMs !== undefined && createdMs !== undefined && tooEarlyMs < createdMs - 1) {
-    return Math.round((tooEarlyMs + createdMs) / 2);
-  }
-  if (createdMs !== undefined) return Math.max(0, createdMs - P_L13_AIM_MS);
-  if (tooEarlyMs !== undefined) return tooEarlyMs + P_L13_STEP_MS;
-  return current;
-}
-
-/**
- * Where the service creation fell relative to the main-thread block. `am_create_service` (event log) is written by
- * the system when it creates the service record, right before it posts the creation to the app's main thread.
- */
-function classifyP13(
-  blockStart: number,
-  blockEnd: number,
-  create: LogLine | undefined,
-  serviceLog: LogLine | undefined,
-): P13Outcome {
-  if (!create) return 'unknown';
-  if (create.timeMs < blockStart) return 'service-before-block';
-  // The start command is received on the main thread; a creation after the block end means it waited for the block.
-  if (create.timeMs >= blockEnd) return 'start-after-block';
-  // The system created the service while the main thread was blocked (by the estimate). The service's own first
-  // log line must then come after the block; an earlier line means the block started later than estimated.
-  if (serviceLog && serviceLog.timeMs < blockEnd - 50) return 'service-before-block';
-  return 'overlap';
-}
+/** The plugin's start() is called this long after the block began, so the rest of the block delays the service. */
+const P_L13_START_AFTER_MS = 100;
+const P_L13_ATTEMPTS = 3;
 
 scenario(
   'P-L13',
@@ -1463,88 +1402,63 @@ scenario(
     const loopDevice = await deviceNow(ctx);
     await readyClean(ctx, config);
 
-    // The start command runs on the main thread (receiver) and then calls startForegroundService on a background
-    // thread; the system then posts the service creation to the main thread. The block must begin between those two
-    // points, a window of a few tens of ms. Both commands go into one device shell (no host latency between them)
-    // and delayMs is searched (bisection over the measured bounds) until the block lands in that window.
-    let delayMs = P_L13_CALIBRATION_DELAY_MS;
-    const search: P13Search = {};
-    let overlaps = 0;
-    let attempts = 0;
-    const outcomes: string[] = [];
-    for (let attempt = 1; attempt <= P_L13_MAX_ATTEMPTS && overlaps < P_L13_WANTED_OVERLAPS; attempt++) {
-      attempts = attempt;
+    // The debug command blocks the main thread and calls start() from a background thread during the block. Android
+    // posts the service creation to the blocked main thread, so onCreate and startForeground() wait for the rest of
+    // the block while Android's startForeground deadline already runs: the busy main thread behind
+    // ForegroundServiceDidNotStartInTimeException, on every attempt. (The first version raced a block sent from the
+    // shell against the start and never hit the few-ms window; its signal, the `am_create_service` event, was not in
+    // the logcat of any CI image either.) The plugin's own lines show the timing: "foreground service start sent"
+    // (LT.ServiceController, engine thread, where the deadline starts) and "created" (LT.Service, main thread).
+    for (let attempt = 1; attempt <= P_L13_ATTEMPTS; attempt++) {
       await waitForService(ctx, false, `attempt ${attempt}: before the start`);
       const logSince = new Date((await deviceNow(ctx)) - 1_000);
-      const blockId = rawCommandId('l13b');
-      const startId = rawCommandId('l13s');
-      const usedDelayMs = delayMs;
-      await ctx.adb.shell(
-        `${e2eBroadcastLine(ctx.appId, blockId, 'blockMainThread', { ms: P_L13_BLOCK_MS, delayMs: usedDelayMs })} ` +
-          `>/dev/null; ${e2eBroadcastLine(ctx.appId, startId, 'start', {})} >/dev/null`,
-        { timeoutMs: 90_000 },
-      );
-      const block = await waitForRawResponse(ctx, logSince, blockId, 30_000);
-      const start = await waitForRawResponse(ctx, logSince, startId, 30_000);
-      assert.ok(block.ok, `attempt ${attempt}: blockMainThread ${describeResponse(block)}`);
-      assert.ok(start.ok, `attempt ${attempt}: start ${describeResponse(start)} (the activity is in the foreground)`);
-      // The shell returned after the start completed; the block ends at the latest delayMs + ms later.
-      await sleep(usedDelayMs + P_L13_BLOCK_MS + 500, ctx.signal);
+      const result = await ctx.commands.startDuringMainThreadBlock(P_L13_BLOCK_MS, P_L13_START_AFTER_MS);
+      assert.equal(result.state.enabled, true, `attempt ${attempt}: start() during the block: ${JSON.stringify(result)}`);
       await waitForService(ctx, true, `attempt ${attempt}: after the start (block ${P_L13_BLOCK_MS} ms)`);
 
       const lines = parseLogcat(await ctx.adb.logcat.dump({ since: logSince, buffers: ['main', 'events'] }));
-      const blockStart = block.timeMs + usedDelayMs;
-      const blockEnd = blockStart + P_L13_BLOCK_MS;
-      const create = lines.find(
-        (l) => l.tag === 'am_create_service' && l.message.includes('LocationTrackingService') && l.timeMs >= block.timeMs,
-      );
-      // Exact tag: LT.ServiceController logs from the engine thread, not from the service on the main thread.
-      const serviceLog = create ? lines.find((l) => l.tag === 'LT.Service' && l.timeMs >= create.timeMs) : undefined;
-      const outcome = classifyP13(blockStart, blockEnd, create, serviceLog);
-      if (outcome === 'overlap') overlaps += 1;
-      const createOffset = create ? `${create.timeMs - block.timeMs} ms` : 'not found';
-      outcomes.push(
-        `attempt ${attempt}: delayMs ${usedDelayMs}, service created ${createOffset} after the block command, ` +
-          `service log ${serviceLog ? `${serviceLog.timeMs - block.timeMs} ms` : 'not found'} -> ${outcome}`,
-      );
-
-      if (outcome === 'service-before-block' && create) {
-        search.createdMs = Math.min(3_000, create.timeMs - block.timeMs);
-        if (search.tooEarlyMs !== undefined && search.tooEarlyMs >= search.createdMs) search.tooEarlyMs = undefined;
-        delayMs = nextP13Delay(search, usedDelayMs);
-      } else if (outcome === 'start-after-block') {
-        search.tooEarlyMs = usedDelayMs;
-        if (search.createdMs !== undefined && search.createdMs <= search.tooEarlyMs) search.createdMs = undefined;
-        delayMs = nextP13Delay(search, usedDelayMs);
-      } else if (outcome === 'unknown') {
-        delayMs = Math.max(0, usedDelayMs - P_L13_STEP_MS);
+      const sent = lines.find((l) => l.tag === 'LT.ServiceController' && l.message.includes('foreground service start sent'));
+      const created = sent
+        ? lines.find((l) => l.tag === 'LT.Service' && l.message.includes('created') && l.timeMs >= sent.timeMs)
+        : undefined;
+      if (!sent || !created) {
+        assert.fail(
+          `attempt ${attempt}: the plugin lines "foreground service start sent" and "created" were not both found:\n` +
+            (await pluginLog(ctx, logSince)),
+        );
       }
+      const foreground = lines.find(
+        (l) => l.tag === 'am_foreground_service_start' && l.message.includes('LocationTrackingService') && l.timeMs >= created.timeMs,
+      );
+      const waitedMs = created.timeMs - sent.timeMs;
+      ctx.log(
+        `attempt ${attempt}: start() called ${result.startCalledAfterMs} ms into the ${P_L13_BLOCK_MS} ms block; ` +
+          `service created ${waitedMs} ms after the start was sent` +
+          (foreground ? `; startForeground ${foreground.timeMs - created.timeMs} ms after onCreate (am_foreground_service_start)` : ''),
+      );
+      // The main thread was blocked from before the start was sent until the block's end: the creation waited for it.
+      const expectedWaitMs = P_L13_BLOCK_MS - result.startCalledAfterMs;
+      assert.ok(
+        waitedMs >= expectedWaitMs / 2,
+        `attempt ${attempt}: the service was created ${waitedMs} ms after the start was sent; the blocked main thread ` +
+          `should have delayed it by about ${expectedWaitMs} ms, so this attempt did not test a busy main thread`,
+      );
 
       const stopped = await ctx.commands.stop();
       assert.equal(stopped.enabled, false, `attempt ${attempt}: stop() resolved with enabled=true`);
       await waitForService(ctx, false, `attempt ${attempt}: after stop()`);
     }
-    for (const outcome of outcomes) ctx.log(outcome);
 
     // The point of the scenario: a start delayed by a busy main thread did not crash the app.
     await ctx.crashes.assertNoFgsDidNotStartInTime();
-    await office.waitFor((o) => recordsAfter(o, loopDevice).filter(isTrackingRecord).length >= 2 * attempts, {
+    await office.waitFor((o) => recordsAfter(o, loopDevice).filter(isTrackingRecord).length >= 2 * P_L13_ATTEMPTS, {
       timeoutMs: 60_000,
       intervalMs: 1_000,
       signal: ctx.signal,
     }).catch(() => undefined);
     const trail = recordsAfter(office, loopDevice).filter(isTrackingRecord);
-    assertCount(trail, audit('tracking_start', 'start'), attempts, 'tracking_start(start) records (one per attempt)');
-    assertCount(trail, audit('tracking_stop', 'stop'), attempts, 'tracking_stop(stop) records (one per attempt)');
+    assertCount(trail, audit('tracking_start', 'start'), P_L13_ATTEMPTS, 'tracking_start(start) records (one per attempt)');
+    assertCount(trail, audit('tracking_stop', 'stop'), P_L13_ATTEMPTS, 'tracking_stop(stop) records (one per attempt)');
     assertCount(trail, (r) => r.reason === 'service_start_failed', 0, 'records with reason service_start_failed');
-    if (overlaps === 0) {
-      // Every check above passed, but no attempt delayed the service start, so the scenario proved nothing about a
-      // busy main thread. That is a timing limit of this device, not a plugin failure: report it as skipped.
-      ctx.log(`no overlap in ${attempts} attempts; outcomes are listed above`);
-      ctx.t.skip(
-        `no attempt placed the ${P_L13_BLOCK_MS} ms main-thread block around the service start in ${attempts} ` +
-          `attempts (event log am_create_service vs. the block); see the diagnostics`,
-      );
-    }
   },
 );

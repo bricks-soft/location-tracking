@@ -31,6 +31,7 @@ export type E2eCommandName =
   | 'finishActivities'
   | 'getGeofences'
   | 'blockMainThread'
+  | 'startDuringMainThreadBlock'
   | 'premise.start'
   | 'premise.stop'
   | 'premise.status'
@@ -330,6 +331,19 @@ export class E2eCommands {
    */
   async otherAppLocation(enabled: boolean, intervalMs = 1000): Promise<{ enabled: boolean; intervalMs: number; fixes: number }> {
     return this.send('otherAppLocation', { enabled, intervalMs });
+  }
+
+  /**
+   * Plugin example only (test support): blocks the app's main thread for [ms] and, [startAfterMs] after the block
+   * began, calls the plugin's `start()` from a background thread, so the service creation waits for the blocked main
+   * thread while Android's startForeground deadline runs (P-L13). Resolves when `start()` resolved, with the state and
+   * when the start was called (ms after the block began).
+   */
+  async startDuringMainThreadBlock(
+    ms: number,
+    startAfterMs = 100,
+  ): Promise<{ blockedMs: number; startCalledAfterMs: number; state: StateJson }> {
+    return this.send('startDuringMainThreadBlock', { ms, startAfterMs });
   }
 
   // ---- field-force only

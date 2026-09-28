@@ -75,7 +75,7 @@ class E2eProtocolTest {
             listOf(
                 "ready", "setConfig", "start", "startGeofences", "stop", "changePace", "state", "heartbeatStatus",
                 "sync", "insertLocation", "addGeofence", "removeGeofence", "getGeofences", "blockMainThread",
-                "otherAppLocation",
+                "startDuringMainThreadBlock", "otherAppLocation",
             ),
             E2eCommandRunner.commands.toList(),
         )

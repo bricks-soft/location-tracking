@@ -2,7 +2,7 @@ name: CI
 
 # Started by hand only (Actions tab -> CI -> Run workflow, or `gh workflow run ci.yml --ref <branch>`): the owner
 # decided that pushes and pull requests do not start runs, to save Actions minutes (docs/DECISIONS.md R2.1).
-# The same checks run locally, see docs/e2e/HANDOFF.md or the steps below.
+# The same checks run locally: run the steps below from the repository root.
 on:
   workflow_dispatch:
 

@@ -86,6 +86,11 @@ Do not start a workflow by hand unless the owner asks for it (a full emulator ru
    ```
 
    The example APK must be built with both providers, as in CI: `-PlocationTracking.providers=gms,hms` (runbook §3.6).
+
+   Host: the runbook's commands use `x86_64` system images, which need KVM on Linux (runbook §3.3). On a Mac with an
+   Apple processor use the `arm64-v8a` images instead (for example `system-images;android-34;google_apis;arm64-v8a`);
+   `google_apis` images allow `adb root` on both. All CI results so far are from `x86_64` images on Linux; write the
+   host and the image ABI into the results row of step 5.1.
    For a fast check of one change, run only the affected ids first with `E2E_TEST_NAME_PATTERN` (runbook §6.2).
 
 3. What to look at first:

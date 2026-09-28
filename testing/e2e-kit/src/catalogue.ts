@@ -42,7 +42,7 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['P-H05', 'deep Doze, battery-exempt: strategy exact, cadence about minInterval'],
     ['P-H06', 'wall-clock jump and timezone change: cadence unaffected, boot_count/elapsed consistent'],
     ['P-H07', 'airplane mode: records queue, upload after reconnect with original recorded_at and later sent_at'],
-    ['P-H08', 'server 500 then 200 is retried; 401 refreshes the JWT via /auth/refresh and retries'],
+    ['P-H08', 'server 500 is retried after 2, 4 and 8 s in the same upload; 401 refreshes the JWT via /auth/refresh and retries'],
     ['P-H09', 'syncInterval batches normal records while moving; audit records upload immediately'],
     ['P-H10', 'heartbeat records carry the heartbeat metadata object'],
   ]),

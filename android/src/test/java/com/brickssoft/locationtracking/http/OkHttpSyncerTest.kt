@@ -442,7 +442,7 @@ class OkHttpSyncerTest {
 
     @Test
     fun `server error keeps records, marks the attempt and stops draining`() = runTest {
-        server.enqueue(MockResponse().setResponseCode(500).setBody("down"))
+        repeat(4) { server.enqueue(MockResponse().setResponseCode(500).setBody("down")) }
         val syncer = syncer()
         store.insert(rec(1))
         store.insert(rec(2))
@@ -450,21 +450,74 @@ class OkHttpSyncerTest {
         syncer.insert(rec(3))
         advanceUntilIdle()
 
-        assertEquals(1, server.requestCount)
+        assertEquals(List(4) { listOf("r1") }, takeUuids(4)) // the first try and 3 retries
         assertEquals(listOf("r1", "r2", "r3"), store.all.map { it.uuid })
         assertEquals(1, store.attempts("r1"))
         assertEquals(clock.now(), store.lastAttemptAt("r1"))
         assertEquals(0, store.attempts("r2"))
-        val result = httpEvents.single()
-        assertFalse(result.success)
-        assertEquals(500, result.status)
-        assertEquals("down", result.responseText)
-        assertEquals(listOf("r1"), result.uuids)
+        assertEquals(4, httpEvents.size)
+        httpEvents.forEach { result ->
+            assertFalse(result.success)
+            assertEquals(500, result.status)
+            assertEquals("down", result.responseText)
+            assertEquals(listOf("r1"), result.uuids)
+        }
+    }
+
+    @Test
+    fun `a failed try is retried after 2, 4 and 8 s`() = runTest {
+        val sentAt = CopyOnWriteArrayList<Long>()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                sentAt += testScheduler.currentTime
+                return MockResponse().setResponseCode(503)
+            }
+        }
+        val syncer = syncer()
+        val start = testScheduler.currentTime
+
+        syncer.insert(rec(1))
+        advanceUntilIdle()
+
+        assertEquals(listOf(0L, 2_000L, 6_000L, 14_000L), sentAt.map { it - start })
+        assertEquals(1, store.attempts("r1"))
+    }
+
+    @Test
+    fun `no answer, 5xx and 429 are retried in the same upload`() = runTest {
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+        server.enqueue(MockResponse().setResponseCode(502))
+        server.enqueue(MockResponse().setResponseCode(429))
+        server.enqueue(ok())
+        val syncer = syncer()
+
+        syncer.insert(rec(1))
+        advanceUntilIdle()
+
+        assertEquals(List(4) { listOf("r1") }, takeUuids(4))
+        assertEquals(listOf(0, 502, 429, 200), httpEvents.map { it.status })
+        assertTrue(store.all.isEmpty())
+        assertEquals(0, store.attempts("r1"))
+    }
+
+    @Test
+    fun `other 4xx answers are not retried`() = runTest {
+        listOf(400, 404, 413).forEach { server.enqueue(MockResponse().setResponseCode(it)) }
+        val syncer = syncer()
+
+        for (i in 1..3) {
+            syncer.insert(rec(i))
+            advanceUntilIdle()
+        }
+
+        assertEquals(3, server.requestCount) // one request per insert, each for the oldest record
+        assertEquals(listOf(400, 404, 413), httpEvents.map { it.status })
+        assertEquals(3, store.attempts("r1"))
     }
 
     @Test
     fun `failed upload is retried when connectivity returns, with the original recorded_at`() = runTest {
-        server.enqueue(MockResponse().setResponseCode(503))
+        repeat(4) { server.enqueue(MockResponse().setResponseCode(503)) }
         server.enqueue(ok())
         val syncer = syncer()
         syncer.start()
@@ -474,6 +527,7 @@ class OkHttpSyncerTest {
         advanceUntilIdle()
         assertEquals(1, store.attempts("r1"))
         val first = JSONObject(takeRequest().body.readUtf8()).getJSONObject("location")
+        repeat(3) { takeRequest() }
 
         clock.advance(120_000)
         events.emit(TrackingEvent.ConnectivityChange(Connectivity(connected = true, type = ConnectivityType.WIFI)))
@@ -483,12 +537,12 @@ class OkHttpSyncerTest {
         assertEquals(first.getString("recorded_at"), retry.getString("recorded_at"))
         assertEquals(Iso8601.format(clock.now()), retry.getString("sent_at"))
         assertTrue(store.all.isEmpty())
-        assertEquals(listOf(false, true), httpEvents.map { it.success })
+        assertEquals(listOf(false, false, false, false, true), httpEvents.map { it.success })
     }
 
     @Test
     fun `failed upload is retried on the next insert`() = runTest {
-        server.enqueue(MockResponse().setResponseCode(500))
+        repeat(4) { server.enqueue(MockResponse().setResponseCode(500)) }
         repeat(2) { server.enqueue(ok()) }
         val syncer = syncer()
 
@@ -497,7 +551,7 @@ class OkHttpSyncerTest {
         syncer.insert(rec(2))
         advanceUntilIdle()
 
-        takeRequest()
+        repeat(4) { takeRequest() }
         assertEquals(listOf(listOf("r1"), listOf("r2")), takeUuids(2))
         assertTrue(store.all.isEmpty())
     }
@@ -510,23 +564,21 @@ class OkHttpSyncerTest {
         advanceUntilIdle()
 
         assertEquals(1, store.attempts("r1"))
-        val result = httpEvents.single()
-        assertFalse(result.success)
-        assertEquals(0, result.status)
+        assertEquals(4, httpEvents.size)
+        assertTrue(httpEvents.all { !it.success && it.status == 0 })
     }
 
     @Test
     fun `http timeout is a network error`() = runTest {
         http { it.copy(timeout = 200) }
         server.enqueue(ok().setHeadersDelay(1, TimeUnit.SECONDS))
+        server.enqueue(ok())
 
         syncer().insert(rec(1))
         advanceUntilIdle()
 
-        val result = httpEvents.single()
-        assertFalse(result.success)
-        assertEquals(0, result.status)
-        assertEquals(1, store.attempts("r1"))
+        assertEquals(listOf(0, 200), httpEvents.map { it.status }) // the timeout is retried like any network error
+        assertTrue(store.all.isEmpty())
     }
 
     // ---- manual sync
@@ -648,8 +700,50 @@ class OkHttpSyncerTest {
         syncer().insert(rec(1))
         advanceUntilIdle()
 
-        assertEquals(listOf(401, 0), httpEvents.map { it.status })
+        // The network error is retried 3 times with the new token, without another refresh.
+        assertEquals(listOf(401, 0, 0, 0, 0), httpEvents.map { it.status })
         assertEquals(1, store.attempts("r1"))
+        assertEquals(1, events.ofType<TrackingEvent.Authorization>().size)
+    }
+
+    @Test
+    fun `one upload refreshes the token at most once`() = runTest {
+        http { it.copy(authorization = jwt()) }
+        val newTokenRequests = AtomicInteger(0)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when {
+                request.path == "/refresh" -> MockResponse().setBody("""{"accessToken":"new"}""")
+                request.getHeader("Authorization") == "Bearer new" && newTokenRequests.getAndIncrement() == 0 ->
+                    MockResponse().setResponseCode(503)
+                else -> MockResponse().setResponseCode(401)
+            }
+        }
+
+        syncer().insert(rec(1))
+        advanceUntilIdle()
+
+        // 401, refresh, 503 with the new token, retry after 2 s: 401 again ends the upload.
+        assertEquals(listOf(401, 503, 401), httpEvents.map { it.status })
+        assertEquals(1, events.ofType<TrackingEvent.Authorization>().size)
+        assertEquals(4, server.requestCount)
+        assertEquals(1, store.attempts("r1"))
+    }
+
+    @Test
+    fun `a token refresh before the first try is not repeated by the retries`() = runTest {
+        http { it.copy(authorization = jwt(expires = clock.now())) }
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse =
+                MockResponse().setResponseCode(if (request.path == "/refresh") 500 else 503)
+        }
+
+        syncer().insert(rec(1))
+        advanceUntilIdle()
+
+        // The token stays expired (the refresh failed), but only the first try refreshes.
+        assertEquals(listOf(503, 503, 503, 503), httpEvents.map { it.status })
+        assertEquals(1, events.ofType<TrackingEvent.Authorization>().size)
+        assertEquals(5, server.requestCount)
     }
 
     @Test
@@ -897,7 +991,7 @@ class OkHttpSyncerTest {
         syncer.insert(rec(2, RecordEvent.HEARTBEAT))
         advanceUntilIdle()
 
-        assertEquals(1, httpEvents.size)
+        assertEquals(List(4) { listOf("r1") }, httpEvents.map { it.uuids }) // the first try and 3 retries, all r1
         assertEquals(1, store.attempts("r1"))
         assertEquals(0, store.attempts("r2"))
     }

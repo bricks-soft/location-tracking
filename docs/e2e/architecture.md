@@ -455,7 +455,7 @@ per request.
 | `POST /__reset` | Forgets records, premise entries, requests, faults and the refresh counter. |
 | `GET /__health` | `{"ok":true,"records":n,"premise":n,"uptimeMs":…}` |
 
-Examples: P-H08 posts `{path:"/locations", status:500, count:1}`, then `{path:"/locations", status:401, count:1}` with
+Examples: P-H08 posts `{path:"/locations", status:500, count:3}`, then `{path:"/locations", status:401, count:1}` with
 a JWT config and checks the `/auth/refresh` request and the retried `Authorization: Bearer e2e-access-1`. P-H07 uses
 airplane mode instead of faults.
 
@@ -526,7 +526,7 @@ throws `Error('not implemented: …')`. The signatures in `src/*.ts` are the con
 | `artifacts.ts` | `Artifacts({dir, adb, appId, backOffice, bugreport})`: `path`, `writeText`, `writeJson`, `collect(reason)` (logcat, crash buffer, dumpsys activity services/location/deviceidle/alarm/jobscheduler, the plugin's log files via run-as, back office log/records/premise entries, screenshot, optional bugreport) |
 | `device.ts` | `detectDevice(adb): DeviceProfile {api, root, gms, emulator, model, abi}` |
 | `app.ts` | `PERMISSIONS`, `SERVICES`, `AppUnderTest(adb, appId, env)`: `prepare({reinstall, clearData, permissions, batteryExempt, launch})` (also restores a neutral device: location on, airplane off, Wi-Fi/data on, deviceidle unforce, battery reset, auto time, font scale 1, no test providers), `launch`, `webView`, `pid`, `waitForProcess`, `waitForNoProcess`, `isForegroundServiceRunning(serviceClass)`, `reinstall`, `commands` |
-| `fixtures.ts` | `PLACES`, `PREMISES.hq` (24.7136, 46.6753, 150 m), `ROUTES` (`cityLoop3km` 3000 m, `approachHq`, `leaveHq` 1500 m), `TEST_HEARTBEAT` (60/120), `TEST_SYNC_INTERVAL_S` (120), `pluginTestConfig(options)`, `FIELD_FORCE_OVERRIDES_KEY`, `FieldForceOverrides`, `FIELD_FORCE_TEST_OVERRIDES` |
+| `fixtures.ts` | `PLACES`, `PREMISES.hq` (24.7136, 46.6753, 150 m), `ROUTES` (`cityLoop3km` 3000 m, `approachHq`, `leaveHq` 1500 m), `TEST_HEARTBEAT` (60/120), `TEST_SYNC_INTERVAL_S` (60), `pluginTestConfig(options)`, `FIELD_FORCE_OVERRIDES_KEY`, `FieldForceOverrides`, `FIELD_FORCE_TEST_OVERRIDES` |
 | `util.ts` | `sleep`, `waitUntil(probe, {timeoutMs, intervalMs, message})`, `notImplemented` |
 | `scenario.ts` | `scenario(id, title, fn, {timeoutMs, requires: {root?, api?, gms?, long?}, allowCrash?})`, `ScenarioContext`, `registeredScenarios`, `describeRequirements`, `unmetRequirement` |
 | `types.ts` | `WireRecord`, `StateJson`, `HeartbeatStatusJson`, `GeofenceJson`, `LatLon`, `Premise`, `PremiseAuditEntry`, `PremiseStatus`, … |
@@ -629,7 +629,7 @@ tighten it). Default timeout 10 minutes.
 | P-H05 | deep Doze, battery-exempt → `exact`, cadence ≈ `minInterval` | |
 | P-H06 | wall-clock jump and time-zone change → heartbeat cadence unaffected; `boot_count`/`elapsed_realtime_ms` consistent | root |
 | P-H07 | airplane mode → records queue → uploaded after reconnect with their original `recorded_at` and a later `sent_at` | |
-| P-H08 | server 500 then 200 → retried; 401 → `/auth/refresh` → retried with the new token | |
+| P-H08 | server 500 three times → the same upload tries again after 2, 4 and 8 s, the fourth try is accepted; 401 → `/auth/refresh` → retried with the new token | |
 | P-H09 | `syncInterval` batching while moving (normal records ≤ syncInterval late, in batches); audit records immediate | |
 | P-H10 | heartbeat records carry the `heartbeat` metadata object (§5) consistent with `getHeartbeatStatus()` | |
 
@@ -656,7 +656,7 @@ tighten it). Default timeout 10 minutes.
 | F-01 | app launch auto-starts tracking: `tracking_start` + `motionchange`; device details in the request `params`; battery in every record | |
 | F-02 | 02:00 stop via test override (`stopAt` = now + 2 min) → `tracking_stop: stop_after_elapsed` at that time; minutes come from the device clock (clock set to 01:58 → `stopAfterElapsedMinutes` 2) | root |
 | F-03 | the 02:00 stop still happens after a process kill (restore) and after a reboot (measured from the session start) | root |
-| F-04 | route replay (`cityLoop3km`): uploads batched within `syncInterval` (test 120 s); odometer ≈ route length ±10%; travel time computable from the records | |
+| F-04 | route replay (`cityLoop3km`): uploads batched within `syncInterval` (test 60 s); odometer ≈ route length ±10%; travel time computable from the records | |
 | F-05 | stationary: no GPS; heartbeats every 60–120 s (production 3–5 min) with an older `location.timestamp` | |
 | F-06 | online/offline audit on the server: heartbeat cadence while on; `stop` → `tracking_stop`; gaps explained | |
 | F-07 | premise ENTER (geo fix inside) → PremiseMonitor service running; `/premise-audit` receives `enter` and every later record and event (heartbeats included) | |

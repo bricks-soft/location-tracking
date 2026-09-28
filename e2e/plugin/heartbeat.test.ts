@@ -55,6 +55,8 @@ const DRIVE_SPEED_MPS = 15;
 const MAX_BATCH = 100;
 /** A priority record is uploaded "immediately": sent_at - recorded_at at most this many seconds. */
 const IMMEDIATE_S = 10;
+/** Waits before the uploader's 3 retries of one upload (owner decision R2-Q18), ms. */
+const RETRY_WAITS_MS = [2_000, 4_000, 8_000];
 /** geolocation.stationaryRadius of pluginTestConfig (used if the config does not say otherwise), meters. */
 const DEFAULT_STATIONARY_RADIUS_M = 25;
 /**
@@ -1602,33 +1604,43 @@ scenario(
 
 scenario(
   'P-H08',
-  'server 500 then 200 is retried; 401 refreshes the JWT via /auth/refresh and retries',
+  'server 500 is retried after 2, 4 and 8 s in the same upload; 401 refreshes the JWT via /auth/refresh and retries',
   async (ctx) => {
     const office = await ctx.backOffice();
     await ctx.app.prepare({ launch: true });
     const config = await ctx.testConfig({ jwt: true });
 
-    // Phase 1: the first upload (the tracking_start) is answered 500; the next upload pass retries it.
-    office.setFault({ path: '/locations', status: 500, count: 1 });
+    // Phase 1: the first upload (the tracking_start) is answered 500 three times. The uploader tries again in the same
+    // upload after 2, 4 and 8 s (owner decision R2-Q18); the fourth try is accepted.
+    office.setFault({ path: '/locations', status: 500, count: 3 });
     const started = await startTracking(ctx, office, config, PLACES.hq);
     const ts = started.trackingStart;
     await waitForAnchor(ctx, office, started);
     const phase1 = sortedRequests(office, '/locations', started.sinceHost);
-    const first = phase1[0];
-    assert.ok(first !== undefined, 'no upload request arrived');
-    assert.equal(first.status, 500, `the first upload must be answered by the 500 fault:\n${requestLog(phase1)}`);
-    const firstRecords = bodyRecords(first.body);
-    assert.ok(firstRecords.some((r) => r.uuid === ts.uuid), `the first upload must carry the tracking_start:\n${requestLog(phase1)}`);
-    assert.equal(headerValue(first, 'authorization'), 'Bearer e2e-initial', `the first upload uses the configured access token:\n${requestLog(phase1)}`);
-    const retry = phase1.find((r) => r.id > first.id && bodyRecords(r.body).some((x) => x.uuid === ts.uuid));
-    assert.ok(retry !== undefined, `the tracking_start answered 500 must be sent again:\n${requestLog(phase1)}`);
-    assert.equal(retry.status, 200, `the retry must be accepted:\n${requestLog(phase1)}`);
-    assert.equal(headerValue(retry, 'authorization'), 'Bearer e2e-initial', `a 500 does not refresh the token:\n${requestLog(phase1)}`);
-    const firstSent = epoch(firstRecords.find((r) => r.uuid === ts.uuid)!.sent_at, 'sent_at of the 500 request');
-    const retrySent = epoch(bodyRecords(retry.body).find((r) => r.uuid === ts.uuid)!.sent_at, 'sent_at of the retry');
-    assert.ok(retrySent > firstSent, `a retry is a new request with a later sent_at (${firstSent} -> ${retrySent})`);
+    const tries = phase1.filter((r) => bodyRecords(r.body).some((x) => x.uuid === ts.uuid));
+    assert.deepEqual(
+      tries.map((r) => r.status),
+      [500, 500, 500, 200],
+      `the tracking_start must be answered 500 three times, then accepted:\n${requestLog(phase1)}`,
+    );
+    assert.equal(tries[0]!.id, phase1[0]?.id, `the first upload must carry the tracking_start:\n${requestLog(phase1)}`);
+    RETRY_WAITS_MS.forEach((wait, i) => {
+      const gap = tries[i + 1]!.receivedAt - tries[i]!.receivedAt;
+      assert.ok(
+        gap >= wait - 500 && gap <= wait + 3_000,
+        `try ${i + 2} came ${gap} ms after try ${i + 1}, expected about ${wait} ms:\n${requestLog(phase1)}`,
+      );
+    });
+    for (const r of tries) {
+      assert.equal(headerValue(r, 'authorization'), 'Bearer e2e-initial', `a 500 does not refresh the token:\n${requestLog(phase1)}`);
+    }
+    const sentAt = tries.map((r, i) => epoch(bodyRecords(r.body).find((x) => x.uuid === ts.uuid)!.sent_at, `sent_at of try ${i + 1}`));
+    for (let i = 1; i < sentAt.length; i++) {
+      assert.ok(sentAt[i]! > sentAt[i - 1]!, `every try is a new request with a later sent_at (${sentAt.join(' -> ')})`);
+    }
+    const accepted = tries[3]!;
     const storedTs = storedOf(office, ts.uuid);
-    assert.equal(storedTs.record.sent_at, bodyRecords(retry.body).find((r) => r.uuid === ts.uuid)!.sent_at, 'the stored tracking_start comes from the retry');
+    assert.equal(storedTs.record.sent_at, bodyRecords(accepted.body).find((r) => r.uuid === ts.uuid)!.sent_at, 'the stored tracking_start comes from the accepted try');
     assert.equal(sortedRequests(office, '/auth/refresh', started.sinceHost).length, 0, 'a 500 must not trigger a token refresh');
 
     // Phase 2: the next upload is answered 401: one refresh at /auth/refresh, then the same records again with the new
@@ -1703,7 +1715,9 @@ scenario(
   async (ctx) => {
     const office = await ctx.backOffice();
     await ctx.app.prepare({ launch: true });
-    const syncS = TEST_SYNC_INTERVAL_S;
+    // Longer than TEST_SYNC_INTERVAL_S: the initial motionchange must go out with the first heartbeat, created
+    // TEST_HEARTBEAT.minInterval after it; a syncInterval of the same length would make its own upload race that one.
+    const syncS = TEST_SYNC_INTERVAL_S + 30;
     // batchSync / maxBatchSize are set on the returned config (withHttp) rather than through the kit's `patch`, whose
     // merge rules for nested objects are not part of the contract; the ready() state below confirms all three values.
     const config = withHttp(await ctx.testConfig({ syncInterval: syncS }), { batchSync: true, maxBatchSize: MAX_BATCH });

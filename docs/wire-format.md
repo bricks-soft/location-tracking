@@ -666,8 +666,9 @@ is triggered:
 - when tracking starts (the `tracking_start` record is itself an insert);
 - with `http.syncInterval` above `0`, by the `syncInterval` timer, while tracking is on (see below):
   - a normal record is queued but not yet due: a check is scheduled for `oldest.recorded_at + syncInterval`;
-  - an automatic upload failed: normal records are tried again `syncInterval` seconds later (measured on the
-    elapsed-time clock), by the timer, and not on every insert. These still upload at once: the network coming back,
+  - an automatic upload failed (after its retries, see [Response handling and retries](#response-handling-and-retries)):
+    normal records are tried again `syncInterval` seconds after the last try (measured on the elapsed-time clock), by
+    the timer, and not on every insert. These still upload at once: the network coming back,
     a queued priority record, and `sync()`;
   - a queued record that is due but could not be tried (offline, or held back on cellular) gets no timer: the network
     coming back triggers it;
@@ -681,7 +682,8 @@ record is inserted, or tracking starts again. A record inserted while tracking i
 rule, also when `syncInterval` is above `0`.
 
 The plugin emits one `http` event (`{ success, status, responseText, uuids }`) **per HTTP request**. A `401` that
-triggers a token refresh and a retry therefore produces two `http` events. The token refresh request itself produces
+triggers a token refresh and a retry therefore produces two `http` events, and an upload that is tried again after a
+`5xx`, `429`, timeout or network error produces one per try. The token refresh request itself produces
 an `authorization` event, not an `http` event.
 
 ### Live location with `syncInterval`
@@ -735,8 +737,9 @@ The server's answers are handled the same way with or without `syncInterval` (ne
 | Server response | What the plugin does |
 |---|---|
 | `2xx` | Deletes the records in the request from the queue. The response body is not interpreted (it only appears in the app's `http` event); a body that can't be read still counts as success. |
-| `401` | If JWT authorization is active, refreshes the access token (see [JWT refresh](#jwt-refresh)) and, if that gives a token, retries the request **once**. At most one refresh is attempted per upload: when a refresh was already attempted just before this request (the token was missing or about to expire), a `401` does not trigger another one. If the retry fails too, or there is no new token, the records stay queued. |
-| Any other status (`3xx` after redirects, `4xx`, `5xx`), a timeout or a network error | The records **stay queued**, and their attempt counter and last-attempt time are updated (once per upload, even when a `401` led to a retry). They are retried at the next trigger (see above; with `syncInterval` above `0`, normal records wait `syncInterval` seconds). |
+| `401` | If JWT authorization is active, refreshes the access token (see [JWT refresh](#jwt-refresh)) and, if that gives a token, retries the request **once**. At most one refresh is attempted per upload: when a refresh was already attempted for this upload (just before this request because the token was missing or about to expire, or in an earlier try), a `401` does not trigger another one. If the retry is answered `5xx` or `429`, or gets no answer, the next row applies; if it fails otherwise, or there is no new token, the records stay queued. |
+| `5xx`, `429`, a timeout or a network error | The request is **tried again in the same upload**, up to 3 times, after waiting 2, then 4, then 8 seconds: at most 4 tries and 14 seconds of waiting per upload, plus the time the requests take (each up to `http.timeout`). Each try is a new request with a new `sent_at` and its own `http` event; a `Retry-After` header is not read. No other upload runs meanwhile. A try answered otherwise ends the upload with that answer. If the last try fails too, the next row applies. |
+| Any other status (`3xx` after redirects, other `4xx`), or the last failed try of the row above | The records **stay queued**, and their attempt counter and last-attempt time are updated (once per upload, however many requests it made). They are retried at the next trigger (see above; with `syncInterval` above `0`, normal records wait `syncInterval` seconds after the last try). |
 
 There is no maximum number of attempts. A record leaves the queue only after a `2xx`, or when it is pruned
 (`maxDaysToPersist`, `maxRecordsToPersist`). Consequences for your server:
@@ -797,7 +800,8 @@ own. A refresh needs `refreshUrl`; without it the plugin only sends `accessToken
 - after a `401`, unless a refresh was already attempted for this upload. The request is then retried once with the
   new token.
 
-So at most one refresh is attempted per upload. Only one refresh runs at a time.
+So at most one refresh is attempted per upload, also when a failed request is tried again. Only one refresh runs at
+a time.
 
 **Request.** `POST` to `refreshUrl`. Headers: `Content-Type` (JSON or form, see below), then `refreshHeaders`; no
 `Authorization` header is added. The body is `refreshPayload`, with every `{refreshToken}` in its string values

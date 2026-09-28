@@ -688,6 +688,9 @@ How to measure the cost on a real phone: procedure M-04 in the
 - Every record is written to SQLite first and uploaded to `http.url` according to the rules in
   [docs/wire-format.md](docs/wire-format.md#when-uploads-happen). Priority records (`heartbeat`, `tracking_start`,
   `tracking_stop`, `providerchange`) are uploaded right away and take the older queued records along.
+- A request answered `5xx` or `429`, or without an answer (timeout, network error), is **tried again in the same
+  upload** after 2, 4 and 8 seconds (at most 4 tries). Other answers are not tried again; a `401` refreshes the JWT
+  and retries once ([details](docs/wire-format.md#response-handling-and-retries)).
 - With `syncInterval: 0` (the default) there is **no retry timer** for failed uploads: queued records are retried when
   a record is inserted (at least every heartbeat while tracking), when the network comes back, when tracking starts,
   and on `sync()`. With `syncInterval` above 0, a timer uploads normal records that have become due, and retries them
@@ -696,7 +699,8 @@ How to measure the cost on a real phone: procedure M-04 in the
   `destroyLocation({ uuid })` delete them without uploading.
 - `sync()` uploads the whole queue now, ignoring `autoSync`, `autoSyncThreshold` and `disableAutoSyncOnCellular`, and
   resolves with the uploaded records. It rejects with `NO_URL` (no valid `http.url`), or with `HTTP_ERROR` /
-  `NETWORK_ERROR` at the first failed request (records uploaded before the failure are already deleted).
+  `NETWORK_ERROR` at the first failed upload, after its tries (records uploaded before the failure are already
+  deleted).
 - `insertLocation({ location })` stores a record of your own (default `event: 'location'`) and uploads it like the
   others. It emits **no** event and does **not** restart the heartbeat window, because it is not evidence that
   tracking runs.
@@ -737,8 +741,8 @@ http: {
 - **While tracking is off**, normal records are uploaded as with `syncInterval: 0` (by `autoSyncThreshold`), because
   there is no timer then. For example, with the default `autoSyncThreshold: 0`, a `getCurrentPosition()` record after
   the 02:00 stop is uploaded at once. When tracking stops, records that were held are handled by this rule at once.
-- **After a failed automatic upload**, normal records are retried once per `syncInterval` (measured on the
-  elapsed-time clock), by the timer, not on every insert. These still upload at once: the network coming back, a
+- **After a failed automatic upload** (its last try failed), normal records are retried once per `syncInterval`,
+  counted from that last try (measured on the elapsed-time clock), by the timer, not on every insert. These still upload at once: the network coming back, a
   queued audit record, and `sync()`.
 - [Native listeners](#companion-plugins-native-api) receive every record when it is queued, not when it is uploaded,
   so `syncInterval` does not delay them.
@@ -766,7 +770,7 @@ tracking has been started (or resumed) in the app's process.
 | `heartbeat` | `{ location }` | A heartbeat record was created. `location` is the heartbeat record, with the last known coords. |
 | `geofence` | `{ identifier, action, location, extras? }` | A geofence was entered, exited or dwelled in (only while tracking is on). |
 | `geofenceschange` | `{ on, off }` | The set of geofences changed (`addGeofence(s)`, `removeGeofence(s)`). `on` holds geofences, `off` holds identifiers. |
-| `http` | `{ success, status, responseText, uuids }` | An upload request finished. There is one event per HTTP request: a `401` followed by a token refresh and a retry gives two. `status` is `0` for a network error. |
+| `http` | `{ success, status, responseText, uuids }` | An upload request finished. There is one event per HTTP request: a `401` followed by a token refresh and a retry gives two, and every try of an upload that is tried again gives one. `status` is `0` for a network error. |
 | `connectivitychange` | `{ connected, type }` | The network connection changed. A network blocked for the app by Doze or Data Saver counts as disconnected. |
 | `powersavechange` | `{ isPowerSaveMode }` | Battery saver was turned on or off. |
 | `enabledchange` | `{ enabled }` | Tracking was started or stopped, including automatic stops (`stopOnStationary`, `stopAfterElapsedMinutes`, `terminate`, `permission_denied`, `service_start_failed`, `reboot`, `package_replaced`). Not emitted when tracking resumes in a new process. |

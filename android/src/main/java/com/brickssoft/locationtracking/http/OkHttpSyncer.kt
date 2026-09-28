@@ -48,8 +48,11 @@ import kotlin.coroutines.cancellation.CancellationException
  * - The queue drains oldest first, `maxBatchSize` records per request when `batchSync`, else one per request, and
  *   stops at the first failure. If the server rejected an upload, an automatic pass still sends the queued priority
  *   records (heartbeat and audit records), so one record the server keeps rejecting cannot hold them back.
- * - 2xx deletes the records; anything else keeps them and marks one attempt per upload. One `Http` event is
- *   emitted per HTTP request (a 401 that triggers a token refresh and a retry yields two).
+ * - One upload makes up to 4 tries (owner decision R2-Q18): a try without an answer (connection error or timeout),
+ *   HTTP 5xx or HTTP 429 is tried again after 2, 4 and 8 s, while the upload lock is held. Any other answer ends the
+ *   upload; a 401 keeps its token refresh and one more request, once per upload.
+ * - 2xx deletes the records; a failure that ends the upload keeps them and marks one attempt. One `Http` event
+ *   is emitted per HTTP request (every try; a 401 that triggers a token refresh and a retry yields two).
  *
  * **`http.syncInterval` (seconds, 0 = off).** While tracking is on (`runtime.enabled`) with `syncInterval > 0` and
  * `autoSync`, normal records (every event that is not a priority record) are held until the oldest pending normal
@@ -65,7 +68,8 @@ import kotlin.coroutines.cancellation.CancellationException
  *   record created while tracking is off (for example by `getCurrentPosition`) is not held without a timer.
  * - **Settings.** Once `syncInterval > 0` was seen in this process, a pass also runs when tracking is switched on or
  *   off and when `url`, `autoSync`, `autoSyncThreshold`, `syncInterval` or `disableAutoSyncOnCellular` change.
- * - **Failures.** After a failed automatic upload, the rule retries normal records once per `syncInterval`
+ * - **Failures.** After a failed automatic upload (after its last try), the rule retries normal records once per
+ *   `syncInterval`
  *   (measured on elapsed realtime) through the timer, not on every insert. Connectivity regained, a queued priority
  *   record and [sync] still upload at once. Records that are due but could not be tried (offline, cellular
  *   restricted) get no timer: connectivity regained triggers them.
@@ -383,49 +387,76 @@ class OkHttpSyncer(
     }
 
     /**
-     * One upload of [records]: pre-emptive token refresh, request, 401 refresh-and-retry, store update and one Http
-     * event per request. Returns null on success.
+     * One upload of [records]: up to `1 + RETRY_DELAYS_MS.size` tries (owner decision R2-Q18), then the store update.
+     * Only a try without an answer, HTTP 5xx or HTTP 429 is tried again, after the next delay. Returns null on
+     * success.
      */
     private suspend fun upload(url: HttpUrl, config: HttpConfig, records: List<Record>): Failure? =
         withContext(dispatchers.io) {
             val uuids = records.map { it.uuid }
-            var reported = false
-            val (result, kind) = try {
-                val client = clientFor(config.timeout)
-                val bearer = authorization.appliesTo(config)
-                val token = if (bearer) authorization.tokenForRequest(client) else NO_TOKEN
-                var response = send(client, url, config, records, token.value)
-                if (response.status == HTTP_UNAUTHORIZED && bearer && !token.refreshAttempted) {
-                    events.emit(TrackingEvent.Http(HttpResult(false, response.status, response.body, uuids)))
-                    reported = true
-                    val renewed = authorization.refresh(client, token.value)
-                    if (renewed != null) {
-                        reported = false // the retry is a new request with its own event, even if it throws
-                        response = send(client, url, config, records, renewed)
-                    }
-                }
-                val result = HttpResult(response.isSuccessful, response.status, response.body, uuids)
-                result to (if (result.success) null else FailureKind.HTTP)
-            } catch (e: IOException) {
-                ensureActive() // a call cancelled because the coroutine was cancelled is not an upload failure
-                HttpResult(false, 0, e.message ?: e.javaClass.simpleName, uuids) to FailureKind.NETWORK
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Logger.e(TAG, "upload of ${uuids.size} record(s) failed unexpectedly", e)
-                HttpResult(false, 0, e.message ?: e.javaClass.simpleName, uuids) to FailureKind.INTERNAL
+            var outcome = tryUpload(url, config, records, uuids, mayRefresh = true)
+            var refreshed = outcome.refreshed
+            for (wait in RETRY_DELAYS_MS) {
+                if (!outcome.retryable) break
+                if (!outcome.reported) events.emit(TrackingEvent.Http(outcome.result))
+                Logger.w(TAG, "upload of ${uuids.size} record(s) failed (${outcome.reason}); next try in ${wait / MS_PER_SECOND} s")
+                delay(wait)
+                // At most one token refresh per upload, whether before a request or after a 401.
+                outcome = tryUpload(url, config, records, uuids, mayRefresh = !refreshed)
+                refreshed = refreshed || outcome.refreshed
             }
-            if (kind == null) {
+            if (outcome.kind == null) {
                 locationStore.delete(uuids)
-                Logger.i(TAG, "uploaded ${uuids.size} record(s): HTTP ${result.status}")
+                Logger.i(TAG, "uploaded ${uuids.size} record(s): HTTP ${outcome.result.status}")
             } else {
                 locationStore.markAttempt(uuids, clock.now())
-                val reason = if (kind == FailureKind.HTTP) "HTTP ${result.status}" else result.responseText
-                Logger.w(TAG, "upload of ${uuids.size} record(s) failed ($reason); kept in the queue")
+                Logger.w(TAG, "upload of ${uuids.size} record(s) failed (${outcome.reason}); kept in the queue")
             }
-            if (!reported) events.emit(TrackingEvent.Http(result))
-            kind?.let { Failure(records, result, it) }
+            if (!outcome.reported) events.emit(TrackingEvent.Http(outcome.result))
+            outcome.kind?.let { Failure(records, outcome.result, it) }
         }
+
+    /**
+     * One try of an upload: pre-emptive token refresh, request, and on a 401 a token refresh and one more request; no
+     * refresh at all unless [mayRefresh]. Emits the Http event of every request but the last one (see [Try.reported]).
+     */
+    private suspend fun tryUpload(
+        url: HttpUrl,
+        config: HttpConfig,
+        records: List<Record>,
+        uuids: List<String>,
+        mayRefresh: Boolean,
+    ): Try {
+        var reported = false
+        var refreshed = false
+        return try {
+            val client = clientFor(config.timeout)
+            val bearer = authorization.appliesTo(config)
+            val token = if (bearer) authorization.tokenForRequest(client, mayRefresh) else NO_TOKEN
+            refreshed = token.refreshAttempted
+            var response = send(client, url, config, records, token.value)
+            if (response.status == HTTP_UNAUTHORIZED && bearer && mayRefresh && !token.refreshAttempted) {
+                events.emit(TrackingEvent.Http(HttpResult(false, response.status, response.body, uuids)))
+                reported = true
+                refreshed = true
+                val renewed = authorization.refresh(client, token.value)
+                if (renewed != null) {
+                    reported = false // the retry is a new request with its own event, even if it throws
+                    response = send(client, url, config, records, renewed)
+                }
+            }
+            val result = HttpResult(response.isSuccessful, response.status, response.body, uuids)
+            Try(result, if (result.success) null else FailureKind.HTTP, reported, refreshed)
+        } catch (e: IOException) {
+            currentCoroutineContext().ensureActive() // a call cancelled with the coroutine is not an upload failure
+            Try(HttpResult(false, 0, e.message ?: e.javaClass.simpleName, uuids), FailureKind.NETWORK, reported, refreshed)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Logger.e(TAG, "upload of ${uuids.size} record(s) failed unexpectedly", e)
+            Try(HttpResult(false, 0, e.message ?: e.javaClass.simpleName, uuids), FailureKind.INTERNAL, reported, refreshed)
+        }
+    }
 
     private suspend fun send(
         client: OkHttpClient,
@@ -453,6 +484,19 @@ class OkHttpSyncer(
 
         /** The upload could not be attempted (e.g. the body could not be built). */
         INTERNAL,
+    }
+
+    /**
+     * The outcome of one [tryUpload]: [kind] null on success. [reported] means the Http event for [result] was
+     * already emitted (a 401 whose token refresh failed); [refreshed] means the try attempted a token refresh.
+     */
+    private class Try(val result: HttpResult, val kind: FailureKind?, val reported: Boolean, val refreshed: Boolean) {
+        /** True for a request without an answer, HTTP 5xx or HTTP 429 (R2-Q18). */
+        val retryable: Boolean
+            get() = kind == FailureKind.NETWORK ||
+                (kind == FailureKind.HTTP && (result.status in HTTP_SERVER_ERRORS || result.status == HTTP_TOO_MANY_REQUESTS))
+
+        val reason: String get() = if (kind == FailureKind.HTTP) "HTTP ${result.status}" else result.responseText
     }
 
     /** A failed upload of [records]. */
@@ -493,6 +537,11 @@ class OkHttpSyncer(
     private companion object {
         const val TAG = "LT.Http"
         const val HTTP_UNAUTHORIZED = 401
+        const val HTTP_TOO_MANY_REQUESTS = 429
+        val HTTP_SERVER_ERRORS = 500..599
+
+        /** Waits before the retries of one upload (R2-Q18): 3 retries after 2, 4 and 8 s. */
+        val RETRY_DELAYS_MS = longArrayOf(2_000L, 4_000L, 8_000L)
         const val MS_PER_SECOND = 1_000L
 
         /** Start of the debug log line written when the `syncInterval` timer is armed (tests look for it). */

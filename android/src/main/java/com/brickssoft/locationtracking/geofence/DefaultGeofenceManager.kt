@@ -24,6 +24,8 @@ import com.brickssoft.locationtracking.provider.ProviderFactory
 import com.brickssoft.locationtracking.provider.StationaryRegionSink
 import com.brickssoft.locationtracking.record.RecordSink
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -104,6 +106,10 @@ class DefaultGeofenceManager(
 
     /** The last fix of the location stream (for ordering). */
     private var lastStreamFix: TrackedLocation? = null
+
+    /** A later registration of every geofence, after the backend answered UNAVAILABLE ([scheduleRetryLocked]). */
+    private var retryJob: Job? = null
+    private var retryAttempt = 0
 
     /** True after [onTrackingStarted], false after [onTrackingStopped], null in a process that saw neither. */
     @Volatile
@@ -258,7 +264,8 @@ class DefaultGeofenceManager(
                 removeFromOsLocked(it, registrableIdsLocked())
             }
             registeredBackend = current
-            registerAllLocked(current)
+            cancelRetryLocked()
+            if (registerAllLocked(current)) scheduleRetryLocked()
             refreshDwellTimersLocked()
             refreshDerivedLocked()
             Logger.i(TAG, "tracking started (${mode.wire}): ${entries.size} geofence(s), backend ${current.kind.wire}")
@@ -268,6 +275,7 @@ class DefaultGeofenceManager(
     override suspend fun onTrackingStopped() {
         mutex.withLock {
             session = false
+            cancelRetryLocked()
             dwell.cancelAll()
             lastStreamFix = null
             try {
@@ -601,17 +609,61 @@ class DefaultGeofenceManager(
         if (previous != null && previous.kind != current.kind) {
             Logger.i(TAG, "geofence backend changed ${previous.kind.wire} -> ${current.kind.wire}")
             removeFromOsLocked(previous, registrableIdsLocked())
-            registerAllLocked(current)
+            cancelRetryLocked()
+            if (registerAllLocked(current) && session == true) scheduleRetryLocked()
             refreshDwellTimersLocked()
         }
         return current
     }
 
-    /** Registers every stored geofence; the OS's initial triggers follow, so polygons open their initial window. */
-    private suspend fun registerAllLocked(backend: GeofenceBackend) {
+    /**
+     * Registers every stored geofence; the OS's initial triggers follow, so polygons open their initial window.
+     * Returns true when the backend answered UNAVAILABLE for a batch (see [scheduleRetryLocked]).
+     */
+    private suspend fun registerAllLocked(backend: GeofenceBackend): Boolean {
         val now = clock.now()
         for (entry in entries.values) openInitialWindowLocked(entry, now)
-        registerLocked(backend, entries.values.map { it.spec }, throwOnError = false)
+        return registerLocked(backend, entries.values.map { it.spec }, throwOnError = false)
+    }
+
+    /**
+     * Registers every geofence again after [RETRY_DELAYS_MS] (the next delay on each failure), because the backend
+     * answered UNAVAILABLE. Google Play services answers GEOFENCE_NOT_AVAILABLE while its network location is off,
+     * and the plugin registers again within about a second of location services coming back on, which can be before
+     * Play services has switched its network location on again (CI emulator, API 29, P-P06). Without a retry the
+     * geofences stayed unregistered until tracking started again. Stops at the first registration without
+     * UNAVAILABLE, when tracking stops or starts again, or after the last delay.
+     */
+    private fun scheduleRetryLocked() {
+        if (retryAttempt >= RETRY_DELAYS_MS.size) {
+            Logger.w(TAG, "geofence backend still unavailable after ${RETRY_DELAYS_MS.size} retries; giving up until tracking starts again")
+            return
+        }
+        val delayMs = RETRY_DELAYS_MS[retryAttempt]
+        retryAttempt += 1
+        val attempt = retryAttempt
+        Logger.i(TAG, "geofence backend unavailable; registering the geofences again in ${delayMs / 1000} s (retry $attempt)")
+        retryJob?.cancel()
+        retryJob = scope.launch {
+            delay(delayMs)
+            mutex.withLock {
+                if (session != true || retryAttempt != attempt) return@withLock
+                val backend = registeredBackend ?: return@withLock
+                if (registerAllLocked(backend)) {
+                    scheduleRetryLocked()
+                } else {
+                    Logger.i(TAG, "geofences registered again (retry $attempt)")
+                    retryAttempt = 0
+                    refreshDwellTimersLocked()
+                }
+            }
+        }
+    }
+
+    private fun cancelRetryLocked() {
+        retryJob?.cancel()
+        retryJob = null
+        retryAttempt = 0
     }
 
     /**
@@ -631,9 +683,11 @@ class DefaultGeofenceManager(
         }
     }
 
-    private suspend fun registerLocked(backend: GeofenceBackend, specs: List<GeofenceSpec>, throwOnError: Boolean) {
+    /** Returns true when a batch failed with UNAVAILABLE (only when [throwOnError] is false). */
+    private suspend fun registerLocked(backend: GeofenceBackend, specs: List<GeofenceSpec>, throwOnError: Boolean): Boolean {
         val initialTriggerEntry = configStore.config.value.geofence.initialTriggerEntry
         val regions = specs.mapNotNull { toOsGeofence(it, backend, initialTriggerEntry) }
+        var unavailable = false
         for (batch in regions.chunked(BATCH_SIZE)) {
             try {
                 backend.add(batch)
@@ -642,8 +696,10 @@ class DefaultGeofenceManager(
             } catch (e: Exception) {
                 if (throwOnError) throw e
                 Logger.e(TAG, "failed to register ${batch.size} geofence(s) with ${backend.kind.wire}", e)
+                if (e is TrackingException && e.code == ErrorCode.UNAVAILABLE) unavailable = true
             }
         }
+        return unavailable
     }
 
     private suspend fun removeFromOsLocked(backend: GeofenceBackend, ids: List<String>) {
@@ -718,6 +774,9 @@ class DefaultGeofenceManager(
 
         /** Geofences per OS registration call. */
         const val BATCH_SIZE = 25
+
+        /** Delays of the registrations after the backend answered UNAVAILABLE (about 8.7 minutes in all). */
+        val RETRY_DELAYS_MS = longArrayOf(10_000L, 30_000L, 60_000L, 120_000L, 300_000L)
 
         /** Consecutive agreeing fixes that confirm a polygon transition when accuracy straddles the boundary. */
         const val CONSISTENT_FIXES = 2

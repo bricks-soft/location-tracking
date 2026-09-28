@@ -88,6 +88,7 @@ emulator. Decisions: [docs/DECISIONS.md](docs/DECISIONS.md#round-2-field-force-a
 ### Changed
 
 - After a user force stop, a background event that still reaches the app (an activity update or a stationary-region exit already on its way) no longer restarts tracking (Android 11+); tracking resumes when the app is opened (`ready()`).
+- When the geofence backend answers `UNAVAILABLE` while the stored geofences are registered (Google Play services' `GEOFENCE_NOT_AVAILABLE`, for example right after location services come back on, before Play services has switched its network location on again), the plugin registers them again after 10, 30, 60, 120 and 300 s, and stops at the first registration without `UNAVAILABLE`, when tracking stops, or after the last try. Before, they stayed unregistered until tracking started again.
 - **Stationary no longer polls:** before, the stationary state kept a `'balanced'` request with up to one fix per
   minute, and accepted fixes refreshed the heartbeat's location; now GPS and the plugin's own location requests are
   off while stationary (see "Stationary GPS-off mode"), and the heartbeat carries the anchor fix. The exit rule

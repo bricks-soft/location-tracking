@@ -669,7 +669,8 @@ How to measure the cost on a real phone: procedure M-04 in the
 - Geofences are stored in the plugin's database, but registered with the OS and reported **only while tracking is
   on** (`start()` or `startGeofences()`); `stop()` unregisters them. GMS and HMS drop all geofences when location
   services are switched off; the plugin registers them again when location comes back or the location permission
-  level changes.
+  level changes. If the backend answers that geofencing is not available yet (GMS `GEOFENCE_NOT_AVAILABLE`), the
+  plugin tries again after 10, 30, 60, 120 and 300 s.
 - **Backends.** GMS and HMS report `ENTER`, `EXIT` and `DWELL` natively; with `initialTriggerEntry` their initial
   trigger is `ENTER | DWELL`. The `android` backend (proximity alerts) has no dwell: the plugin synthesizes `DWELL`
   when the device stays inside for `loiteringDelay` after `ENTER`. It always reports `ENTER` for a circle the device
@@ -2432,7 +2433,9 @@ the computed enclosing circle.
 
 Construct a type with a set of properties K of type T
 
-<code>{ [P in K]: T; }</code>
+<code>{
+ [P in K]: T;
+ }</code>
 
 
 #### NotificationPriority
@@ -2486,14 +2489,18 @@ Rejection `code` of every failed promise.
 
 From T, pick a set of properties whose keys are in the union K
 
-<code>{ [P in K]: T[P]; }</code>
+<code>{
+ [P in K]: T[P];
+ }</code>
 
 
 #### Partial
 
 Make all properties in T optional
 
-<code>{ [P in keyof T]?: T[P]; }</code>
+<code>{
+ [P in keyof T]?: T[P];
+ }</code>
 
 
 #### HeartbeatStrategy

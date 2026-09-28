@@ -5,6 +5,7 @@ import com.brickssoft.locationtracking.config.GeolocationConfig
 import com.brickssoft.locationtracking.config.RuntimeState
 import com.brickssoft.locationtracking.config.TrackingMode
 import com.brickssoft.locationtracking.core.ErrorCode
+import com.brickssoft.locationtracking.core.ForceStopProbe
 import com.brickssoft.locationtracking.core.Logger
 import com.brickssoft.locationtracking.core.TrackingEvent
 import com.brickssoft.locationtracking.core.TrackingException
@@ -95,11 +96,12 @@ class DefaultTrackingEngineTest {
     private fun TestScope.newEngine(
         providerFactory: ProviderFactory = providers,
         store: ConfigStore = configStore,
+        forceStopProbe: ForceStopProbe = ForceStopProbe.NEVER,
     ): DefaultTrackingEngine {
         clock = FakeClock(scheduler = testScheduler)
         return DefaultTrackingEngine(
             store, providerFactory, processor, odometer, FakeRecordFactory(clock, configStore), recordSink,
-            heartbeat, geofences, service, device, syncer, permissions, events, clock, backgroundScope,
+            heartbeat, geofences, service, device, syncer, permissions, events, clock, backgroundScope, forceStopProbe,
         )
     }
 
@@ -618,6 +620,37 @@ class DefaultTrackingEngineTest {
         assertEquals(listOf(TrackingEvent.ActivityChange(ActivitySample(ActivityType.IN_VEHICLE, 90))), events.events)
         assertEquals(1, service.startCalls)
         assertEquals(movingSpec, activeSpec())
+    }
+
+    @Test
+    fun `activity update after a user force stop does not restore tracking`() = runTest {
+        configStore.runtimeFlow.value = RuntimeState(enabled = true, lastLocation = origin)
+        val engine = newEngine(forceStopProbe = ForceStopProbe { true })
+
+        engine.onActivitySamples(listOf(ActivitySample(ActivityType.IN_VEHICLE, 90)))
+        runCurrent()
+
+        assertEquals(emptyList<String>(), records())
+        assertEquals(0, service.startCalls)
+        assertTrue(events.events.isEmpty())
+        // The leftover activity registration is released, so it stops waking the app; opening the app still restores.
+        assertEquals(1, activityBackend.stopCalls)
+        assertTrue(configStore.runtime.value.enabled)
+        assertFalse(engine.state().runtime.isMoving)
+    }
+
+    @Test
+    fun `ready after a user force stop restores tracking`() = runTest {
+        configStore.runtimeFlow.value = RuntimeState(enabled = true, lastLocation = origin)
+        val engine = newEngine(forceStopProbe = ForceStopProbe { true })
+        engine.onActivitySamples(listOf(ActivitySample(ActivityType.STILL, 90)))
+        runCurrent()
+
+        engine.ready(null, reset = false)
+        runCurrent()
+
+        assertEquals("tracking_start:restore", records().first())
+        assertEquals(1, service.startCalls)
     }
 
     @Test

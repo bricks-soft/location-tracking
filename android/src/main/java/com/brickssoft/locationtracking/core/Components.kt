@@ -144,6 +144,7 @@ class Components private constructor(context: Context) {
         DefaultTrackingEngine(
             configStore, providers, processor, odometer, recordFactory, recordSink,
             heartbeat, geofences, serviceController, device, syncer, permissions, events, clock, scope,
+            ForceStopProbe.system(this.context),
         )
     }
 

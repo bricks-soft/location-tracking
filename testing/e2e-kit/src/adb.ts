@@ -428,7 +428,16 @@ export class Adb {
     const deadline = Date.now() + timeoutMs;
     const hadRoot = this.rooted || (await this.isRoot().catch(() => false));
     const bootBefore = await this.bootId().catch(() => '');
-    await this.exec(['reboot'], { timeoutMs: 60_000 });
+    // A framework reboot, the power menu's path: PowerManager.reboot runs ShutdownThread (ACTION_SHUTDOWN, then the
+    // system services write their pending state). A plain `adb reboot` makes init stop system_server directly: on the
+    // CI emulator, runtime permissions granted about 6 s earlier were missing after such a reboot (field-force F-03).
+    // `svc power reboot` can end with an error when the connection drops during the shutdown, so its result is only
+    // used to decide on the fallback: when svc is missing or refuses and the device still runs the same boot.
+    const svc = await this.exec(['shell', 'svc power reboot'], { timeoutMs: 60_000, allowFailure: true });
+    if (svc.code !== 0 && /not found|unknown|usage|error/i.test(`${svc.stdout}\n${svc.stderr}`)) {
+      const stillSameBoot = bootBefore !== '' && (await this.bootId().catch(() => '')) === bootBefore;
+      if (stillSameBoot || bootBefore === '') await this.exec(['reboot'], { timeoutMs: 60_000 });
+    }
     if (bootBefore === '') {
       await sleep(10_000);
     } else {
@@ -438,11 +447,16 @@ export class Adb {
           const id = await this.bootId();
           return id !== '' && id !== bootBefore;
         },
-        { timeoutMs: Math.max(0, deadline - Date.now()), intervalMs: 1000, message: 'a new boot id after adb reboot' },
+        { timeoutMs: Math.max(0, deadline - Date.now()), intervalMs: 1000, message: 'a new boot id after the reboot' },
       );
     }
     await this.waitForBoot(Math.max(1000, deadline - Date.now()));
-    if (hadRoot) await this.root();
+    if (hadRoot) {
+      await this.root();
+      // A kernel wake lock does not survive a reboot. Without it an emulator in deep Doze with the screen off can
+      // suspend, and adbd drops the connection (first API 29 CI run). `.github/scripts/run-e2e.sh` sets the first one.
+      await this.exec(['shell', 'echo e2e-kit > /sys/power/wake_lock'], { allowFailure: true });
+    }
   }
 
   // ---- packages and processes
@@ -752,8 +766,27 @@ export class Adb {
   async addTestProvider(provider = 'gps'): Promise<void> {
     await this.requireApi(31, 'test location providers (cmd location providers)');
     await this.exec(['shell', 'appops set com.android.shell MOCK_LOCATION allow'], { allowFailure: true });
-    await this.shellChecked(`cmd location providers add-test-provider ${shellQuote(provider)}`);
-    await this.shellChecked(`cmd location providers set-test-provider-enabled ${shellQuote(provider)} true`);
+    await this.mockLocationCommand(`cmd location providers add-test-provider ${shellQuote(provider)}`);
+    await this.mockLocationCommand(`cmd location providers set-test-provider-enabled ${shellQuote(provider)} true`);
+  }
+
+  /**
+   * Runs a `cmd location providers …` test-provider command as the shell user. With `adb root` the shell is uid 0,
+   * whose calls are attributed to the package `android`, which lacks MOCK_LOCATION ("android from uid 0 not allowed to
+   * perform MOCK_LOCATION", CI API 34); `su shell` runs it as uid 2000 (`com.android.shell`, allowed above), which is
+   * also how it runs on a device without root. Falls back to the plain command when `su` is missing.
+   */
+  private async mockLocationCommand(command: string): Promise<string> {
+    if (await this.isRoot().catch(() => false)) {
+      try {
+        return await this.shellChecked(`su shell ${command}`);
+      } catch (error) {
+        if (!/su: not found|inaccessible or not found|No such file/i.test(error instanceof Error ? error.message : String(error))) {
+          throw error;
+        }
+      }
+    }
+    return this.shellChecked(command);
   }
 
   /** `cmd location providers set-test-provider-location <provider> --location <lat>,<lon> [--accuracy <m>]` (API 31+). */
@@ -761,13 +794,13 @@ export class Adb {
     await this.requireApi(31, 'test location providers (cmd location providers)');
     let command = `cmd location providers set-test-provider-location ${shellQuote(provider)} --location ${lat.toFixed(7)},${lon.toFixed(7)}`;
     if (accuracy !== undefined) command += ` --accuracy ${accuracy}`;
-    await this.shellChecked(command);
+    await this.mockLocationCommand(command);
   }
 
   /** `cmd location providers remove-test-provider <provider>`; a provider that does not exist and API < 31 are no-ops. */
   async removeTestProvider(provider = 'gps'): Promise<void> {
     if ((await this.apiLevel()) < 31) return;
-    await this.exec(['shell', `cmd location providers remove-test-provider ${shellQuote(provider)}`], { allowFailure: true });
+    await this.mockLocationCommand(`cmd location providers remove-test-provider ${shellQuote(provider)}`).catch(() => undefined);
   }
 
   /**

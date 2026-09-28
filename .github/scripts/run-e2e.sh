@@ -183,6 +183,33 @@ wait_for_boot
 "$adb" shell svc power stayon true >/dev/null 2>&1 || true
 "$adb" shell settings put global verifier_verify_adb_installs 0 >/dev/null 2>&1 || true
 "$adb" shell settings put global package_verifier_enable 0 >/dev/null 2>&1 || true
+# - a kernel wake lock (root), so the emulator never suspends: on the first API 29 run, deep Doze with the screen off
+#   and the battery "unplugged" let the kernel suspend, adbd dropped the connection and every later adb call hung.
+#   Doze is a framework state and still works; the kit sets the lock again after each reboot.
+"$adb" shell 'echo e2e-kit > /sys/power/wake_lock' >/dev/null 2>&1 || true
+
+# Google Play services restarts its own processes a few minutes after boot (configuration refresh). An app that uses
+# one of its content providers is killed with it ("depends on provider … in dying proc"): on the first API 34 run
+# that restarted the example app in the middle of P-H01. Wait until the persistent Play services process has kept
+# the same pid for 90 s (at most 6 minutes) before the first scenario.
+gms_pid() { "$adb" shell pidof com.google.android.gms.persistent 2>/dev/null | tr -d '\r'; }
+if "$adb" shell pm path com.google.android.gms >/dev/null 2>&1; then
+  log "waiting for Google Play services to settle"
+  settle_deadline=$((SECONDS + 360))
+  stable_since=$SECONDS
+  last_pid="$(gms_pid)"
+  while [ "$SECONDS" -lt "$settle_deadline" ]; do
+    sleep 10
+    pid="$(gms_pid)"
+    if [ -z "$pid" ] || [ "$pid" != "$last_pid" ]; then
+      last_pid="$pid"
+      stable_since=$SECONDS
+    elif [ $((SECONDS - stable_since)) -ge 90 ]; then
+      break
+    fi
+  done
+  log "Google Play services pid ${last_pid:-none}, stable for $((SECONDS - stable_since)) s"
+fi
 
 getprop_value() { "$adb" shell getprop "$1" 2>/dev/null | tr -d '\r'; }
 {

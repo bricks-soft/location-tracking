@@ -77,6 +77,8 @@ const OVERRIDES_FILE = 'ff-overrides.json';
 /** Where the scenarios without a premise start: 1.5 km south of HQ, far outside the premise. */
 const START_PLACE = PLACES.hqSouth1500m;
 const PREMISE = PREMISES.hq;
+/** GPS on at the start point before the premise is registered again, so Google Play services knows it is outside. */
+const OUTSIDE_SETTLE_MS = 15_000;
 const PREMISE_CENTRE: LatLon = { lat: PREMISE.latitude, lon: PREMISE.longitude };
 /** Geofence identifier PremiseMonitor registers with the tracking plugin (§10). */
 const PREMISE_GEOFENCE_ID = `premise:${PREMISE.id}`;
@@ -593,6 +595,15 @@ async function waitForMonitoringStarted(s: Session): Promise<void> {
 async function enterPremise(s: Session): Promise<{ enter: PremiseAuditEntry; enterRecord: WireRecord }> {
   const { ctx } = s;
   await startMoving(ctx);
+  // Google Play services evaluates a new geofence against its last known position. The page registers the premise at
+  // launch, and at that moment the last known position can still be where the previous scenario ended: inside the
+  // premise (F-11 after F-10 on the first CI run), so the geofence started "inside" and no ENTER came. Hold the start
+  // point with GPS on so Play services sees fresh fixes outside, then register the premise again (the stop and start
+  // entries are PremiseMonitor's own audit), then drive in (the same order as the plugin's geofence scenario P-P10).
+  await holdPosition(ctx, PLACES.hqEast400m);
+  await sleep(OUTSIDE_SETTLE_MS, ctx.signal);
+  await ctx.commands.premiseStop();
+  await ctx.commands.premiseStart(PREMISE, s.office.url('/premise-audit'));
   await drive(ctx, [PLACES.hqEast400m, PLACES.hq], APPROACH_SPEED_MPS);
   const enter = await waitForPremiseEntry(
     s,
@@ -828,16 +839,6 @@ async function setBattery(ctx: ScenarioContext, cleanup: Cleanup, level: number)
   await ctx.adb.batteryUnplug();
   await ctx.adb.dumpsys('battery', ['set', 'status', String(BATTERY_STATUS_DISCHARGING)]);
   await ctx.adb.batterySetLevel(level);
-}
-
-/** `settings put global [key] [value]`; the cleanup restores the previous value (or deletes the key). */
-async function setGlobalSetting(ctx: ScenarioContext, cleanup: Cleanup, key: string, value: string): Promise<void> {
-  const previous = (await ctx.adb.shell(`settings get global ${key}`)).trim();
-  cleanup.add(`restore settings global ${key} (was '${previous}')`, async () => {
-    if (previous === '' || previous === 'null') await ctx.adb.shell(`settings delete global ${key}`);
-    else await ctx.adb.shell(`settings put global ${key} ${previous}`);
-  });
-  await ctx.adb.shell(`settings put global ${key} ${value}`);
 }
 
 async function requirePid(ctx: ScenarioContext): Promise<number> {
@@ -1665,12 +1666,15 @@ scenario(
           'while it is in the foreground, so the destroyed-activity check below cannot work on this image',
       );
 
-      // "Don't keep activities" + HOME: the activity (and its WebView, the JS layer) is destroyed, the process stays.
-      await setGlobalSetting(ctx, cleanup, 'always_finish_activities', '1');
+      // HOME, then the debug hook finishes the activity: the activity (and its WebView, the JS layer) is destroyed and
+      // the process stays. ("Don't keep activities" through `settings put global always_finish_activities 1` does not
+      // reach the running activity manager: on the first CI run the activity stayed alive after HOME.)
       await ctx.adb.keyHome();
+      const finished = await ctx.commands.finishActivities();
+      check(finished >= 1, `finishActivities finished ${finished} activities; expected the app's MainActivity`);
       await poll(
         ctx,
-        `the activity of ${ctx.appId} to be destroyed (always_finish_activities=1, HOME)`,
+        `the activity of ${ctx.appId} to be destroyed (HOME, then finishActivities)`,
         async () => !(await activityRecordExists(ctx)),
         30_000,
       );

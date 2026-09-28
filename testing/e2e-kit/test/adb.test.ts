@@ -117,8 +117,26 @@ describe('Adb device and package methods', () => {
     const lines = fake.commandLines();
     assert.equal(lines[0], 'shell id -u');
     assert.equal(lines[1], 'shell cat /proc/sys/kernel/random/boot_id');
-    assert.equal(lines[2], 'reboot');
+    // the framework reboot (ShutdownThread), not a plain `adb reboot`
+    assert.equal(lines[2], 'shell svc power reboot');
+    assert.ok(!lines.includes('reboot'), lines.join('\n'));
     assert.ok(lines.indexOf('root') > lines.lastIndexOf('shell pm path android'), lines.join('\n'));
+  });
+
+  test('reboot falls back to adb reboot when svc power reboot is not available', async () => {
+    const { fake, adb } = setup([
+      { match: '^shell id -u$', stdout: '0\n' },
+      { match: '^shell svc power reboot$', stderr: '/system/bin/sh: svc: not found\n', code: 127 },
+      { match: 'boot_id', stdout: 'boot-a\n', times: 3 },
+      { match: 'boot_id', stdout: 'boot-b\n' },
+      { match: 'getprop sys\\.boot_completed', stdout: '1\n1\n' },
+      { match: '^shell pm path android$', stdout: 'package:x\n' },
+      { match: '^root$', stdout: 'restarting adbd as root\n' },
+    ]);
+    await adb.reboot({ timeoutMs: 30_000 });
+    const lines = fake.commandLines();
+    assert.equal(lines[2], 'shell svc power reboot');
+    assert.ok(lines.includes('reboot'), lines.join('\n'));
   });
 
   test('install builds -r -g and requires Success', async () => {

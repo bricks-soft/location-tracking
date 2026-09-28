@@ -28,6 +28,7 @@ export type E2eCommandName =
   | 'addGeofence'
   | 'removeGeofence'
   | 'otherAppLocation'
+  | 'finishActivities'
   | 'getGeofences'
   | 'blockMainThread'
   | 'premise.start'
@@ -332,6 +333,15 @@ export class E2eCommands {
   }
 
   // ---- field-force only
+
+  /**
+   * Field-force only (test support): finishes the app's live activities on the main thread, so the activity and its
+   * WebView are destroyed while the process keeps running. Resolves with the number of activities finished.
+   */
+  async finishActivities(): Promise<number> {
+    const result = await this.send<{ finished: number }>('finishActivities', {});
+    return result.finished;
+  }
 
   async premiseStart(premise: Premise, auditUrl?: string): Promise<PremiseStatus> {
     return this.send<PremiseStatus>('premise.start', auditUrl === undefined ? { premise } : { premise, auditUrl });

@@ -90,6 +90,14 @@ class E2eCommandReceiver : BroadcastReceiver() {
             )
             "getGeofences" -> LocationTrackingNative.getGeofences(context, reply.passThrough())
             "blockMainThread" -> blockMainThread(args, reply)
+            // Test support: destroys the activity (and its WebView) while the process keeps running (F-08).
+            "finishActivities" -> Handler(Looper.getMainLooper()).post {
+                try {
+                    reply.succeed(JSONObject().put("finished", E2eActivityTracker.finishAll()))
+                } catch (e: Throwable) {
+                    reply.fail(e)
+                }
+            }
             "premise.start" -> PremiseMonitorNative.start(
                 context,
                 args.requireObject("premise"),

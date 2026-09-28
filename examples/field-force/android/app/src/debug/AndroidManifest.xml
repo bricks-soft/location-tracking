@@ -12,5 +12,8 @@
         <action android:name="com.brickssoft.fieldforce.example.E2E"/>
       </intent-filter>
     </receiver>
+    <!-- Remembers the app's activities from process start for the e2e command finishActivities (F-08). No data. -->
+    <provider android:name="com.brickssoft.fieldforce.example.e2e.E2eActivityTracker"
+        android:authorities="${applicationId}.e2e.activities" android:exported="false"/>
   </application>
 </manifest>

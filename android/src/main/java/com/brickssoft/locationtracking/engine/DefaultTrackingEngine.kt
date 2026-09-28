@@ -10,6 +10,7 @@ import com.brickssoft.locationtracking.core.Clock
 import com.brickssoft.locationtracking.core.Constants
 import com.brickssoft.locationtracking.core.ErrorCode
 import com.brickssoft.locationtracking.core.EventBus
+import com.brickssoft.locationtracking.core.ForceStopProbe
 import com.brickssoft.locationtracking.core.Logger
 import com.brickssoft.locationtracking.core.Subscription
 import com.brickssoft.locationtracking.core.TrackingEvent
@@ -96,6 +97,8 @@ class DefaultTrackingEngine(
     private val events: EventBus,
     private val clock: Clock,
     private val scope: CoroutineScope,
+    /** Background triggers do not restore tracking in a process started after a user force stop. */
+    private val forceStopProbe: ForceStopProbe = ForceStopProbe.NEVER,
 ) : TrackingEngine {
     private val mutex = Mutex()
     private val engineContext: CoroutineContext =
@@ -387,6 +390,23 @@ class DefaultTrackingEngine(
     }
 
     /** A refused start in a cold process: drop the previous process's activity, alarm and geofence registrations. */
+    /**
+     * A background trigger ([trigger]) woke a process in which tracking is enabled but not running. Restores tracking,
+     * except in a process that started after a user force stop: then it releases the leftover OS registrations (so they
+     * stop waking the app) and leaves `enabled` set, so opening the app (`ready()`) restores tracking. Returns whether
+     * a session runs afterwards.
+     */
+    private suspend fun restoreFromBackgroundTrigger(trigger: String): Boolean {
+        if (forceStopProbe.startedAfterForceStop()) {
+            Logger.i(TAG, "$trigger after a force stop: tracking stays off until the app is opened")
+            releaseOrphanedRegistrations()
+            return false
+        }
+        Logger.i(TAG, "$trigger in a process where tracking is enabled but not running; restoring")
+        restoreLocked(REASON_RESTORE)
+        return session != null
+    }
+
     private suspend fun releaseOrphanedRegistrations() {
         stopActivityBackend()
         removeStationaryRegionFrom(null)
@@ -890,8 +910,7 @@ class DefaultTrackingEngine(
                 removeStationaryRegionFrom(null)
                 return
             }
-            Logger.i(TAG, "stationary region EXIT in a process where tracking is enabled but not running; restoring")
-            restoreLocked(REASON_RESTORE)
+            if (!restoreFromBackgroundTrigger("stationary region EXIT")) return
         }
         val s = session ?: return
         // The OS has the region: this session removes it when it leaves STATIONARY or stops.
@@ -942,8 +961,7 @@ class DefaultTrackingEngine(
                 return
             }
             // The activity PendingIntent woke a process that was killed while tracking.
-            Logger.i(TAG, "activity update in a process where tracking is enabled but not running; restoring")
-            restoreLocked(REASON_RESTORE)
+            if (!restoreFromBackgroundTrigger("activity update")) return
         }
         val s = session ?: return
         val best = samples.maxBy { it.confidence }

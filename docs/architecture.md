@@ -878,6 +878,7 @@ The dependency cycles (the record sink and the heartbeat scheduler; the device m
 - **Backend switch** (`locationProvider` changed): while tracking, remove location/activity updates and call `geofences.onTrackingStopped()` before `providers.reselect()`, then `geofences.onTrackingStarted(mode)` and the requests on the new backend; `device.checkProviderState("reselect")` if the kind changed.
 - **`startGeofences()`** uses mode GEOFENCES. The foreground service and heartbeat keep running. There is no continuous location request, except while `geofences.needsContinuousLocation` is true.
 - **Motion (U7).**
+  - (Round 2 replaced the STATIONARY request, the exit rule and the `runtime.lastLocation` refresh below with the GPS-off mode of [docs/e2e/architecture.md §3](e2e/architecture.md#3-stationary-gps-off-mode).)
   - STATIONARY uses a balanced location request (or the configured accuracy if lower-power), at most one fix per minute; it becomes the configured (MOVING) request while `geofences.needsContinuousLocation`. It exits to MOVING when either happens:
     - a fix is more than `max(stationaryRadius, accuracy)` from the anchor;
     - a moving activity at or above the confidence threshold lasts for `motionTriggerDelay`.

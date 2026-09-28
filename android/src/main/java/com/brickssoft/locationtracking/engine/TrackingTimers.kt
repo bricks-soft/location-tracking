@@ -27,7 +27,8 @@ internal enum class TimerKind {
  * Each timer has a deadline on the elapsed-realtime clock. A timer's action runs while holding [guard] (the
  * engine's mutex), and only if the timer is still the current one of its kind, so a cancel or reschedule made
  * under [guard] always wins over a timer that has already woken up. `delay()` does not advance while the CPU
- * sleeps, so the engine also calls [fireDue] on every incoming fix or activity sample.
+ * sleeps, so the engine also calls [fireDue] after every batch of fixes, every activity sample, every stationary-region
+ * exit and every heartbeat.
  *
  * Every method except the timer coroutines themselves must be called while holding [guard].
  */

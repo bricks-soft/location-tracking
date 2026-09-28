@@ -41,11 +41,14 @@ heartbeat: {
   - There is **no heartbeat right at `start()`**: a last record from an earlier tracking session doesn't make the new
     window overdue. The window starts at the session start (in practice at its `tracking_start` record).
   - Before any record exists (a new install), the window starts when the plugin first schedules it.
-- **Last known location.** The heartbeat carries the last known location: the last fix the plugin accepted, or else
-  the backend's last known location. It does **not** turn on GPS for a new fix, so its battery cost is tiny.
-  `recorded_at` is when the heartbeat was created; `timestamp` is when that fix was **acquired**, which can be much
-  earlier (see [below](#stationary-gps-off-heartbeats-continue)). `coords` and `timestamp` are `null` if no location
-  has ever been known.
+- **Last known location.** The heartbeat carries the plugin's last known location: while moving, the fix of the last
+  record, or a newer accepted fix (refreshed at most every 10 s); while stationary, the anchor fix (the stop point,
+  see [below](#stationary-gps-off-heartbeats-continue)). Only when the plugin knows no location at all does the
+  heartbeat ask the backend for its last known location. After the backend answered that it has none, the plugin
+  does not ask again for 10 minutes (a timeout or an error is not remembered; the next heartbeat asks again). The
+  heartbeat does **not** turn on GPS for a new fix, so its battery cost is tiny. `recorded_at` is when the heartbeat
+  was created; `timestamp` is when that fix was **acquired**, which can be much earlier. `coords` and `timestamp` are
+  `null` if no location has ever been known.
 - **Checked twice.** Before creating a heartbeat, the plugin checks the location provider state (which may create a
   `providerchange` record), then checks again that no record was created and tracking was not stopped in the
   meantime. Only then does it create the heartbeat, so a heartbeat never duplicates another record.
@@ -54,9 +57,9 @@ heartbeat: {
   [wire-format.md](wire-format.md#heartbeat)).
 - **Uploaded immediately.** Heartbeats are *priority records*: they are sent right away, ignoring `autoSync`,
   `autoSyncThreshold`, batching and `disableAutoSyncOnCellular`. The upload also drains any older queued records
-  (unless the phone is on cellular with `disableAutoSyncOnCellular`). The plugin holds a partial wake lock for up to
-  60 s while it handles the alarm and starts the upload.
-  <!-- verify after merge: unit 3 (heartbeat cost) may have shortened the wake lock; update "up to 60 s" to the merged value -->
+  (unless the phone is on cellular with `disableAutoSyncOnCellular`). The plugin holds one partial wake lock per
+  alarm: from the alarm until the heartbeat record is queued and its upload has been started (normally well under
+  one second). The wake lock times out after 60 s if something hangs. The upload itself holds no wake lock.
 - **Always sent.** Heartbeats are a fixed rule of the plugin: while tracking is on they are created, uploaded to
   `http.url` and delivered to native listeners, also while the phone is stationary with GPS off. The battery saving of
   the stationary mode comes from not polling GPS, not from skipping heartbeats.
@@ -82,25 +85,38 @@ heartbeat: {
 
 While the device is stationary, the plugin turns GPS off (see the README,
 [Battery](../README.md#battery)). The foreground service keeps running, and the heartbeat keeps its normal
-schedule. Each heartbeat carries the last fix the plugin accepted:
+schedule. Each heartbeat carries the **anchor** fix: the fix where the device became stationary (the fix of the
+`motionchange` with `is_moving: false`):
 
 | Field | Value while stationary |
 |---|---|
 | `recorded_at` | When the heartbeat was created: now. |
-| `timestamp` | When the carried fix was **acquired** (not when the heartbeat was created). |
-| `coords` | The coordinates of that fix. |
+| `timestamp` | When the anchor fix was **acquired** (not when the heartbeat was created). |
+| `coords` | The coordinates of the anchor fix. |
 | `is_moving` | `false`. |
+
+Fixes that arrive while stationary (passive fixes that other apps caused, or the fixes of the low-power fallback)
+are not recorded, and they change the heartbeat's location only when they become the anchor. The anchor changes only
+when:
+
+- no fix was known when the device became stationary: the first accepted fix becomes the anchor;
+- the anchor was more than 10 minutes old when it became the anchor, and a fix arrives that is at most 10 minutes old
+  and has an accuracy no worse than `filter.trackingAccuracyThreshold`: that fix becomes the anchor;
+- a fix that is not certainly outside the stationary radius has a better (smaller) accuracy than the anchor: that fix
+  becomes the anchor.
 
 Example: a worker parks at 10:21 and stays until 12:00, with `stopTimeout` 5 minutes and heartbeats every
 180 s. GPS stays on until the stop is confirmed: at about 10:26 the plugin records the `motionchange`
 (`is_moving: false`), with `recorded_at` and `timestamp` about 10:26, and turns GPS off. The heartbeats at 10:29,
 10:32, … 11:59 have `recorded_at` 10:29, 10:32, … 11:59, and all of them have `timestamp` 10:26 and the same `coords`,
-unless a passive fix (a fix another app requested) was accepted in between; then they carry that fix and its time.
+unless a more accurate fix became the anchor in between; then the later heartbeats carry that fix and its time.
 
 A server shows this as "tracking is on (last heartbeat 11:59), last position from 10:26". Use `recorded_at − timestamp`
 as the age of the position. The age does not mean that tracking failed: the heartbeat itself proves the app is alive.
 
-<!-- verify after merge: unit 2 (engine) keeps runtime.lastLocation as the last accepted fix while stationary and updates it from accepted passive fixes -->
+Records that carry their own fix also set the heartbeat's location while stationary: a transition of one of the app's
+own geofences, and `getCurrentPosition()` / `watchPosition()` with `persist: true`. Heartbeats after such a record
+carry its fix and its time, until the anchor changes again.
 
 ## Delivery to native listeners
 
@@ -134,10 +150,34 @@ effect. The plugin picks one of four strategies, and `getHeartbeatStatus().strat
 | `disabled` | Heartbeat disabled, or tracking off | Nothing is scheduled; pending alarms are cancelled. |
 
 The plugin re-evaluates the schedule after every record, whenever the phone enters or leaves deep idle, and when the
-heartbeat config or the tracking state changes. It only calls AlarmManager when the schedule actually changes (for a
-non-exempt app, two calls per record). When the in-process alarm and the backup alarm both fire for the same window,
-only one heartbeat is created. The plugin deliberately does not declare `SCHEDULE_EXACT_ALARM` or `USE_EXACT_ALARM`
-(see the README).
+heartbeat config or the tracking state changes. Every record moves the due time later, and a moving phone creates a
+record every few seconds, so the plugin does not set the alarms again for every record:
+
+- The alarms stay in place when a record moves the due time later by less than 30 s.
+- The alarms are set again when the due time moves later by 30 s or more, when a trigger time moves earlier, when the
+  strategy changes, and, for `idle_paced`, whenever the backup time moves at all (an early backup alarm would use one
+  of the few allow-while-idle alarms Android grants per hour and push the next backup about 9 minutes later).
+- An alarm that was left in place can fire up to 30 s before the real due time. The plugin then checks the window,
+  finds the heartbeat not due, creates **no** heartbeat, and sets the alarm for the real due time.
+- Measured by the unit test `HeartbeatCostTest` with 60 records 5 s apart: 20 AlarmManager set calls instead of 120
+  for a non-exempt app (`listener_with_backup`, two alarms per arm), and 10 instead of 60 for an exempt app (`exact`,
+  one alarm per arm). The numbers before are from round 1, which set the alarms again for every record.
+- The schedule is saved to storage only when the alarms are set, not after every record. A new process computes the
+  schedule again from the last record.
+- After Android refused an exact alarm, the fallback (`listener_with_backup` or `idle_paced`) stays until the next
+  time the alarms are set again; then the plugin asks for the exact alarm again.
+
+When the in-process alarm and the backup alarm both fire for the same window, only one heartbeat is created. The
+plugin deliberately does not declare `SCHEDULE_EXACT_ALARM` or `USE_EXACT_ALARM` (see the README).
+
+Other costs of one heartbeat:
+
+- **Wake lock.** One partial wake lock per alarm, released as soon as the heartbeat record is queued (at most 60 s).
+- **Provider check.** One location-provider check per heartbeat attempt. It is the only check that sees permission
+  changes that neither kill the process nor send a broadcast. An alarm that fires before the heartbeat is due skips
+  it.
+- **Backend last location.** Asked only when the plugin knows no location at all, and not again for 10 minutes after
+  the backend answered that it has none.
 
 These facts come from AOSP `AlarmManagerService`:
 
@@ -162,15 +202,15 @@ a failure, without any setting in the app.
 
 | Key | Meaning |
 |---|---|
-| `strategy` | The strategy armed for the next window: `exact`, `listener_with_backup` or `idle_paced` (see [How it is scheduled](#how-it-is-scheduled)). Never `disabled`: then no heartbeat exists. |
+| `strategy` | The strategy armed for the next window: `exact`, `listener_with_backup` or `idle_paced` (see [How it is scheduled](#how-it-is-scheduled)). When Android refused the exact alarm, it is the fallback that was armed instead. Never `disabled`: then no heartbeat exists. |
 | `min_interval`, `max_interval` | `heartbeat.minInterval` and `maxInterval` (seconds) when this heartbeat was created. |
 | `next_at` | When the next heartbeat will be due if no other record is created: `recorded_at + min_interval`, or, for `idle_paced`, the time of the backup alarm (at least 9 minutes after the previous backup alarm fired). `null` if unknown. |
 | `battery_exempt` | The app was exempt from battery optimization when the heartbeat was created. |
 | `device_idle` | The phone was in deep Doze when the heartbeat was created. |
 
 The object is optional: heartbeats from plugin versions before round 2 don't have it. Only `heartbeat` records have it.
-
-<!-- verify after merge: unit 3 (heartbeat) fills the object on every heartbeat record exactly as described here (next_at for idle_paced = max(due, lastBackupFire + 9 min)) -->
+The plugin sets the alarms for the next window before it queues the heartbeat, so the object describes exactly what
+AlarmManager holds, and `getHeartbeatStatus()` called at that moment reports the same strategy and time.
 
 **How a server uses it.** Take two consecutive records of one device while tracking is on: `prev` and the next
 record `next`. Let `hb` be the `heartbeat` object of the device's latest heartbeat up to `prev` (`prev`'s own object
@@ -224,7 +264,7 @@ for example overnight on a table.
 | **Phone makers' task killers**, app **not exempt** (Android 12+) | **One more heartbeat, then none until the app calls `start()` again** | The backup alarm can still wake the app and create a heartbeat, but Android 12+ does not let a non-exempt app restart its foreground service from the background (the inexact backup alarm carries no foreground-service allowance). The plugin records `tracking_stop` with reason `service_start_failed`. Allow the app in the phone maker's power manager, see [below](#phone-makers-power-managers). |
 | **Phone off** or battery empty | **None while off** | After boot, tracking resumes (`tracking_start`, reason `boot`) only with `app.startOnBoot: true`. On Android 14+ it also needs "Allow all the time" location, otherwise a `tracking_stop` with reason `service_start_failed` follows. With `startOnBoot: false`, tracking is off after the reboot and a `tracking_stop` with reason `reboot` is recorded when the phone has booted. |
 | App **updated** | A short gap | With `app.startOnBoot: true`, tracking resumes (`tracking_start`, reason `package_replaced`). With `false`, tracking is off after the update and a `tracking_stop` with reason `package_replaced` is recorded. |
-| **Location permission removed** | **None until the app is opened again** | Android kills the app when a permission is revoked. When the plugin runs again, it records a `providerchange`, and if location permission is gone completely, a `tracking_stop` with reason `permission_denied`. |
+| **Location permission removed** | **None until the app is opened again** | Android kills the app when a permission is revoked. When the plugin runs again, it records a `providerchange`, and if location permission is gone completely, a `tracking_stop` with reason `permission_denied`. The reason is also `permission_denied` when Android restarts the killed service by itself and the restart fails because the permission is gone (on Android 14+ such a restart fails when the service enters the foreground). |
 | App swiped away with `stopOnTerminate: true` (default) | None, by design | A `tracking_stop` record with reason `terminate` is sent first. |
 | App swiped away with `stopOnTerminate: false` | About `minInterval` | The foreground service keeps running. On some phones the swipe kills the process anyway; then the cases above apply (`restore` when exempt, `service_start_failed` when not exempt on Android 12+). |
 
@@ -291,7 +331,7 @@ const hb = await LocationTracking.getHeartbeatStatus();
 | `minInterval`, `maxInterval` | number (s) | The effective window, after clamping (`minInterval` at least 60, `maxInterval` at least `minInterval`). |
 | `lastRecordAt` | string \| null | Creation time of the last record of any type (except `insertLocation()` records): the start of the current window. |
 | `lastHeartbeatAt` | string \| null | Creation time of the last heartbeat. |
-| `nextHeartbeatAt` | string \| null | When the next heartbeat is expected: the due time, or the backup alarm's time while `idle_paced`. It is about now when a heartbeat is overdue, and `null` while `strategy` is `disabled`. After the process was restarted, it shows what the previous process scheduled (ignored after a reboot, which clears all alarms). |
+| `nextHeartbeatAt` | string \| null | When the next heartbeat is expected: the real due time (not the time of an alarm that was left up to 30 s earlier), or the backup alarm's time while `idle_paced`. It is about now when a heartbeat is overdue, and `null` while `strategy` is `disabled`. After the process was restarted, it is computed from the last record and the strategy the previous process armed (ignored after a reboot, which clears all alarms). |
 | `strategy` | `'exact' \| 'listener_with_backup' \| 'idle_paced' \| 'disabled'` | How the next heartbeat is scheduled (see [above](#how-it-is-scheduled)). |
 | `canScheduleExactAlarms` | boolean | Whether Android lets the app set exact alarms (always true on Android 11 and older; on Android 12+ true when the app is exempt from battery optimization). |
 | `isIgnoringBatteryOptimizations` | boolean | Whether the user exempted the app from battery optimization. |
@@ -367,7 +407,7 @@ Choosing `grace`:
 | What you see | Likely cause |
 |---|---|
 | A `tracking_stop` before the gap | Not a gap: tracking was stopped. Use `reason`. `terminate` means the user swiped the app away. |
-| A `tracking_stop` with reason `service_start_failed` | Android killed the app's process (often a phone maker's task killer), and then did not let the plugin restart its foreground service from the background: typically an app that is not exempt from battery optimization on Android 12+, or on Android 14+ without "Allow all the time". Tracking stays off until the app calls `start()` again. Treat it as "tracking lost", not as a user decision. |
+| A `tracking_stop` with reason `service_start_failed` | Android killed the app's process (often a phone maker's task killer), and then did not let the plugin restart its foreground service from the background: typically an app that is not exempt from battery optimization on Android 12+, or on Android 14+ without "Allow all the time". The same reason is recorded when the app called `start()` while it was not visible and Android refused the service. Tracking stays off until the app calls `start()` again. Treat it as "tracking lost", not as a user decision. |
 | The gap ends with `tracking_start` reason `boot`, and `boot_count` increased | The phone was switched off or rebooted. A `battery.level` near 0 in the last record before the gap points to an empty battery. |
 | The gap ends with `tracking_start` reason `restore` | The app's process was killed and tracking resumed: by itself (Android restarted the service, or a heartbeat alarm woke the app) or when the user opened the app again (for example after a force-stop). |
 | The gap ends with `tracking_start` reason `package_replaced` | The app was updated. |

@@ -283,18 +283,18 @@ npm run backoffice -- --port 8787 | tee ~/lt-runs/backoffice.log
 | Endpoint | What it does | Example |
 |---|---|---|
 | `GET /__health` | `{"ok":true,"records":n,"premise":n,"uptimeMs":…}` | `curl -s localhost:8787/__health` |
-| `GET /__records` | Stored plugin records (JSON array of `{receivedAt, requestId, path, index, batchSize, record, params, authorization}`), in arrival order. Filters: `event` (a comma list), `since` (epoch ms of arrival), `unique` (first receipt of each uuid only). | `curl -s 'localhost:8787/__records?event=heartbeat,tracking_start,tracking_stop'` |
-| `GET /__premise` | Stored PremiseMonitor audit entries. Filters: `since`, `kind` (`record`, `event`, `premise`), `type` (for `premise` entries: `enter`, `exit`, `presence_violation`, `service_started`, …). | `curl -s 'localhost:8787/__premise?kind=premise&type=enter'` |
+| `GET /__records` | Stored plugin records (JSON array of `{receivedAt, requestId, path, index, batchSize, record, params, authorization}`), in arrival order. Filters: `event` (a comma list), `since` (epoch ms of arrival), `uuid` (every receipt of one record), `unique=1` (only the first receipt of each uuid; `true` and `yes` also work, any other value is off). | `curl -s 'localhost:8787/__records?event=heartbeat,tracking_start,tracking_stop&unique=1'` |
+| `GET /__premise` | Stored PremiseMonitor audit entries (JSON array of `{receivedAt, requestId, deviceId, entry}`; `deviceId` only when the upload had a `device_id`). Filters: `since`, `kind` (`record`, `event`, `premise`), `type` (for `premise` entries: `enter`, `exit`, `presence_violation`, `service_started`, …), `event` (the record's `event` of a `record` entry, or the event name of an `event` entry). | `curl -s 'localhost:8787/__premise?kind=premise&type=enter'` |
 | `GET /__requests` | The request log (method, path, status, headers, body). Filters: `path`, `since`. | `curl -s 'localhost:8787/__requests?path=/locations'` |
 | `POST /__faults` | Makes the next matching requests fail: `{path, status? = 500, count? = 1 (-1 = until reset or cleared), delayMs?, drop?}`. A fault with only `delayMs` delays and then answers normally. Faulted requests store nothing. | `curl -s -X POST localhost:8787/__faults -H 'content-type: application/json' -d '{"path":"/locations","status":500,"count":3}'` |
 | `DELETE /__faults` | Clears all faults. | `curl -s -X DELETE localhost:8787/__faults` |
 | `POST /__reset` | Forgets records, premise entries, requests, faults and the token counter. | `curl -s -X POST localhost:8787/__reset` |
 
-<!-- verify after merge: the accepted value of the `unique` filter of GET /__records (for example unique=1 or unique=true) in testing/e2e-kit/src/backoffice.ts; add it to the table -->
+Faults never apply to the control endpoints (`/__*`).
 
-
-The upload endpoints the apps use: `POST /locations` (plugin records), `POST /premise-audit` (PremiseMonitor),
-`POST /auth/refresh` (JWT refresh: answers `accessToken` `e2e-access-<n>`), `POST /logs` (`uploadLog()`).
+The upload endpoints the apps use: `POST /locations` (plugin records; `PUT`, `PATCH` and sub-paths such as
+`/locations/x` are stored the same way), `POST /premise-audit` (PremiseMonitor), `POST /auth/refresh` (JWT refresh:
+answers `accessToken` `e2e-access-<n>`), `POST /logs` (`uploadLog()`).
 
 ### 4.3 Reaching it from a real phone
 
@@ -310,6 +310,11 @@ For the tunnel: the host computer must stay on, online and awake for the whole p
 `systemd-inhibit --what=sleep:idle sleep 86400 &`; on macOS run `caffeinate -dimsu &`.
 
 **[auto]** Check the tunnel from the host: `curl -s https://<tunnel host>/__health` must print `{"ok":true,...}`.
+
+The mock back office has no authentication. Anyone who knows the tunnel URL can read every stored record
+(`/__records`, including each upload's `Authorization` header) and can reset the back office or add faults. Use
+test phones, test accounts and test tokens only, keep the tunnel URL out of reports that leave the team, and stop the
+tunnel when the procedure ends.
 
 ### 4.4 Saving records during long runs
 
@@ -530,13 +535,28 @@ e2e_cmd() {
 ```
 
 - Use a new request id for every call (`[A-Za-z0-9._-]`, at most 64 characters), for example `m05-state-1`,
-  `m05-state-2`.
+  `m05-state-2`. The plugin example refuses the id `example`, and the field-force app refuses the ids `ff-overrides`
+  and `example`, with `BAD_COMMAND`: their result file would replace a test-mode file ([5.3](#53-test-mode-files)).
 - Commands: `ready {config?, reset?}`, `setConfig {config}`, `start`, `startGeofences`, `stop`,
   `changePace {isMoving}`, `state`, `heartbeatStatus`, `sync`, `insertLocation {location}`,
   `addGeofence {geofence}`, `removeGeofence {identifier}`, `getGeofences`, `blockMainThread {ms, delayMs?}`; in the
-  field-force app also `premise.start {premise, auditUrl?}`, `premise.stop`, `premise.status`,
-  `premise.auditLog {limit?}`.
-- The receiver answers within 25 s, or with `"code":"TIMEOUT"`.
+  plugin example also `otherAppLocation {enabled, intervalMs?}` (see below); in the field-force app also
+  `premise.start {premise, auditUrl?}`, `premise.stop`, `premise.status`, `premise.auditLog {limit?}`. A missing or wrongly typed argument, an unknown command or invalid JSON answers
+  `BAD_COMMAND`; a plugin error answers with the plugin's error code (for example `PERMISSION_DENIED`).
+- The receiver answers within 25 s, or with `"code":"TIMEOUT"`. (This helper sends background broadcasts. With
+  `--receiver-foreground`, the plugin example answers `TIMEOUT` after 8 s; the field-force app ends the broadcast
+  after 8 s and still answers within 25 s.)
+- Both receivers accept only senders that hold `android.permission.DUMP`. `adb shell` and root hold it; other apps on
+  the phone do not, so they cannot stop tracking, insert locations or change the upload URL.
+- A result longer than 3000 bytes goes to `files/e2e/<id>.json` (the full response object); the helper prints that
+  file.
+- `otherAppLocation {enabled, intervalMs = 1000}` (plugin example only) requests GPS updates from the app's own process
+  through the platform `LocationManager`, the way another app would, or stops them; it answers
+  `{enabled, intervalMs, fixes}`. It exists for the emulator, which produces a fix only while some client asks the GPS
+  provider: P-H03 and P-P04 turn it on during the drive so the plugin's passive request and Google Play services'
+  geofencing get fixes while the plugin's GPS is off. **On a real phone it is not needed** (network location and
+  other apps produce fixes), and a procedure that checks "no GPS request of the app" must keep it off, because
+  `dumpsys location` attributes the request to the app.
 - `start` from a background app is refused on Android 12+ (that is P-L11). **Keep the app's screen open** when sending
   `start` or `startGeofences`.
 
@@ -571,17 +591,29 @@ The field-force page keeps a running session's stop time: when tracking is alrea
 reload), it does not compute `stopAfterElapsedMinutes` again. To test a new `stopAt`, write `ff-overrides.json` before
 the first launch after `pm clear`, or send `stop` first and then reload or relaunch the app.
 
+The field-force page also runs its startup again when the app comes back to the foreground while tracking is off (the
+document event `resume`, or `visibilitychange` to visible). It then reads the overrides file again and computes the
+minutes to the next stop time again. It does nothing when the overrides say `autoStart: false`. So after a `stop`
+debug command, bringing the app to the front starts tracking again.
+
 The field-force page asks for every permission that is not granted, and its startup waits until the permission
 dialog is answered. Grant every permission a procedure needs with `pm grant` before the launch; when a procedure
 leaves a permission out on purpose (M-06), the agent answers the dialog ([5.5](#55-ui-actions-the-agent-performs-itself)).
 
 ### 5.4 Reading the field-force page's startup result
 
-The field-force page exposes its startup in `window.FF_APP`: `status` (`'running'`, `'done'` or `'failed'`), `step`
-(the startup step it is on), `result` (`{state, stopAfterElapsedMinutes, config, deviceInfo, warnings}`; `warnings`
-explains overrides that were ignored), `error`, and the promise `startup`. **[auto]** Save this helper as
-`~/lt-runs/ff-app.mjs` and run `node ~/lt-runs/ff-app.mjs <repository root>` while the app runs (it uses the kit's
-WebView driver, so `testing/e2e-kit` must be installed):
+The field-force page exposes its startup in `window.FF_APP`:
+
+- `status` (`'running'`, `'done'` or `'failed'`), `step` (the startup step it is on), `result`
+  (`{state, stopAfterElapsedMinutes, config, deviceInfo, warnings, …}`; `warnings` explains overrides that were
+  ignored), `error` (`{code, message, step}`), and `startup` (the promise of the latest startup run). These describe
+  the latest run.
+- `startupCount` (startup runs in this page), `lastStartupReason` (`'load'` or `'resume'`), `lastResume` (the latest
+  foreground check: `{at, trigger, outcome}`, `outcome` one of `started`, `enabled`, `busy`, `autostart_off`,
+  `error`), and `checkResume()` (runs the foreground check by hand).
+
+**[auto]** Save this helper as `~/lt-runs/ff-app.mjs` and run `node ~/lt-runs/ff-app.mjs <repository root>` while the
+app runs (it uses the kit's WebView driver, so `testing/e2e-kit` must be installed):
 
 ```js
 // ff-app.mjs: prints the field-force page's startup state (window.FF_APP) through the app's WebView.
@@ -595,7 +627,8 @@ const adb = new kit.Adb({ serial: env.serial, adbPath: env.adbPath });
 const page = await kit.WebViewDriver.connect(adb, kit.APP_IDS.fieldForce);
 try {
   const expression =
-    '({ status: FF_APP.status, step: FF_APP.step, result: FF_APP.result, error: FF_APP.error ? String(FF_APP.error) : null })';
+    '({ status: FF_APP.status, step: FF_APP.step, result: FF_APP.result, error: FF_APP.error, ' +
+    'startupCount: FF_APP.startupCount, lastStartupReason: FF_APP.lastStartupReason, lastResume: FF_APP.lastResume })';
   console.log(JSON.stringify(await page.evaluate(expression), null, 2));
 } finally {
   await page.close();
@@ -604,8 +637,6 @@ try {
 
 `status: 'done'` with `result.state.enabled: true` means the auto start worked. A `status` that stays `'running'`
 usually means a permission dialog is open (take a screenshot).
-
-<!-- verify after merge: window.FF_APP fields (unit 12) and WebViewDriver.connect/evaluate (unit 7) as used by ff-app.mjs -->
 
 ### 5.5 UI actions the agent performs itself
 
@@ -640,7 +671,7 @@ two suites at the same time against one emulator.
 
 ### 6.1 Full runs
 
-**[auto]** The plugin suite (34 scenarios; about 2 to 3 hours on a KVM host):
+**[auto]** The plugin suite (34 scenarios; estimated 2 to 3 hours on a KVM host):
 
 ```bash
 cd e2e/plugin
@@ -648,7 +679,7 @@ E2E_APK=../../example/android/app/build/outputs/apk/debug/app-debug.apk \
   npm run test:e2e 2>&1 | tee ~/lt-runs/current/plugin-suite.log
 ```
 
-**[auto]** The field-force suite (12 scenarios; about 1 hour):
+**[auto]** The field-force suite (12 scenarios; estimated 70 to 80 minutes):
 
 ```bash
 cd examples/field-force/e2e
@@ -656,7 +687,9 @@ E2E_APK=../android/app/build/outputs/apk/debug/app-debug.apk \
   npm run test:e2e 2>&1 | tee ~/lt-runs/current/field-force-suite.log
 ```
 
-<!-- verify after merge: the durations above are estimates from the scenario timeouts; replace them with the durations of the first CI emulator run -->
+Both durations are estimates from the scenario timeouts and the units' own estimates. No full run of either suite had
+finished when this runbook was written (the first CI emulator run covered the API 35 subset only). The CI jobs allow 180 minutes (plugin suite) and 150 minutes (field-force
+suite). Write the real durations into the report ([9](#9-report-template-for-a-full-run)).
 
 `E2E_APK` is the APK that the update scenarios (P-L07) install again with `adb install -r`.
 
@@ -674,8 +707,8 @@ node --test --test-concurrency=1 --test-name-pattern='^P-H05 ' '*.test.ts'      
 node --test --test-concurrency=1 heartbeat.test.ts                                   # one file
 ```
 
-Do **not** use `npm run test:e2e -- --test-name-pattern=...` (the form in the contract, §11): npm appends the option
-after the file pattern `"*.test.ts"`, and Node 22 then ignores it and runs every scenario (checked with Node 22.22).
+Do **not** use `npm run test:e2e -- --test-name-pattern=...`: npm appends the option after the file pattern
+`"*.test.ts"`, and Node 22 then ignores it and runs every scenario (checked with Node 22.22).
 When `node --test` is called directly, the option must come **before** the file pattern.
 
 ### 6.3 Long scenarios
@@ -695,7 +728,9 @@ CI runs them on a nightly schedule and on manual dispatch (see [6.8](#68-the-ci-
 CI runs the suites through one script. The agent can run it locally too, from the repository root, against a booted
 AVD. It waits for the boot to finish, runs `adb root`, sets a device baseline (keyguard disabled,
 `svc power stayon true`, package verifier off), installs `E2E_APK` with `adb install -r -g`, records logcat for the
-whole run into `$E2E_ARTIFACTS_DIR/_run/`, and then runs the suite.
+whole run into `$E2E_ARTIFACTS_DIR/_run/`, and then runs the suite. Relative paths in `E2E_SUITE_DIR`, `E2E_APK` and
+`E2E_ARTIFACTS_DIR` are resolved against the current directory; `E2E_ARTIFACTS_DIR` defaults to
+`<E2E_SUITE_DIR>/e2e-artifacts`. `npm ci` must already have run in `testing/e2e-kit` and in the suite directory.
 
 ```bash
 E2E_SUITE_DIR=e2e/plugin E2E_APK=example/android/app/build/outputs/apk/debug/app-debug.apk \
@@ -708,7 +743,12 @@ E2E_SUITE_DIR=e2e/plugin .github/scripts/run-e2e.sh --list-long                #
 E2E_DRY_RUN=1 E2E_SUITE_DIR=examples/field-force/e2e .github/scripts/run-e2e.sh  # dry run, no device
 ```
 
-<!-- verify after merge: the options of .github/scripts/run-e2e.sh (unit 6): E2E_SUITE_DIR relative to the repository root, E2E_APK path base, E2E_TEST_NAME_PATTERN, E2E_ONLY_LONG, --list-long, E2E_DRY_RUN -->
+- `E2E_TEST_NAME_PATTERN` is a JavaScript regular expression; the script passes it to Node through `NODE_OPTIONS`.
+- `E2E_ONLY_LONG=1` runs only the scenarios whose requirements contain `long` (found from the dry-run listing) with
+  `E2E_INCLUDE_LONG=1`, and replaces `E2E_TEST_NAME_PATTERN`. With no such scenario it exits 0 without a device step.
+- `--list-long` prints those scenario ids, one per line, and needs no device.
+- `E2E_DRY_RUN=1` skips every device step.
+- The exit status is the suite's exit status, or 1 when a setup step failed.
 
 The `node --test` commands in [6.1](#61-full-runs)–[6.3](#63-long-scenarios) do not set the device baseline; use the
 script when a scenario fails only locally.
@@ -758,18 +798,32 @@ emulator.
 
 ### 6.8 The CI emulator jobs
 
-GitHub Actions runs the suites in `.github/workflows/e2e-android.yml` (the jobs call the reusable workflow
-`.github/workflows/e2e-android-run.yml`, which calls `.github/scripts/run-e2e.sh`):
+GitHub Actions runs the suites in `.github/workflows/e2e-android.yml` (workflow name "E2E (Android emulator)"). It
+runs on pull requests and on pushes to `master` (not when only Markdown files and `docs/` changed), nightly at 01:23
+UTC, and on manual dispatch. The job "Build debug APKs" builds both debug APKs once (artifact `e2e-apks`); every
+emulator job downloads them and calls the reusable workflow `.github/workflows/e2e-android-run.yml`, which calls
+`.github/scripts/run-e2e.sh`. Every emulator run cold-boots the AVD (`-no-snapshot`).
 
-| Job | Image | What |
-|---|---|---|
-| Plugin suite | API 34 `google_apis` x86_64 | The whole plugin suite. |
-| Plugin subsets | API 29 and API 35 | A smaller set of plugin scenarios. |
-| No Google Play services | API 34 `default` | P-P08 only. |
-| Field-force suite | API 34 `google_apis` | The whole field-force suite. |
-| Long scenarios | API 34 `google_apis` | `long` scenarios; on the nightly schedule, or on manual dispatch with `include-long`. |
+| Job name | Label (artifact `e2e-artifacts-<label>`) | Image | What | Time limit |
+|---|---|---|---|---|
+| Plugin suite (API 34) | `plugin-api34` | API 34 `google_apis` x86_64 | Every plugin scenario that is not `long`. | 180 min |
+| Plugin subset (API 29) | `plugin-api29` | API 29 `google_apis` | `P-(L01\|L03\|L08\|L12\|H01\|H03\|H05\|P03\|P04\|P06\|P10)\b` | 120 min |
+| Plugin subset (API 35) | `plugin-api35` | API 35 `google_apis` | `P-(L01\|L03\|L06\|L08\|L11\|L12\|L13\|H01\|H03\|H05\|P01\|P05\|P06\|P10)\b` | 120 min |
+| Plugin P-P08 (API 34, no Google Play services) | `plugin-api34-no-gms` | API 34 `default` | P-P08 only. | 45 min |
+| Field-force suite (API 34) | `field-force-api34` | API 34 `google_apis` | Every field-force scenario that is not `long`. | 150 min |
+| Long scenarios (long-plugin-api34), Long scenarios (long-field-force-api34) | `long-plugin-api34`, `long-field-force-api34` | API 34 `google_apis` | Only the `long` scenarios of each suite; nightly, or on manual dispatch with `include-long`. A suite without `long` scenarios boots no emulator. | 300 min |
 
-The artifacts of every job are uploaded as `e2e-artifacts-<label>`, also when the job passed.
+The artifacts of every emulator job are uploaded as `e2e-artifacts-<label>`, also when the job passed.
+
+The manual dispatch has two inputs: `test-name-pattern` (a regular expression for the "Plugin suite (API 34)" and
+"Field-force suite (API 34)" jobs; empty = the whole suite; the subset and P-P08 jobs keep their own patterns) and
+`include-long` (also run the long jobs).
+
+The build workflow `.github/workflows/ci.yml` (job `build`) runs on every push and pull request: TypeScript build and
+tests, the kit's type check and unit tests, type checks and dry runs of both suites, the Android unit tests, both
+example apps' debug builds, the field-force Node tests (`npm test`), the PremiseMonitor unit tests, the field-force
+release build and the 16 KB check ([M-07](#m-07-play-build-gms-only-16-kb-page-size-alignment)). It uploads both debug
+APKs as `debug-apks`.
 
 **[auto]** Start a run by hand and fetch its artifacts with the GitHub CLI:
 
@@ -782,8 +836,6 @@ gh run download <run id> --dir ~/lt-runs/ci-<run id>      # every e2e-artifacts-
 
 A CI failure is triaged the same way as a local one ([7](#7-triage-of-a-failed-scenario)); the whole-run logcat is in
 the `_run/` directory of the job's artifact.
-
-<!-- verify after merge: job names, labels and the manual-dispatch inputs of .github/workflows/e2e-android.yml (unit 6) -->
 
 ### 6.9 Reading the output and the artifacts
 
@@ -802,8 +854,9 @@ On failure, the kit saves these files in `e2e-artifacts/<id>/` (in the suite dir
 
 | File | Content |
 |---|---|
+| `reason.txt` | The time and the reason the artifacts were collected (the failure). |
 | `crash.txt` | The logcat crash buffer. |
-| `logcat.txt` | Logcat of all buffers. |
+| `logcat.txt` | The last 20,000 lines of the main, system, crash and events buffers (the whole run is in `_run/logcat.txt` when the run used `.github/scripts/run-e2e.sh`). |
 | `records.json` | What the back office received in this scenario. |
 | `premise.json` | PremiseMonitor entries (field-force). |
 | `backoffice.log` | One line per request to the back office. |
@@ -816,7 +869,10 @@ On failure, the kit saves these files in `e2e-artifacts/<id>/` (in the suite dir
 | `screenshot.png` | The screen at the time of the failure. |
 | `bugreport.zip` | Only with `E2E_BUGREPORT=1`. |
 
-With `.github/scripts/run-e2e.sh`, `$E2E_ARTIFACTS_DIR/_run/` also holds the logcat of the whole run.
+`e2e-artifacts/_run/backoffice.log` holds every back-office request of the whole run, each line prefixed with the
+scenario id (the kit writes it once a scenario has started the suite's back office). With
+`.github/scripts/run-e2e.sh`, `$E2E_ARTIFACTS_DIR/_run/` also holds `logcat.txt` (the whole run: the main, system,
+crash and events buffers), `test-output.txt`, `device.txt`, `getprop.txt` and `crash-buffer.txt`.
 
 ---
 
@@ -844,7 +900,7 @@ With `.github/scripts/run-e2e.sh`, `$E2E_ARTIFACTS_DIR/_run/` also holds the log
 | Sign | Verdict | What to do |
 |---|---|---|
 | A crash of the app package; a record with wrong content, order or reason; a debug command answering `ok:false` with an unexpected plugin error code; a command `TIMEOUT` while the emulator answers other adb commands quickly | **App failure** | Rerun once ([7.3](#73-rerun-rule-and-what-to-report)); report with the artifacts. |
-| `error: device offline`, `error: no devices/emulators found`, `device 'emulator-5554' not found`, `error: closed`, `cannot connect to daemon` | Environment (adb) | `adb kill-server && adb start-server`; if the device does not return, restart the AVD with `-wipe-data`; rerun. |
+| `error: device offline`, `error: no devices/emulators found`, `device 'emulator-5554' not found`, `error: closed`, `cannot connect to daemon` | Environment (adb) | `adb kill-server && adb start-server`; if the device does not return, restart the AVD with `-wipe-data`; rerun. If it starts right after a large `adb logcat` dump (the adb messages show `connection terminated: write failed`), report it as a kit problem: the first CI run lost the device this way before the kit filtered its crash scans. |
 | The boot wait times out; `sys.boot_completed` never becomes `1`; the emulator process is gone (`pgrep -f qemu-system` prints nothing) | Environment (emulator) | Read `~/lt-runs/emulator-*.log`; cold-boot the AVD again; rerun. |
 | Many scenarios time out in one run; `emulator -accel-check` fails; `adb shell uptime` shows a load average above 8 | Environment (slow host, no KVM) | The run is not valid. Fix KVM or use a larger machine; rerun everything. |
 | `EADDRINUSE` for port 8787 | Environment | Stop the standalone back office, or set `E2E_BACKEND_PORT`. |
@@ -1280,40 +1336,53 @@ without any crash (no `ForegroundServiceDidNotStartInTimeException`).
    rounded up (for a launch at 21:37:20: 02:00 − 21:37:20 = 4 h 22 min 40 s → 263). The back office has a
    `tracking_start` with reason `start`.
 4. **[person]** Unplug the phone (battery at least 60 %), leave it still with the screen off until 07:00.
-5. **[person]** After 07:00, connect the USB cable. Do not open the app yet.
+5. **[person]** After 07:00, connect the USB cable. Do not open the app yet, and do not unlock the phone: when the
+   app is in front, unlocking brings it to the foreground, and the page starts tracking again
+   ([5.3](#53-test-mode-files)).
 6. **[auto]** Evaluate:
    `node ~/lt-runs/lt-report.mjs http://127.0.0.1:8787/__records --tz <zone>` and save the output. Save
-   `adb logcat -d -b crash > m05-crash.txt` and `adb shell dumpsys activity services com.brickssoft.fieldforce.example > m05-services.txt`.
+   `adb logcat -d -b crash > m05-crash.txt` and
+   `adb shell dumpsys activity services com.brickssoft.fieldforce.example > m05-services.txt`.
 7. **[auto]** `e2e_cmd com.brickssoft.fieldforce.example m05-state-2 state`: `enabled` must be `false`.
-8. **Morning start, case 1 (the activity is still alive).** **[agent]** Bring the app to the front with
-   `adb shell am start -W -n com.brickssoft.fieldforce.example/.MainActivity`. Wait 60 s. Write down whether a new
-   `tracking_start` arrived.
-9. **Morning start, case 2 (cold start).** **[auto]** `adb shell am force-stop com.brickssoft.fieldforce.example`,
-   then **[agent]** launch the app. Wait 60 s.
+8. **Morning start, case 1 (the app was never closed).** **[agent]** Unlock the phone first
+   (`adb shell input keyevent KEYCODE_WAKEUP && adb shell wm dismiss-keyguard`; with a PIN, **[person]** unlocks it):
+   behind the lock screen the activity does not resume, and the page does not run its startup. Then bring the app to
+   the front with `adb shell am start -W -n com.brickssoft.fieldforce.example/.MainActivity`. Wait 60 s. Check for a new
+   `tracking_start`, and run `node ~/lt-runs/ff-app.mjs <repository root>`
+   ([5.4](#54-reading-the-field-force-pages-startup-result)): write down `lastStartupReason` and `lastResume`. The page
+   runs its startup again when it comes to the foreground with tracking off: `lastStartupReason` is `'resume'` when the
+   activity survived the night, and `'load'` when Android had recreated it.
+9. **Morning start, case 2 (cold start).** **[auto]** Stop tracking first, so this case starts from tracking off
+   again: `e2e_cmd com.brickssoft.fieldforce.example m05-stop stop`. Then
+   `adb shell am force-stop com.brickssoft.fieldforce.example`, and **[agent]** launch the app. Wait 60 s.
 10. **[auto]** `e2e_cmd com.brickssoft.fieldforce.example m05-state-3 state` and
     `adb logcat -d -b crash > m05-crash-morning.txt`.
-
-<!-- verify after merge: whether the field-force app (unit 12) restarts tracking when an activity that survived the night comes back to the front (step 8), or only on a page load (contract §10: "every page load") -->
 
 **Expected results.**
 
 | Check | Expected |
 |---|---|
 | `stopAfterElapsedMinutes` at step 3 | Minutes to the next 02:00, rounded up. |
-| `tracking_stop` | Exactly one, reason `stop_after_elapsed`, `recorded_at` between 02:00:00 and **02:06:00** local (Night A) or **02:12:00** (Night B). |
+| `tracking_stop` during the night | Exactly one, reason `stop_after_elapsed`, `recorded_at` between 02:00:00 and **02:06:00** local (Night A) or **02:12:00** (Night B). (Step 9 adds a `tracking_stop` with reason `stop` in the morning.) |
 | Records after the stop | None until the morning start. |
 | State at step 7 | `enabled: false`; `m05-services.txt` has no running `LocationTrackingService`. |
 | Crash buffer (both files) | No crash of `com.brickssoft.fieldforce.example`; no `ForegroundServiceDidNotStartInTimeException`. |
+| Case 1 (app never closed) | A `tracking_start` with reason `start` within 60 s, a new `stopAfterElapsedMinutes` that points to the next 02:00, and `FF_APP.lastStartupReason` `'resume'` with `startupCount` 2 or more (or `lastStartupReason` `'load'` when Android had recreated the activity). `lastResume.outcome` is usually `'busy'`: the document `resume` event and `visibilitychange` both fire, the first starts the run, and the second reports `'busy'`. |
 | Case 2 (cold start) | A `tracking_start` with reason `start` within 60 s, and a new `stopAfterElapsedMinutes` that points to the next 02:00. |
-| Case 1 | Informational: record whether tracking started. |
 
-Why 02:06 and 02:12: the stop timer is checked again at every heartbeat. The first heartbeat after 02:00 comes within
-`maxInterval` (300 s) when the phone is exempt, and within about 9–10 minutes in Doze without the exemption.
+Why 02:06 and 02:12: the plugin's stop timer counts only the time the CPU is awake, so on a sleeping phone it fires
+late. The plugin therefore also checks the stop time whenever a fix, an activity update, a stationary-region exit or
+a heartbeat arrives (`DefaultTrackingEngine` runs its due timers on each of them). While the phone lies still, GPS is
+off and the heartbeat is the check that comes: the stop happens at the first heartbeat after 02:00. With the
+exemption, heartbeats come about every 180 s and at most `maxInterval` (300 s) apart, so the stop comes by about
+02:05; the limit adds one minute. Without the exemption, in deep Doze, heartbeats are about 9–11 minutes apart, so the
+stop comes by about 02:11; the limit adds one minute. The check runs in a separate step right after the heartbeat is
+queued, and the heartbeat's wake lock may already be released then. A stop that comes exactly one heartbeat interval
+later than expected points to the phone falling asleep in that moment; report it with the plugin log
+(`files/location-tracking-logs`) around the stop.
 
-<!-- verify after merge: DefaultTrackingEngine still runs its due timers (fireDueTimers) on every heartbeat event after unit 2's stationary GPS-off changes; otherwise the 02:00 stop can wait for the next location fix -->
-
-**Pass / fail.** Pass when every row except "Case 1" holds. A `tracking_stop` later than the limit, or none at all,
-is a fail: the stop timer did not run while the phone slept.
+**Pass / fail.** Pass when every row holds. A `tracking_stop` later than the limit, or none at all, is a fail: the
+stop time was not checked while the phone slept.
 
 **Result template.**
 
@@ -1326,7 +1395,7 @@ is a fail: the stop timer did not run while the phone slept.
 | `tracking_stop` reason and `recorded_at` (local) | | |
 | Minutes after 02:00 | | |
 | Records after the stop (count) | | |
-| Case 1: tracking started on bring-to-front? | | |
+| Case 1: `tracking_start` reason, `lastStartupReason`, `lastResume.outcome` | | |
 | Case 2: `tracking_start` reason, new `stopAfterElapsedMinutes` | | |
 | Crashes | | |
 | Verdict | | |
@@ -1388,6 +1457,10 @@ opened. With "Allow all the time", the same reboot resumes tracking.
 | Crash buffer | No crash of the app | No crash of the app |
 | Opening the app (step 7) | `tracking_start` with reason `start` | – |
 
+In Run 1 the plugin's own Android 14 check normally refuses the start before it asks Android (no background location,
+no visible activity after a boot), so the `tracking_stop` usually comes without a `tracking_start` before it. When the
+check lets the start through and Android then refuses it, the `tracking_start` with reason `boot` comes first.
+
 **Pass / fail.** Pass when both columns hold. A crash, a missing `tracking_stop` in Run 1 (tracking looks enabled but
 nothing arrives), or heartbeats in Run 1 after the stop, is a fail.
 
@@ -1431,12 +1504,17 @@ must start at 16 KB boundaries, and every native library must have ELF `LOAD` se
    every native library; 64-bit ABIs (`arm64-v8a`, `x86_64`) must be aligned to 16 KB or more:
 
    ```bash
-   python3 .github/scripts/check-16kb.py "$APK"; echo "exit=$?"
+   python3 .github/scripts/check-16kb.py --label "field-force release (gms)" "$APK"; echo "exit=$?"
    ```
 
-   Expected for the GMS-only field-force APK: 0 native libraries, and `exit=0`.
+   Usage: `check-16kb.py [--report-only] [--label NAME] [--zipalign PATH] APK [APK ...]`. The script finds
+   `zipalign` in the newest `$ANDROID_HOME/build-tools/<version>/` with version 35 or newer, unless `--zipalign`
+   names it. It prints one text table per APK: every `lib/<abi>/*.so` with its smallest `PT_LOAD` alignment and, for
+   an uncompressed library, whether it starts on a 16 KB boundary. 32-bit libraries are listed as "32-bit, not
+   required". Exit status: 0 = every APK passed, 1 = an APK failed a check, 2 = an APK could not be read or zipalign
+   was not found. With `--report-only` it exits 0 (2 only after a usage error).
 
-   <!-- verify after merge: the arguments and output of .github/scripts/check-16kb.py (unit 6) -->
+   Expected for the GMS-only field-force APK: 0 native libraries, and `exit=0`.
 3. **[auto]** Cross-check by hand:
 
    ```bash

@@ -194,10 +194,15 @@ record, but they don't count as tracking activity: they don't restart the heartb
 This is an audit record, created while tracking is on when no other record was created for `heartbeat.minInterval`
 seconds (default 180). See [heartbeat.md](heartbeat.md).
 
-- `coords` and `timestamp` are the **last known** location: the last fix the plugin accepted. `timestamp` is when
-  that fix was acquired, so it can be much older than `recorded_at`. While the phone is stationary, GPS is off and
-  the plugin requests no fixes of its own; a fix changes only when the phone moves again or when a passive fix (one
-  that another app requested) is accepted. In the example below, the phone has been stationary for 23 minutes.
+- `coords` and `timestamp` are the **last known** location. `timestamp` is when that fix was acquired, so it can be
+  much older than `recorded_at`. While the phone is stationary, GPS is off and the heartbeat carries the fix where
+  the phone stopped (the *anchor*). Fixes that arrive while stationary (from other apps, or from the plugin's
+  low-power fallback) do not change it, except when one of them becomes the anchor: the first fix when none was
+  known, a current fix that replaces an anchor that was already more than 10 minutes old, or a fix with a better
+  accuracy than the anchor. A record with its own fix (a `geofence` record, or a `current_position` /
+  `watch_position` record) also sets it; later heartbeats carry that fix (details in
+  [heartbeat.md](heartbeat.md#stationary-gps-off-heartbeats-continue)). In the example below, the phone has been
+  stationary for 23 minutes.
 - `recorded_at` is when the heartbeat was created, and `sent_at` when it was uploaded.
 - `is_moving`, `odometer`, `activity` and `battery` are current values.
 - `heartbeat` (optional) says how the plugin schedules the **next** heartbeat on this phone, so the server knows which
@@ -354,7 +359,7 @@ without a `tracking_stop` in between.
 |---|---|
 | `start` | The app called `start()`. |
 | `start_geofences` | The app called `startGeofences()` (geofences-only mode). |
-| `boot` | Tracking resumed after the phone rebooted (`app.startOnBoot: true`). Expect a gap before it, covering the time the phone was off. |
+| `boot` | Tracking resumed after the phone rebooted (`app.startOnBoot: true`). Expect a gap before it, covering the time the phone was off. The plugin handles one boot broadcast per boot: it ignores a boot broadcast when the phone's boot counter (`Settings.Global.BOOT_COUNT`) is the same as for the last boot broadcast it handled, or the same as when it last started the tracking service. So a repeated or fake `QUICKBOOT_POWERON` broadcast without a real reboot creates no second `tracking_start`. |
 | `restore` | Tracking was still on, but not running in the app's process, and the plugin resumed it: Android restarted the killed service, a heartbeat alarm or an activity update woke the app, or the app called `ready()` after it was reopened (for example after a force-stop). Expect a gap before it. |
 | `package_replaced` | Tracking resumed after the app was updated (`app.startOnBoot: true`). |
 
@@ -403,8 +408,8 @@ no records are expected until the next `tracking_start`.
 | `stop_on_stationary` | The device became stationary with `geolocation.stopOnStationary: true`. |
 | `stop_after_elapsed` | `geolocation.stopAfterElapsedMinutes` elapsed. |
 | `terminate` | The user swiped the app away with `app.stopOnTerminate: true`. |
-| `permission_denied` | Location permission was gone when the plugin tried to resume tracking (the user revoked it), or `start()` / `startGeofences()` could not start the foreground service (the call then rejects with `PERMISSION_DENIED`). |
-| `service_start_failed` | Android refused or aborted the tracking foreground service after tracking had been started, or when the plugin tried to restart it from the background (after the process was killed, from a heartbeat alarm, after a reboot or an update). On Android 12+, only a battery-optimization-exempt app (the exemption is itself an exemption from background-start restrictions), `BOOT_COMPLETED` and `MY_PACKAGE_REPLACED` may start it from the background, and on Android 14+ that also needs "Allow all the time" location. Tracking stays off until the app calls `start()` again. |
+| `permission_denied` | Location permission was gone when the plugin tried to resume tracking (the user revoked it). This includes a restart of the killed service by Android itself that fails while location permission is no longer granted (on Android 14+ such a restart fails when the service enters the foreground). |
+| `service_start_failed` | Android refused or aborted the tracking foreground service while location permission was granted, in one of these cases: (1) `start()` / `startGeofences()` could not start it (the call then rejects with `PERMISSION_DENIED`); (2) the service failed after tracking had been started; (3) the plugin tried to restart it from the background (after the process was killed, from a heartbeat alarm, after a reboot or an update). On Android 12+, only a battery-optimization-exempt app (the exemption is itself an exemption from background-start restrictions), `BOOT_COMPLETED` and `MY_PACKAGE_REPLACED` may start it from the background. On Android 14+ the `location` service type also needs "Allow all the time" location or a visible app; the plugin checks this itself before it asks Android, and records this reason without trying when all of these are true: the service is not in the foreground yet, "Allow all the time" location is not granted, Android rates the app's process below "visible" (a process that runs another foreground service counts as visible), the app's current activity is not started, and no activity of the app was started, stopped or destroyed in the last 15 s. Tracking stays off until the app calls `start()` again. |
 | `reboot` | Tracking was on before the phone restarted, and `app.startOnBoot` is `false`, so it is not resumed. Recorded after the reboot (`recorded_at` is after the boot). |
 | `package_replaced` | Tracking was on before the app was updated, and `app.startOnBoot` is `false`, so it is not resumed. |
 
@@ -634,9 +639,11 @@ access that is not a captive portal, and not blocked for the app by Doze or Data
    connection is not cellular with `disableAutoSyncOnCellular: true`, and the queue is **due**:
    - with `http.syncInterval` `0` (default): the queue holds at least `autoSyncThreshold` records (default `0`, which
      uploads every record right away; `N` waits until at least `N` records are queued);
-   - with `http.syncInterval` above `0`: the **oldest** queued normal record is at least `syncInterval` seconds old
-     (now − its `recorded_at`; a negative age, after the clock was set back, counts as due), or `autoSyncThreshold` is
-     above `0` and the queue holds at least that many records. See
+   - with `http.syncInterval` above `0` while tracking is on: the **oldest** queued normal record (the one with the
+     smallest `recorded_at`) is at least `syncInterval` seconds old (now − its `recorded_at`; a negative age, after
+     the clock was set back, counts as due), or `autoSyncThreshold` is above `0` and the queue holds at least that
+     many records. After a failed automatic upload, normal records wait `syncInterval` seconds before the next try.
+     While tracking is off, the `syncInterval` `0` rule above applies. See
      [Live location with `syncInterval`](#live-location-with-syncinterval).
 
    With `autoSync: false`, normal records wait for the next priority record (for example the next heartbeat) or a
@@ -649,21 +656,29 @@ access that is not a captive portal, and not blocked for the app by Doze or Data
 4. Only one upload runs at a time (automatic passes and `sync()` included), so a record is never in two requests at
    once. Triggers that arrive during a pass cause exactly one more pass.
 
-**When a pass runs.** There is no retry timer for failed uploads. A pass is triggered:
+**When a pass runs.** With `http.syncInterval` `0` (the default) there is no retry timer for failed uploads. A pass
+is triggered:
 
 - whenever a record is inserted, including every heartbeat (so each heartbeat also retries the queue) and records
   added with `insertLocation()`;
 - when the network comes back, including when Doze or Data Saver stops blocking the app. The plugin watches the
   network only after tracking has been started (or resumed) in the app's process;
 - when tracking starts (the `tracking_start` record is itself an insert);
-- with `http.syncInterval` above `0`, by the `syncInterval` timer: while tracking is on and a normal record is queued
-  but not yet due, a check is scheduled for `oldest.recorded_at + syncInterval` (see below). There is no such timer
-  while tracking is off, and it does not repeat failed uploads: once the queue is due, the triggers above retry it;
+- with `http.syncInterval` above `0`, by the `syncInterval` timer, while tracking is on (see below):
+  - a normal record is queued but not yet due: a check is scheduled for `oldest.recorded_at + syncInterval`;
+  - an automatic upload failed: normal records are tried again `syncInterval` seconds later (measured on the
+    elapsed-time clock), by the timer, and not on every insert. These still upload at once: the network coming back,
+    a queued priority record, and `sync()`;
+  - a queued record that is due but could not be tried (offline, or held back on cellular) gets no timer: the network
+    coming back triggers it;
+- once the process has used an `http.syncInterval` above `0`: also when tracking is switched on or off, and when
+  `http.url`, `autoSync`, `autoSyncThreshold`, `syncInterval` or `disableAutoSyncOnCellular` change;
 - when the app calls `sync()`, which uploads the whole queue regardless of `autoSync`, `autoSyncThreshold`,
   `syncInterval`, `disableAutoSyncOnCellular` and the reported connectivity.
 
 While tracking is off, nothing creates records by itself, so queued records wait until the app calls `sync()`, a
-record is inserted, or tracking starts again.
+record is inserted, or tracking starts again. A record inserted while tracking is off follows the `syncInterval` `0`
+rule, also when `syncInterval` is above `0`.
 
 The plugin emits one `http` event (`{ success, status, responseText, uuids }`) **per HTTP request**. A `401` that
 triggers a token refresh and a retry therefore produces two `http` events. The token refresh request itself produces
@@ -697,11 +712,23 @@ What this means for the server:
 - Audit records (`heartbeat`, `tracking_start`, `tracking_stop`, `providerchange`) are never held back by
   `syncInterval`.
 - `autoSyncThreshold` above `0` uploads earlier when the queue reaches that many records.
-- The timer runs in the tracking process. Doze can delay it; the next heartbeat uploads the queue anyway.
+- "Oldest" is the queued normal record with the smallest `recorded_at`. After the device clock was set back, records
+  created before the change look newer than the ones created after it; they wait at most `syncInterval` after the
+  first record created after the change (unless they are the only queued normal records: then they are due at once).
+- The timer runs in the tracking process. It holds no wake lock and counts only the time the CPU is awake, so in deep
+  sleep or Doze it fires late. While the phone moves, every new location record runs the check against the wall
+  clock; while it is stationary, each heartbeat is uploaded at once and takes the queue with it. With the heartbeat
+  disabled and no new record, queued records wait until the CPU has been awake long enough.
+- While tracking is off, normal records are uploaded as with `syncInterval` `0` (there is no timer then). For
+  example, a `getCurrentPosition()` record after the 02:00 stop is uploaded at once with the default
+  `autoSyncThreshold`.
+- After a failed automatic upload, normal records are tried again once per `syncInterval`, by the timer, not on every
+  insert. The network coming back, a queued priority record and `sync()` still upload at once. Priority records keep
+  the rule without `syncInterval`: a queued heartbeat that failed is tried again on every insert.
+- Held records count against `persistence.maxRecordsToPersist` (unlimited by default). A limit smaller than the number
+  of records created in `syncInterval` lets pruning delete held records before they are uploaded.
 
-<!-- verify after merge: unit 4 (http) — the timeline matches the implementation (timer at oldest.recorded_at + syncInterval, whole queue in batches of maxBatchSize) -->
-
-Failed uploads are handled the same way with or without `syncInterval` (next section).
+The server's answers are handled the same way with or without `syncInterval` (next section).
 
 ## Response handling and retries
 
@@ -709,7 +736,7 @@ Failed uploads are handled the same way with or without `syncInterval` (next sec
 |---|---|
 | `2xx` | Deletes the records in the request from the queue. The response body is not interpreted (it only appears in the app's `http` event); a body that can't be read still counts as success. |
 | `401` | If JWT authorization is active, refreshes the access token (see [JWT refresh](#jwt-refresh)) and, if that gives a token, retries the request **once**. At most one refresh is attempted per upload: when a refresh was already attempted just before this request (the token was missing or about to expire), a `401` does not trigger another one. If the retry fails too, or there is no new token, the records stay queued. |
-| Any other status (`3xx` after redirects, `4xx`, `5xx`), a timeout or a network error | The records **stay queued**, and their attempt counter and last-attempt time are updated (once per upload, even when a `401` led to a retry). They are retried at the next trigger (see above). |
+| Any other status (`3xx` after redirects, `4xx`, `5xx`), a timeout or a network error | The records **stay queued**, and their attempt counter and last-attempt time are updated (once per upload, even when a `401` led to a retry). They are retried at the next trigger (see above; with `syncInterval` above `0`, normal records wait `syncInterval` seconds). |
 
 There is no maximum number of attempts. A record leaves the queue only after a `2xx`, or when it is pruned
 (`maxDaysToPersist`, `maxRecordsToPersist`). Consequences for your server:
@@ -722,8 +749,8 @@ There is no maximum number of attempts. A record leaves the queue only after a `
 - **Don't assume arrival order is creation order.** After an outage, records arrive in a burst, oldest first, and a
   priority record can overtake a normal record your server rejected. Order by `recorded_at`, or by `boot_count` then
   `elapsed_realtime_ms`.
-- **Answer quickly.** Around a heartbeat upload the plugin keeps the phone awake for at most about a minute, and
-  Android may suspend the app soon after that.
+- **Answer quickly.** The plugin keeps the CPU awake only while it creates and queues a heartbeat (at most 60 s); the
+  upload itself holds no wake lock. On a sleeping phone, Android may suspend the app before a slow answer arrives.
 
 ## Time fields
 

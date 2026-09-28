@@ -27,8 +27,8 @@ import com.brickssoft.locationtracking.core.SystemClockImpl
  *   background start on Android 12+, or when the service is not found. When a start is already pending (sent, not yet
  *   in the foreground) and no stop was requested after it, it returns true without sending a second start.
  *
- *   The engine treats false as before: `start()` records `tracking_stop` with reason `permission_denied` and rejects
- *   with `PERMISSION_DENIED`; `restore()` records `tracking_stop` with reason `service_start_failed`.
+ *   On false the engine records `tracking_stop` with reason `service_start_failed`: `start()` then rejects with
+ *   `PERMISSION_DENIED`, and `restore()` ends the session.
  * - [stop] sends a stop command with `startService`, so the stop is handled after every start sent before it (each of
  *   which enters the foreground first). If Android refuses the stop command, `stopService` is used only when no start
  *   is pending; while a start is pending, the service stops itself right after it has entered the foreground. So

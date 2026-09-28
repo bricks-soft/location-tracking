@@ -11,65 +11,115 @@ emulator. Decisions: [docs/DECISIONS.md](docs/DECISIONS.md#round-2-field-force-a
 ### Added
 
 - **Companion native API** (Kotlin, package `com.brickssoft.locationtracking.api`): `LocationTrackingListener`
-  receives every queued record (`onRecord`, heartbeats and audit records included) and every event (`onEvent`) on one
-  background thread (`LT-native`), in every process, also without a WebView. Listeners are declared in the manifest
-  (meta-data `com.brickssoft.locationtracking.LISTENER`, or `….LISTENER.<suffix>` for more than one) or added with
-  `LocationTrackingNative.addListener`. `LocationTrackingNative` also offers `ready`, `setConfig`, `start`,
-  `startGeofences`, `stop`, `changePace`, `getState`, `getHeartbeatStatus`, `sync`, `insertLocation`, `addGeofence`,
-  `removeGeofence` and `getGeofences`. Guide: `docs/native-api.md`.
-- **`http.syncInterval`** (seconds, default `0` = off): normal records are uploaded once the oldest queued one is
-  that old, so the server's live location is at most about `syncInterval` seconds old with one upload per interval.
-  Audit records are still uploaded at once. `autoSyncThreshold` above 0 becomes a size limit.
+  receives every queued record (`onRecord`, heartbeats and audit records included, also when the plugin's own insert
+  failed) and every event (`onEvent`) on one background thread (`LT-native`), in the order they were created, in
+  every process, also without a WebView. Listeners are declared in the manifest (meta-data
+  `com.brickssoft.locationtracking.LISTENER`, or `….LISTENER.<suffix>` for more than one) and created before the
+  process can emit its first record, or added with `LocationTrackingNative.addListener`. `LocationTrackingNative` also
+  offers `ready`, `setConfig`, `start`, `startGeofences`, `stop`, `changePace`, `getState`, `getHeartbeatStatus`,
+  `sync`, `insertLocation`, `addGeofence`, `removeGeofence` and `getGeofences`, with the JS result shapes and error
+  codes, without the `NOT_READY` rule. The consumer R8 rules keep the API and the listeners' constructors. Guide:
+  `docs/native-api.md`.
+- **`http.syncInterval`** (seconds, default `0` = off): while tracking is on, normal records are uploaded once the
+  oldest queued one (the smallest `recorded_at`) is that old, the whole queue at once, so the server's live location
+  is at most about `syncInterval` seconds old with one upload per interval. A timer in the tracking process checks
+  it; the timer holds no wake lock, so in deep sleep it is late, and the next location record or heartbeat uploads the
+  queue. Audit records are still uploaded at once. `autoSyncThreshold` above 0 becomes a size limit. While tracking is
+  off, normal records upload as with `syncInterval: 0`. After a failed automatic upload, normal records are retried
+  once per `syncInterval`, not on every insert (the network coming back, an audit record and `sync()` still upload at
+  once).
 - **Heartbeat metadata:** every `heartbeat` record carries an optional `heartbeat` object (`strategy`,
   `min_interval`, `max_interval`, `next_at`, `battery_exempt`, `device_idle`), so a server can tell an expected gap
-  (about 9 minutes in Doze without the battery exemption) from a failure. TypeScript: `Location.heartbeat?:
-  HeartbeatMeta`.
+  (about 9 minutes in Doze without the battery exemption) from a failure. The next window is armed before the record
+  is queued, so the object matches `getHeartbeatStatus()`. TypeScript: `Location.heartbeat?: HeartbeatMeta`.
 - **Stationary GPS-off mode:** while stationary, the plugin requests only passive fixes and registers one OS geofence
-  (the stationary region, radius `max(stationaryRadius, 150 m)`) to notice movement; heartbeats continue with the
-  last fix and its acquisition time. If the region cannot be registered, a low-power request (at most one fix per
-  3 minutes, no GPS) is used instead.
-- **Foreground-service start hardening** against `ForegroundServiceDidNotStartInTimeException` and refused
-  background starts (tested by P-L01, P-L02, P-L11 and P-L13).
-- **Field-force example** (`examples/field-force/`): auto start on every app launch, stop at 02:00 through
-  `stopAfterElapsedMinutes` computed by the app, live location with `syncInterval: 300`, device details in
-  `http.params`, JWT, GMS only.
+  (the stationary region, radius `max(stationaryRadius, 150 m)`, exit only) around the stop point (the anchor fix).
+  It leaves the stationary state on the region's exit, on a fix whose distance from the anchor minus its accuracy is
+  more than `stationaryRadius` (with an accuracy no worse than `trackingAccuracyThreshold`), on a confident moving
+  activity, or on `changePace(true)`. Heartbeats continue with the anchor fix and its acquisition time. A low-power
+  request (at most one fix per 3 minutes, no GPS) replaces the passive one when the region cannot be registered (no
+  background location, a backend error, no answer in 10 s), when no current anchor is known, or when the app has 99
+  or more geofences.
+- **Foreground-service start hardening** against `ForegroundServiceDidNotStartInTimeException` and refused starts:
+  the service calls `startForeground` before it loads anything (with the configured notification channel and content
+  carried in the start command); stops are sent as commands that arrive after every earlier start, and
+  `stopService` is never called while a start is pending; a second `start()` while a start is pending sends nothing;
+  start commands left by a dead process restore tracking; on Android 14+ the plugin checks before starting whether
+  Android would refuse the `location` service type (no background location and no visible app) and then does not
+  try. Tested by P-L01, P-L02, P-L11 and P-L13.
+- **`addGeofence` rejects the identifier `__lt_stationary__`** with `INVALID_ARGUMENT`: it is reserved for the
+  stationary region.
+- **Field-force example** (`examples/field-force/`): auto start on every page load, and again when the app comes back
+  to the foreground while tracking is off (document `resume` event, `visibilitychange` as the fallback), so the app
+  starts tracking the morning after the 02:00 stop even when it was never closed; stop at 02:00 through
+  `stopAfterElapsedMinutes` computed by the app (again right before `start()`); live location with
+  `syncInterval: 300`; device details in `http.params`; JWT; GMS only. `window.FF_APP` exposes the startup state
+  (`startup`, `status`, `result`, `startupCount`, `lastStartupReason`, `lastResume`, `checkResume()`). Node tests:
+  `npm test` in `examples/field-force`.
 - **PremiseMonitor fake plugin** (`examples/field-force/plugins/premise-monitor/`): a companion plugin with a
-  manifest listener that audits every record and event, monitors one circular premise with a geofence, runs its own
-  foreground location service while the worker is inside, flags fixes outside the premise, and uploads its audit
-  entries.
-- **End-to-end test kit** (`testing/e2e-kit/`, Node 22, no runtime dependencies): adb and WebView helpers, debug
-  commands, a mock back office (`npm run backoffice`), fixtures, assertions and failure artifacts.
+  manifest listener that audits every record and event in its own SQLite log, monitors one circular premise with a
+  geofence (`premise:<id>`), runs its own foreground location service while the worker is inside, flags fixes that are
+  certainly outside the premise (`presence_violation`), treats `tracking_stop` as "inside unknown" and stops its
+  service, and uploads its audit entries (every non-`2xx` answer is retried).
+- **End-to-end test kit** (`testing/e2e-kit/`, Node 22, no runtime dependencies): adb and WebView (DevTools) helpers,
+  debug commands, a mock back office (`npm run backoffice`) with control endpoints, fixtures, assertions (including
+  `travelSummary`), a crash scanner and failure artifacts, and a whole-run back-office log
+  (`e2e-artifacts/_run/backoffice.log`).
 - **End-to-end suites:** the plugin suite (`e2e/plugin/`, 34 scenarios against `example/`) and the field-force suite
-  (`examples/field-force/e2e/`, 12 scenarios). Debug builds of both example apps got test hooks (a command receiver,
-  test-mode files, cleartext HTTP to the emulator host) and share `testing/debug.keystore`.
-- **CI emulator workflow** (`.github/workflows/e2e-android.yml`, script `.github/scripts/run-e2e.sh`): the plugin
-  suite on API 34 (smaller runs on API 29 and 35), P-P08 on an image without Google Play services, the field-force
-  suite, nightly long scenarios, artifacts of every job; and a 16 KB page-size check of the Google Play build
-  (`.github/scripts/check-16kb.py`).
+  (`examples/field-force/e2e/`, 12 scenarios). Debug builds of both example apps got test hooks (a command receiver
+  that accepts only senders with `android.permission.DUMP`, test-mode files, cleartext HTTP to `10.0.2.2` and
+  `localhost`) and share `testing/debug.keystore`. The plugin example's receiver also has `otherAppLocation`, which
+  requests GPS the way another app would, because the emulator produces a fix only while some client asks for GPS.
+- **CI emulator workflow** (`.github/workflows/e2e-android.yml` with the reusable `e2e-android-run.yml`, script
+  `.github/scripts/run-e2e.sh`): the plugin suite on API 34 (subsets on API 29 and 35), P-P08 on an image without
+  Google Play services, the field-force suite on API 34, the long scenarios nightly (01:23 UTC) and on manual
+  dispatch, artifacts of every job. The build workflow (`.github/workflows/ci.yml`) adds the kit's tests, type checks
+  and dry runs of the suites, the field-force Node tests, the PremiseMonitor unit tests, and a 16 KB page-size check
+  of the Google Play build (`.github/scripts/check-16kb.py`).
 - **Runbook** ([docs/e2e-runbook.md](docs/e2e-runbook.md)) for an AI agent: local AVD setup, running and triaging the
   suites, and the manual procedures M-01 … M-08 (HMS phone, phone makers' task killers, real drive, 12-hour battery
   measurement, real 02:00 stop, Android 14 boot with while-in-use location, 16 KB alignment, real overnight Doze).
 - **Documentation:** README sections "Battery", "Live location", "Companion plugins (native API)", "Field-force
-  example" and "End-to-end tests"; heartbeat metadata, stationary behavior and native delivery in
-  `docs/heartbeat.md`; `syncInterval` and the `heartbeat` object in `docs/wire-format.md`.
+  example" and "End-to-end tests"; heartbeat metadata, stationary behavior, native delivery and heartbeat cost in
+  `docs/heartbeat.md`; `syncInterval`, the `heartbeat` object and the stop reasons in `docs/wire-format.md`; the
+  round-2 contract `docs/e2e/architecture.md`; decisions in `docs/DECISIONS.md`. `docs/device-test-checklist.md` now
+  uses the mock back office as its test server.
 
 ### Changed
 
 - **Stationary no longer polls:** before, the stationary state kept a `'balanced'` request with up to one fix per
-  minute; now GPS and the plugin's own location requests are off while stationary (see "Stationary GPS-off mode").
-- **Boot broadcasts are gated by the boot count:** a boot broadcast without a real reboot (for example a repeated or
-  fake `QUICKBOOT_POWERON`) no longer restores tracking a second time (P-L10).
-
-<!-- verify after merge: the FGS start hardening (unit 1) and the boot-count gate — describe the merged behavior in one sentence each -->
+  minute, and accepted fixes refreshed the heartbeat's location; now GPS and the plugin's own location requests are
+  off while stationary (see "Stationary GPS-off mode"), and the heartbeat carries the anchor fix. The exit rule
+  `distance − accuracy > stationaryRadius` (with the accuracy threshold) replaces the round-1 rule
+  `distance > max(stationaryRadius, accuracy)` for every stationary fix.
+- **`tracking_stop` reasons:** when Android refuses the foreground service in `start()` / `startGeofences()`, the
+  record now has reason `service_start_failed` (was `permission_denied`); the JS error code stays
+  `PERMISSION_DENIED`. When Android's own restart of the killed service fails because location permission was
+  revoked, the reason is now `permission_denied` (was `service_start_failed`).
+- **Boot broadcasts are gated by the boot count:** a boot broadcast is ignored when `Settings.Global.BOOT_COUNT` is
+  the same as for the last handled boot broadcast, or as when the tracking service was last started, so a repeated or
+  fake `QUICKBOOT_POWERON` without a real reboot no longer restores tracking a second time (P-L10). Phones without the
+  counter keep the old behavior.
+- **Heartbeat cost:** the alarms are not set again when a record moves the due time later by less than 30 s (with
+  60 records 5 s apart: 20 AlarmManager set calls instead of 120 when not exempt, 10 instead of 60 when exempt); an
+  alarm left in place can fire up to 30 s early and then creates no heartbeat. One wake lock on the in-process alarm
+  path (was two; still at most 60 s). After the backend answered that it has no last location, it is not asked again
+  for 10 minutes. After a refused exact alarm, the fallback stays until the next re-arm.
+  `getHeartbeatStatus().nextHeartbeatAt` is the real due time.
+- **Native listeners are installed before the plugin's components are published** (`Components.get()`), so no
+  record of a process can reach a missing listener; the consumer R8 rules keep `InnerClasses,EnclosingMethod`.
 
 ### Known limitations
 
 - A build that packages HMS (`hms` or `gms,hms`) is not 16 KB page-size compatible: `com.huawei.hms:location`
   6.12.0.300 brings `libTransform.so` (`arm64-v8a`) and `libucs-credential.so` (`x86_64`) with 4 KB alignment.
-- The 02:00 stop (`stopAfterElapsedMinutes`) happens at the first wake-up after the stop time: within about
-  `maxInterval` for an exempt app, about 9–10 minutes in Doze without the exemption.
+- The 02:00 stop (`stopAfterElapsedMinutes`) happens at the first check after the stop time. While stationary that is
+  the first heartbeat: at most `maxInterval` (300 s) late for an exempt app, about 9–11 minutes late in Doze without
+  the exemption.
 - The PremiseMonitor service can start from the background only while the tracking service is in the foreground or
   right after a geofence transition; a refused start is audited (`service_start_failed`), not a crash.
+- The heartbeat's wake lock ends when the heartbeat is queued; the upload itself holds no wake lock.
+- Open items and owner questions: [docs/DECISIONS.md, R2.5](docs/DECISIONS.md#r25-open-requests-and-known-limitations).
 
 ## [0.1.0] - Unreleased
 

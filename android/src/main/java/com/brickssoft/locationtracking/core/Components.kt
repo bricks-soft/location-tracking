@@ -177,13 +177,28 @@ class Components private constructor(context: Context) {
         @Volatile
         private var instance: Components? = null
 
-        /** Thread-safe; always uses the application context. */
+        /** The instance whose [bootstrap] is running; only read and written while holding the lock. */
+        @SuppressLint("StaticFieldLeak") // holds the application context only
+        private var constructing: Components? = null
+
+        /**
+         * Thread-safe; always uses the application context.
+         *
+         * The instance is published only after [bootstrap] has run, so no other thread can use it (and emit a record)
+         * before the manifest-declared native listeners are installed. Other threads wait on the lock meanwhile; a
+         * nested call on the constructing thread (the lock is reentrant) gets the instance under construction.
+         */
         fun get(context: Context): Components {
             instance?.let { return it }
             return synchronized(this) {
-                instance ?: Components(context).also {
-                    instance = it
-                    it.bootstrap()
+                instance ?: constructing ?: Components(context).also {
+                    constructing = it
+                    try {
+                        it.bootstrap()
+                    } finally {
+                        constructing = null
+                        instance = it
+                    }
                 }
             }
         }

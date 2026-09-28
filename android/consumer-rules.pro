@@ -37,6 +37,6 @@
 -keep class com.huawei.updatesdk.** { *; }
 -keepattributes *Annotation*
 -keepattributes Exceptions
--keepattributes InnerClasses
+-keepattributes InnerClasses,EnclosingMethod
 -keepattributes Signature
 -keepattributes SourceFile,LineNumberTable

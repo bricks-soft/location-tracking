@@ -2,7 +2,9 @@
 
 This document is the contract between the round-2 scaffold and the 15 round-2 work units. The scaffold owns it; units
 must not change it. If a contract is insufficient, work around it inside your own files and describe a **contract
-change request** in your final report. The round-1 contract ([docs/architecture.md](../architecture.md)) still
+change request** in your final report. After all units were merged, the integration updated §3, §4, §6, §7, §8, §10
+and §11 to the merged code, including the contract change requests that were accepted (paragraphs marked
+**As merged**). The round-1 contract ([docs/architecture.md](../architecture.md)) still
 applies wherever this document does not override it (global rules §0, threading, logging, `Clock`, no `java.time`,
 no GMS/HMS types outside their packages, Robolectric SDK levels, Gradle only through `scripts/gradle-slot.sh`).
 
@@ -212,6 +214,40 @@ Behavior (unit 2):
   (see §1).
 - Tests: P-H01, P-H02 (no active non-passive request from the app in `dumpsys location`), P-H03, F-05.
 
+**As merged** (unit 2, `engine/DefaultTrackingEngine.kt`, `engine/StationaryRegion.kt`, `engine/LocationRequests.kt`):
+- **Anchor.** The anchor is the fix of the `motionchange` that entered STATIONARY (after `start()` / restore: the fresh
+  initial fix). While STATIONARY it changes only when (a) there was none: the first accepted fix; (b) the anchor was
+  more than 10 minutes old when it became the anchor and a fix arrives that is at most 10 minutes old with accuracy
+  ≤ `trackingAccuracyThreshold`; (c) a fix that is not certainly outside has a strictly better accuracy. A new anchor
+  becomes `runtime.lastLocation`; other STATIONARY fixes never change it, so heartbeats carry the anchor fix and its
+  acquisition time. Records with their own fix still set `runtime.lastLocation` in `DefaultRecordSink` (a user
+  `geofence` record, a persisted `current_position` / `watch_position`); heartbeats then carry that fix until the
+  anchor changes again.
+- **Exit rule.** `distance(anchor, fix) − fix.accuracy > stationaryRadius` with `accuracy ≤ trackingAccuracyThreshold`
+  (a threshold ≤ 0 disables the accuracy check), for every fix that arrives while STATIONARY (passive or fallback).
+  It replaces the round-1 `max(radius, accuracy)` rule. On the region's EXIT, the EXIT's own fix (if the processor
+  accepts it) is the `motionchange` location and goes to the odometer. An EXIT whose fix is certainly inside the
+  registered region (`distance + accuracy ≤ radius`) is ignored as a late EXIT of an earlier region.
+- **Region.** Registered only after the initial `motionchange` was recorded (before that the request is PASSIVE; the
+  initial fix has its own request), and only around an anchor that was at most 10 minutes old when it became the
+  anchor (with `initialTriggerEntry = false` the OS never reports EXIT for a device that is already outside). Moved
+  only when the anchor is more than 50 m from its centre. OS add and remove calls time out after 10 s.
+- **Fallback.** The LOW request (interval and fastest interval ≥ 180 s; PASSIVE when `desiredAccuracy` is `passive`)
+  is used when the registration fails or gets no answer in 10 s, when no confirmed anchor is known, and when the user
+  geofences number 99 or more (GMS allows 100 per app; the aim is that the user's 100th `add` does not fail). A
+  `GeofencesChange` that brings the user geofences to 99 removes the region, in a coroutine that waits for the engine
+  lock and the OS call; an add that follows at once, or one `addGeofences` from 98 to 100, can still fail (open
+  item, DECISIONS R2.5). A failed registration is retried on leaving STATIONARY, on a
+  backend switch and on every provider change while STATIONARY, not on every fix.
+- **Order.** `motionchange(false)` is recorded before the region is registered; GPS goes on before the region is
+  removed; `tracking_stop` is recorded before the region is removed (a slow Play services call delays no record).
+  With `stopOnStationary`, no region is registered before the stop.
+- **Cold process.** An EXIT that wakes a process where tracking is enabled restores tracking first, then switches to
+  MOVING. An EXIT while tracking is off removes the region. `stop()` in a new process removes a region a dead process
+  left.
+- **Reserved id.** `addGeofence` rejects the identifier `__lt_stationary__` with `INVALID_ARGUMENT`
+  (`DefaultGeofenceManager.validated`).
+
 ---
 
 ## 4. `http.syncInterval`
@@ -234,6 +270,30 @@ validator clamps it to ≥ 0; the web stub has the same default and clamp. Behav
 - Worst-case staleness of the server's live location ≈ `syncInterval` (+ Doze deferral of the timer; a heartbeat
   drains the queue anyway). The field-force preset is `syncInterval: 300`, `batchSync: true`, `maxBatchSize: 100`.
 - Tests: P-H09, F-04.
+
+**As merged** (unit 4, `http/OkHttpSyncer.kt`, `http/SyncPolicy.kt`). Two extensions (the owner is asked to confirm
+them):
+- **Tracking off.** While tracking is off, normal records follow the `syncInterval = 0` rule (`autoSyncThreshold`):
+  there is no timer then, so a held record (for example a `getCurrentPosition()` after the 02:00 stop) would wait
+  without limit. When tracking stops, held records follow this rule at once.
+- **After a failed automatic upload,** normal records are retried once per `syncInterval` (measured on elapsed
+  realtime) through the timer, not on every insert. Connectivity regained, a queued priority record and `sync()`
+  still upload at once. Priority records keep the round-1 rule (a queued heartbeat that failed is retried on every
+  insert).
+
+Other details:
+- "Oldest" is the pending normal record with the smallest `recorded_at` (store order). After the wall clock was set
+  back, records created before the change wait at most `syncInterval` after the first record created after it
+  (records that are the only pending normal records have a negative age and are due at once).
+- The timer is a coroutine `delay` on the syncer's scope and holds **no wake lock** (the syncer has no `Context`). A
+  `delay` counts only the time the CPU is awake, so in deep sleep the timer fires late. The delay is bounded by new
+  records while moving (every insert runs the check against the wall clock) and by heartbeats while stationary (a
+  priority record drains the queue). With the heartbeat disabled and no new record there is no upper bound.
+- Records that are due but could not be tried (offline, held back on cellular) get no timer; connectivity regained
+  triggers them.
+- Once `syncInterval > 0` was seen in a process, one settings watcher requests a pass when tracking is switched on or
+  off, or when `url`, `autoSync`, `autoSyncThreshold`, `syncInterval` or `disableAutoSyncOnCellular` change.
+- Held records count against `persistence.maxRecordsToPersist` (default unlimited); there is no guard.
 
 ---
 
@@ -302,11 +362,33 @@ broadcasts with `--include-stopped-packages`, background by default (`--receiver
 | `removeGeofence` | `{identifier}` | `null` |
 | `getGeofences` | `{}` | array of JS Geofences |
 | `blockMainThread` | `{ms, delayMs? = 0}` | `{blockedMs}`: logged first, then a posted main-thread runnable sleeps `ms` after `delayMs` (simulates a busy main thread around a service start) |
+| `otherAppLocation` (plugin example only; added after the first CI run) | `{enabled, intervalMs? = 1000}` (0–60000) | `{enabled, intervalMs, fixes}`: requests GPS updates through the platform `LocationManager` from the app's own process, the way another app would, or stops them; `fixes` counts the fixes received since it was turned on |
 | `premise.start` (field-force) | `{premise, auditUrl?}` | PremiseStatus |
 | `premise.stop` / `premise.status` (field-force) | `{}` | PremiseStatus |
 | `premise.auditLog` (field-force) | `{limit?}` | array of PremiseAuditEntry |
 
 An unknown `cmd` or invalid JSON answers `BAD_COMMAND`. Commands never touch JS.
+
+**As merged** (unit 8 `example/android/app/src/debug/**`, unit 12 `examples/field-force/android/app/src/debug/**`):
+- **Sender guard.** Both receivers are declared with `android:permission="android.permission.DUMP"`. The adb shell
+  user and root hold it; other apps on the device do not, so they cannot stop tracking, insert locations or redirect
+  uploads through the receiver.
+- **Reserved ids.** Ids whose result file would replace a test-mode file are refused with `BAD_COMMAND`: `example`
+  (both apps) and `ff-overrides` (field-force). The kit's ids start with `e2e-`.
+- **Arguments.** A missing or wrongly typed argument answers `BAD_COMMAND` (not `INVALID_ARGUMENT`); errors of the
+  plugin keep their codes. `blockMainThread` accepts `ms` and `delayMs` from 0 to 60000.
+- **Line limit.** The 3000 limit counts UTF-8 bytes. A result file (`files/e2e/<id>.json`, written to a temporary
+  file and renamed) holds the **full response object** `{"id","cmd","ok":true,"result":…}`. Failure lines are always
+  one line (their message is shortened).
+- **Foreground broadcasts** (`--receiver-foreground`) must finish within 10 s (broadcast ANR). The plugin example
+  answers `TIMEOUT` and finishes after 8 s. The field-force receiver finishes the broadcast after 8 s and still logs
+  the answer (or `TIMEOUT`) within 25 s. Background broadcasts: `TIMEOUT` after 25 s in both apps.
+- **`otherAppLocation`** (plugin example only, added after the first CI emulator run). The emulator has no network
+  location and no activity recognition, and it produces a fix only while some client asks the GPS provider. With the
+  plugin's GPS off while stationary, no fix reached the plugin's passive request or the geofencing of Google Play
+  services, so P-H03 got no `motionchange` in 10 minutes. The command plays "another app that uses GPS": P-H03 and
+  P-P04 turn it on during the drive. `dumpsys location` attributes the request to the app, so P-H02 and F-05 keep it
+  off. On a real phone it is not needed (network location and other apps produce fixes).
 
 **Test-mode files (coordinator addendum).** The web pages must know they run under the e2e kit *before* their
 first startup code runs; `localStorage` can only be written after a page has loaded, which is too late (the
@@ -392,6 +474,28 @@ airplane mode instead of faults.
 (F-09 checks entries with `js: false` after a kill). `PremiseStatus` =
 `{monitoring, premise, inside (null = unknown), serviceRunning, auditUrl, lastEntryAt, pendingUploads}`.
 
+**As merged** (unit 7 `testing/e2e-kit/src/backoffice.ts`, unit 13
+`examples/field-force/plugins/premise-monitor/dist/esm/index.d.ts`):
+- `GET /__records` also takes `uuid=`; `unique` is on for `1`, `true` or `yes`. `GET /__premise` also takes `event=`
+  (the `event` of a `record` entry's record, or the `name` of an `event` entry); its rows are
+  `{receivedAt, requestId, deviceId?, entry}`. `POST /locations` also accepts `PUT`, `PATCH` and sub-paths
+  (`/locations/...`). Faults never apply to the control endpoints (`/__*`).
+- Every entry has `source: "manifest"` (PremiseMonitor uses only the manifest listener). `premise_id` is set on
+  `premise` entries; `location` is always present on them (`null` when there is no triggering record).
+- `enter` / `exit`: `location` is the whole `geofence` wire record of `premise:<id>` that triggered it; `distance_m` is
+  the distance of that record's `coords` from the premise centre (left out when the record has no coords).
+- `presence_violation`: `location` is the record whose fix is certainly outside; `distance_m` as above; `detail` is
+  the arithmetic (`distance … m - accuracy … m > radius … m`). A fix whose `timestamp` is older than the ENTER, and
+  PremiseMonitor's own ENTER/EXIT records, are not checked.
+- `service_started`: `detail` is the reason: `enter`, `restore` (the first record of a new process while inside),
+  `retry` (a refused start is retried at most once per 60 s) or `restart` (the system re-delivered a start).
+  `service_stopped`: `exit`, `stop_monitoring`, `premise_changed`, `monitoring_start_failed`,
+  `tracking_stop: <reason>` (a `tracking_stop` record while monitoring: `inside` becomes unknown and the service
+  stops, because no EXIT arrives while tracking is off) or `destroyed` (the service was destroyed without a stop
+  request). `service_start_failed`: the exception class and message. `monitoring_started`: the premise and the audit
+  URL (prefixed `geofence re-registered; ` when a repeated `start` with the same premise had to add the missing
+  geofence again). `monitoring_stopped`: none, `replaced by premise <id>` or `addGeofence failed: …`.
+
 ---
 
 ## 8. e2e-kit TypeScript API
@@ -451,6 +555,36 @@ throws `Error('not implemented: …')`. The signatures in `src/*.ts` are the con
 batchSync: false, params: {e2e: true}}`; `app {startOnBoot: true, stopOnTerminate: false}`;
 `locationProvider 'auto'`; with `jwt`, `http.authorization {accessToken: 'e2e-initial', refreshToken: 'e2e-refresh',
 refreshUrl: <origin>/auth/refresh, refreshPayload: {refresh_token: '{refreshToken}'}}`; `patch` deep-merged last.
+
+**As merged** (unit 7). Additions to the API above:
+- `assertions.travelSummary(records)` returns `{odometerM, pathM, allFixesPathM, movingS, travelS, spanS, fixes,
+  segments}`: `pathM` sums the distances between consecutive **moving** fixes (both `is_moving: true`),
+  `allFixesPathM` between all consecutive fixes (GPS jitter at stops included), `travelS` the time between
+  consecutive moving fixes (fix `timestamp`, else `recorded_at`), `fixes` the `location` and `motionchange` records
+  with coords, `segments` the moving segments counted. A `tracking_start`, a `tracking_stop` or a new `boot_count`
+  breaks the chain.
+- `Adb.killHard(appId)` resolves with the killed pids (empty when the app had no process); without root it sends the
+  signal with `run-as <appId> kill -9` (debuggable builds).
+- `Adb.runAsWrite(appId, relPath, text)` (writes, then reads back and compares), `Adb.runAsRemove(appId, relPath)`
+  and `Adb.runAsList(appId, relDir)`.
+- `E2eCommands.broadcastLine(cmd, args, {foreground})` returns the exact `am broadcast` command line and the request
+  id (to combine a command with other shell commands in one `adb shell` call); `waitForResponse(prepared,
+  {timeoutMs})` waits for its answer; `sendDetailed(cmd, args, options)` is `send` that also returns the parsed
+  `LT-E2E` line with its device time. Kit-side error codes: `NO_RESPONSE` (no line within the timeout) and
+  `BAD_RESULT_FILE`.
+- `ScenarioContext.onTeardown(fn)`: runs after the body, the crash check and artifact collection, before the next
+  scenario, also after a failure or a timeout; teardowns run in reverse order.
+- The kit enforces each scenario's `timeoutMs` itself (the `node:test` timeout is 3 minutes longer, 20 with
+  `E2E_BUGREPORT`), so cleanup and artifacts still run.
+- Every request of the run's shared back office is also appended to `<E2E_ARTIFACTS_DIR>/_run/backoffice.log`
+  (default `e2e-artifacts/_run/backoffice.log`; one line per request, prefixed with the scenario id).
+- `E2eCommands.otherAppLocation(enabled, intervalMs = 1000)` sends the `otherAppLocation` command (§6) and resolves
+  with `{enabled, intervalMs, fixes}`.
+- Fixes after the first CI emulator run (API 35): `CrashScanner` reads the crash, main and system buffers with the
+  device-side filters `AndroidRuntime:E ActivityManager:W libc:F DEBUG:F *:S` (`CRASH_LOGCAT_FILTERS`); the
+  per-scenario artifact `logcat.txt` holds the last 20,000 lines (`LogcatDumpOptions.tailLines`, `logcat -t`), and
+  the whole-run logcat stays in `_run/`; `parseServiceRecords` also reads the Android 15 header
+  `ServiceRecord{… pkg/cls c:<package>}`.
 
 ---
 
@@ -558,7 +692,7 @@ example app, so it does not depend on the field-force app. The field-force suite
 `window.FF_ENV = {backendUrl: $FF_BACKEND_URL || 'http://10.0.2.2:8787'}`. Android: gms only
 (`locationTracking.providers=gms`), Kotlin applied, shared debug keystore.
 
-**Startup (every page load; this is the auto start):**
+**Startup (every page load, and on resume while tracking is off, see "As merged" below; this is the auto start):**
 1. Read overrides: the test-mode file `files/e2e/ff-overrides.json` (§6), else
    `JSON.parse(localStorage['ff.e2e.overrides'] || '{}')` (`FieldForceOverrides`, fixtures.ts).
 2. `state = await LocationTracking.getState()` (allowed before `ready`).
@@ -590,6 +724,35 @@ example app, so it does not depend on the field-force app. The field-force suite
 
 The UI shows the state, the stop time, the premise status and the last records; it is not tested beyond `FF_APP`.
 The debug receiver (§6) adds the `premise.*` commands via `PremiseMonitorNative`.
+
+**As merged** (unit 12 and its follow-up, `examples/field-force/www/app.js`, `www/ff-core.js`):
+- **Auto start on resume.** The startup also runs when the app comes back to the foreground while tracking is off
+  (the morning after the 02:00 stop, when the app was never closed). Capacitor 8 fires the document event `resume`
+  on every activity resume after the first pause (`Bridge.onResume` → `MockCordovaWebViewImpl.handleResume` →
+  `Capacitor.triggerEvent('resume', 'document')`), without `@capacitor/app`; `visibilitychange` to visible is the
+  fallback. Both lead to one check (`FFCore.createAutoStarter`), in this order: a startup run or another check in
+  progress → nothing (`busy`; the second of the two triggers of one foregrounding reports this); the latest overrides
+  say `autoStart: false` → nothing (`autostart_off`, also after a failed run, and also while tracking is on);
+  `getState()` fails → nothing (`error`); tracking on → nothing (`enabled`); tracking off → one full startup run with
+  reason `resume` (`started`): the overrides are read again and the minutes to the next stop time are computed again.
+- **`window.FF_APP`**: `startup` is the promise of the latest run (page load or resume); `status`, `step`, `result`,
+  `error` describe the latest run; `startupCount` (runs in this page), `lastStartupReason` (`'load'` | `'resume'`),
+  `lastResume` (`{at, trigger: 'resume' | 'visibilitychange' | 'manual', outcome}`) and `checkResume()` (runs the
+  check by hand and resolves with the outcome).
+- **Step 7.** When tracking is off, the minutes to the stop time are computed again right before `start()` (the
+  permission dialogs of step 6 can take minutes) and applied with `setConfig` only if they changed.
+- **Step 1.** The file is read only when `Capacitor.isNativePlatform()`, with `cache: 'no-store'` and a 5 s timeout.
+  A 404 is "no file"; a timeout, a fetch error or a non-object value is "no file" plus a warning in
+  `FF_APP.result.warnings`. A wrong-typed override rejects the startup with code `INVALID_OVERRIDES` (step
+  `overrides`) before any plugin call; invalid JSON in `localStorage` rejects it too.
+- A failed `requestPermissions()` is a warning; `start()` then reports `PERMISSION_DENIED` itself. The premise step
+  runs also when `autoStart` is false; its failure rejects the startup.
+- The debug receiver requires `android.permission.DUMP` from the sender (§6).
+- **PremiseMonitor and `tracking_stop`.** A `tracking_stop` record while monitoring makes `inside` unknown (`null`)
+  and stops the PremiseMonitor service (`service_stopped`, detail `tracking_stop: <reason>`): after the 02:00 stop no
+  EXIT can arrive. The next ENTER after a new start sets `inside` again. The audit log (its own SQLite database)
+  always keeps the newest 1000 entries, deletes older entries once they were uploaded, and keeps at most 10,000
+  entries in all (the oldest go first, uploaded or not). Every non-`2xx` upload answer (also `4xx`) is retried.
 
 ### PremiseMonitor (`examples/field-force/plugins/premise-monitor/`, unit 13)
 
@@ -670,6 +833,14 @@ The suites start the mock back office themselves (host port 8787). For manual wo
 - a 16 KB check: build the field-force release APK (gms only), `zipalign -c -P 16 -v 4`, and check every packaged
   `.so` has ELF `LOAD` alignment ≥ 2^14 (`llvm-readelf -l` from the NDK or an equivalent script).
 Dry runs and typechecks of the kit and both suites run in the normal build job.
+
+**As merged** (unit 6): the emulator jobs are in `.github/workflows/e2e-android.yml` (job names and labels:
+[runbook 6.8](../e2e-runbook.md#68-the-ci-emulator-jobs)); they upload `e2e-artifacts-<label>` always, also on
+success. The subset runs pass the pattern through `NODE_OPTIONS='--test-name-pattern=…'` (see above), and
+`.github/scripts/run-e2e.sh` holds the device steps. The 16 KB check runs in the build job of
+`.github/workflows/ci.yml` with `.github/scripts/check-16kb.py` (a committed Python ELF reader instead of
+`llvm-readelf`): it fails the job for the field-force release APK (GMS) and only reports for the example's
+`gms,hms` debug APK. The build job also runs the field-force Node tests (`npm test` in `examples/field-force`).
 
 **Runbook (unit 15, `docs/e2e-runbook.md`).** How an AI agent runs the automated suites on a local AVD (setup, the
 commands above, reading artifacts), and step-by-step procedures with pass criteria for M-01…M-08 using the standalone

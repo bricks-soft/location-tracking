@@ -70,13 +70,13 @@ import kotlin.coroutines.cancellation.CancellationException
  *   idle-paced backup. A record every 5 s therefore sets the alarms once per 30 s instead of once per record. An alarm
  *   left in place fires up to 30 s early; [onAlarm] then finds the window not due, creates no heartbeat and arms the
  *   real due time.
- * - One partial wake lock per alarm delivery. It is released when the heartbeat has been submitted (the upload holds
- *   its own wake lock) and times out after [WAKE_LOCK_TIMEOUT_MS] if something hangs.
+ * - One partial wake lock per alarm delivery. It is released when the heartbeat has been submitted (the upload that
+ *   the submit starts holds no wake lock) and times out after [WAKE_LOCK_TIMEOUT_MS] if something hangs.
  * - The backend's last known location is requested only when `runtime.lastLocation` is null, and not again within
  *   [LAST_LOCATION_RETRY_MS] after the backend answered that it has none (a timeout or an error is retried at the
  *   next heartbeat).
- * - The provider state check runs once per created heartbeat, as before. It is the only check that sees permission
- *   changes that neither kill the process nor send a broadcast; early alarms and superseded alarms skip it.
+ * - The provider state check runs once per heartbeat attempt (an alarm that finds the window due), as before. It is the
+ *   only check that sees permission changes that neither kill the process nor send a broadcast; early alarms skip it.
  *
  * @param alarms AlarmManager access; injectable for tests.
  */

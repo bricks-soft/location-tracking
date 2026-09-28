@@ -17,7 +17,7 @@ test report and fill in the last column.
 | **Phone with neither** | A phone where neither SDK is usable, so that `auto` falls back to the Android `LocationManager`. For example an AOSP/LineageOS phone without Google apps, the Huawei phone with the `gms`-only build, or the GMS phone with the `hms`-only build. |
 | Optional: Android 10 and Android 11/12 phones | For the two background-permission flows (dialog versus Settings page). |
 | A computer with `adb` | USB debugging enabled on every phone. |
-| A test server reachable over **HTTPS** | Android blocks cleartext `http://` by default, and the example app doesn't allow it. See [Test server](#test-server). |
+| A test server reachable over **HTTPS** | The example app's debug build allows plain `http://` only to `10.0.2.2` (the host, seen from an emulator) and `localhost`; a real phone that is not connected by USB needs HTTPS. See [Test server](#test-server). |
 
 ## Build and install
 
@@ -37,53 +37,41 @@ which variant is installed.
 
 ## Test server
 
-A minimal Node.js (18+) server with no dependencies. It logs each record with its lateness (`sent_at - recorded_at`)
-and the gap since the device's previous record, and it can simulate server failures:
+Use the mock back office of the end-to-end test kit (Node 22.18 or newer, no dependencies). It stores every uploaded
+record in memory, prints one line per request, and can simulate server failures. Start it from the repository root:
 
-```js
-// lt-test-server.mjs — run: node lt-test-server.mjs
-import { createServer } from 'node:http';
-
-let failing = false;
-const lastRecordedAt = new Map(); // device_id -> ms
-
-createServer((req, res) => {
-  if (req.url === '/fail/on' || req.url === '/fail/off') {
-    failing = req.url === '/fail/on';
-    res.end(`failing=${failing}\n`);
-    return;
-  }
-  let body = '';
-  req.on('data', (chunk) => (body += chunk));
-  req.on('end', () => {
-    let json = null;
-    try { json = JSON.parse(body); } catch { /* not JSON */ }
-    const payload = json && (json.location ?? json);
-    const records = Array.isArray(payload) ? payload : payload ? [payload] : [];
-    for (const r of records) {
-      const device = json.device_id ?? r.device_id ?? 'unknown';
-      const recorded = Date.parse(r.recorded_at);
-      const previous = lastRecordedAt.get(device);
-      if (!previous || recorded > previous) lastRecordedAt.set(device, recorded);
-      const gap = previous ? Math.round((recorded - previous) / 1000) + 's' : '-';
-      const late = Math.round((Date.parse(r.sent_at) - recorded) / 1000);
-      const where = r.coords ? `${r.coords.latitude.toFixed(5)},${r.coords.longitude.toFixed(5)}` : 'no-coords';
-      console.log(
-        `${new Date().toISOString()} ${device} ${String(r.event).padEnd(15)} rec=${r.recorded_at} ` +
-          `gap=${gap} late=${late}s boot=${r.boot_count} ${r.reason ?? ''} ${where}` +
-          (failing ? '  -> 500' : ''),
-      );
-    }
-    res.writeHead(failing ? 500 : 200, { 'Content-Type': 'application/json' });
-    res.end(failing ? '{"error":"simulated failure"}' : '{"ok":true}');
-  });
-}).listen(8080, () => console.log('listening on :8080'));
+```bash
+cd testing/e2e-kit && npm ci
+npm run backoffice -- --port 8787 | tee ~/lt-backoffice.log
 ```
 
-Expose it over HTTPS with a tunnel, for example `cloudflared tunnel --url http://localhost:8080` or `ngrok http 8080`.
-In the example app, set **http.url** to `https://<tunnel-host>/locations`. Keep the default `device_id` (it is sent as
-`http.params`), or give every phone a readable one. `curl https://<tunnel-host>/fail/on` makes the server answer `500`,
-and `/fail/off` turns that off again.
+Expose it over HTTPS with a tunnel, for example `cloudflared tunnel --url http://localhost:8787` (it prints
+`https://<words>.trycloudflare.com`) or `ngrok http 8787`. The computer must stay on, online and awake while the
+phones upload. In the example app, set **http.url** to `https://<tunnel-host>/locations`. Keep the default
+`device_id` (it is sent as `http.params`), or give every phone a readable one. For a short check with the phone
+connected by USB, `adb reverse tcp:8787 tcp:8787` and `http://localhost:8787/locations` also work (lost when the
+cable is unplugged or the phone reboots).
+
+The mock back office has no authentication. Through the tunnel, anyone who knows the tunnel URL can read every stored
+record (`/__records`, including the `Authorization` header of each upload) and can reset it or add faults. It also
+listens on all network interfaces of the computer (`--host 127.0.0.1` limits it to the computer itself; the tunnel
+still works). Use test phones, test accounts and test tokens only, keep the tunnel URL private, and stop the tunnel
+and the back office after the test.
+
+What the checks below use:
+
+| Goal | Command (on the computer) |
+|---|---|
+| All records, in arrival order | `curl -s localhost:8787/__records` (each row: `receivedAt`, `params`, and the `record`) |
+| Only some events | `curl -s 'localhost:8787/__records?event=heartbeat,tracking_start,tracking_stop'` |
+| Server answers `500` until cleared | `curl -s -X POST localhost:8787/__faults -H 'content-type: application/json' -d '{"path":"/locations","status":500,"count":-1}'` |
+| Normal answers again | `curl -s -X DELETE localhost:8787/__faults` |
+| Forget everything | `curl -s -X POST localhost:8787/__reset` |
+
+The gaps between records and the lateness (`sent_at − recorded_at`) are computed by the `lt-report.mjs` helper of the
+runbook: [docs/e2e-runbook.md](e2e-runbook.md#45-helper-lt-reportmjs) (for example
+`node lt-report.mjs http://127.0.0.1:8787/__records`). Every endpoint of the mock back office is listed in
+[section 4 of the runbook](e2e-runbook.md#4-the-mock-back-office).
 
 ## Useful adb commands
 
@@ -125,7 +113,8 @@ Unless a test says otherwise:
    heartbeat panel shows `isIgnoringBatteryOptimizations: false`.
 3. Turn the screen off. Run `adb shell dumpsys battery unplug`, `adb shell dumpsys deviceidle enable`, and
    `adb shell dumpsys deviceidle force-idle`. Check that `adb shell dumpsys deviceidle get deep` prints `IDLE`.
-4. Wait 45 minutes without touching the phone, and watch the server's `gap=` values.
+4. Wait 45 minutes without touching the phone, and watch the `gap=` values that `lt-report.mjs` prints for the
+   records (see [Test server](#test-server)).
 5. Run `adb shell dumpsys deviceidle unforce`.
 6. Grant the exemption, either through **openBatteryOptimizationSettings** (All apps → LT Example → Don't optimize),
    or with `adb shell dumpsys deviceidle whitelist +com.brickssoft.locationtracking.example`. Repeat steps 3–5.
@@ -172,7 +161,7 @@ upload is triggered by the reconnect itself.)
 ## Checklist
 
 Phones: **GMS** = GMS phone, **HMS** = Huawei HMS-only phone, **None** = phone with neither SDK usable. "Server"
-means the test server's log.
+means the records the mock back office received (`/__records`, or the output of `lt-report.mjs`).
 
 | ID | Phone | Scenario | Steps | Expected result | Result |
 |---|---|---|---|---|---|
@@ -184,7 +173,7 @@ means the test server's log.
 | P6 | GMS | Forced Android backend | set locationProvider `android`, setConfig, getState | `backend: "android"`. Setting `auto` again brings back `gms`. | |
 | T1 | all | Start | standard setup | `start` resolves right after the `tracking_start`; an `enabledchange` (`enabled:true`) event arrives. Notification shown. Server: `tracking_start` (reason `start`), then, a few seconds later, `motionchange` with `is_moving:false`. No heartbeat right after the start: the first one comes about 180 s after the last record. | |
 | T2 | all | Moving | walk or drive for 10 min | `motionchange` with `is_moving:true`, then `location` records about every `distanceFilter` meters. The odometer grows. Few or no heartbeats while moving. | |
-| T3 | all | Stationary | stop moving for `stopTimeout` (5 min) or more | `motionchange` with `is_moving:false` about `stopTimeout` after the last movement. From then on, no `location` records (stationary fixes are not recorded), and a heartbeat about every 180 s with the last known coords (their `timestamp` may be old). | |
+| T3 | all | Stationary | stop moving for `stopTimeout` (5 min) or more | `motionchange` with `is_moving:false` about `stopTimeout` after the last movement. Then GPS is off: the app keeps only a passive location request and one stationary geofence of at least 150 m around the stop point (without "Allow all the time": a low-power request, at most one fix per 3 minutes, instead of the geofence). `adb shell dumpsys location` lists no GPS request of the app. From then on, no `location` records (stationary fixes are not recorded), and a heartbeat about every 180 s with the coords of the stop point and that fix's `timestamp` (older than `recorded_at`). | |
 | T4 | all | Stop | press stop | Server: `tracking_stop` (reason `stop`). The notification disappears, and no more records arrive. The heartbeat strategy is `disabled`. | |
 | T5 | GMS | changePace | changePace(moving), then changePace(stationary) | A `motionchange` for each. With `stopOnStationary` checked, changePace(stationary) does **not** stop tracking (only the automatic stop does). | |
 | H1 | all | Heartbeat baseline | phone still and awake (or charging) for 30 min | Server: a `heartbeat` about every 180 s, never more than 300 s apart. The heartbeat panel shows strategy `exact` or `listener_with_backup` and a `nextHeartbeatAt` in the future. | |
@@ -202,10 +191,10 @@ means the test server's log.
 | K6 | all | Reboot with `startOnBoot: false` | as in K5, but unchecked | After the phone has booted (and has network), a `tracking_stop` with reason `reboot`, then nothing. Opening the app shows `enabled: false`. | |
 | K7 | GMS | App update, `startOnBoot: true` | tracking on, then `adb install -r app-debug.apk` | `tracking_start` (reason `package_replaced`). | |
 | K8 | all | Battery "Restricted" (Android 12+) | App info → Battery → Restricted, screen off for 30 min | Heartbeats stop (a gap) until the app is opened again. Set it back to Optimized or Unrestricted. | |
-| K9 | Android 14+ | Reboot with only "while in use" location | grant location "Allow only while using the app", check app.startOnBoot, setConfig, start, `adb reboot`, unlock | Android does not allow a location foreground service started at boot without background location: the server logs `tracking_start` (reason `boot`) followed by `tracking_stop` with reason `service_start_failed` (or only the `tracking_stop`). No heartbeats after that. Opening the app shows `enabled: false`; **start** works again. | |
+| K9 | Android 14+ | Reboot with only "while in use" location | grant location "Allow only while using the app", check app.startOnBoot, setConfig, start, `adb reboot`, unlock | Android does not allow a location foreground service started at boot without background location: the server logs a `tracking_stop` with reason `service_start_failed`. Usually there is no `tracking_start` before it: the plugin's own Android 14 check refuses the start without asking Android. When the check lets the start through and Android refuses it, a `tracking_start` (reason `boot`) comes first. No heartbeats after that. Opening the app shows `enabled: false`; **start** works again. | |
 | K10 | Android 12+ (GMS or HMS) | Background restart refused | remove the exemption (`deviceidle whitelist -...`), press Home, hard-kill the process as in the [process death procedure](#process-death), turn the screen off, wait 10 min | If Android did not restart the service by itself: a `heartbeat` from the backup alarm, then `tracking_stop` with reason `service_start_failed`, and silence afterwards. Repeat with the exemption granted: `tracking_start` with reason `restore` instead. | |
 | N1 | all | Offline queue | [offline procedure](#offline-queue-and-retry) | Heartbeats created on time and delivered after the reconnect, with `sent_at` later than `recorded_at`. The queue drains to 0. | |
-| N2 | GMS | Server errors | `curl .../fail/on` for 10 min, then `/fail/off` | `http` events with `success:false, status:500` (one per request), and **getCount** grows. Nothing is retried between records (no timer). After `/fail/off`, the next record, typically the next heartbeat (or **sync**), uploads everything, oldest first. | |
+| N2 | GMS | Server errors | add the `500` fault ([Test server](#test-server)) for 10 min, then clear it (`DELETE /__faults`) | `http` events with `success:false, status:500` (one per request), and **getCount** grows. Nothing is retried between records (no timer, with the default `syncInterval: 0`). After the fault is cleared, the next record, typically the next heartbeat (or **sync**), uploads everything, oldest first. | |
 | N3 | GMS | No URL | clear http.url, setConfig, wait 5 min, then **sync** | Records queue up. `sync` rejects with `NO_URL`. | |
 | N4 | GMS | Batch mode | check http.batchSync, setConfig, then airplane mode on/off after 10 min | The server receives JSON arrays under `location`, oldest first. | |
 | N5 | GMS | Cellular only | extra config `{"http":{"disableAutoSyncOnCellular":true}}`, Wi-Fi off, mobile data on, walk | Only `heartbeat`, `tracking_*` and `providerchange` records upload on cellular. Locations upload once Wi-Fi is back. | |

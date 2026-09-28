@@ -355,15 +355,15 @@ numbers that are not finite become the default.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `desiredAccuracy` | `'high' \| 'balanced' \| 'low' \| 'passive'` | `'high'` | Accuracy of the location request while moving. While stationary the plugin requests only passive fixes, whatever this value is (see [Battery](#battery)). |
+| `desiredAccuracy` | `'high' \| 'balanced' \| 'low' \| 'passive'` | `'high'` | Accuracy of the location request while moving, and of the first fix after `start()`. While stationary the plugin requests only passive fixes (or, when the stationary geofence cannot be registered, one low-power fix at most every 3 minutes), whatever this value is (see [Battery](#battery)). |
 | `distanceFilter` | number (m, ≥ 0) | `10` | Minimum distance between recorded locations while moving. The plugin applies it itself (the OS request has no distance filter). |
 | `locationUpdateInterval` | number (ms, ≥ 0) | `1000` | Desired update interval while moving. |
 | `fastestLocationUpdateInterval` | number (ms, ≥ 0) | `500` | Fastest accepted update interval. |
 | `disableElasticity` | boolean | `false` | Turns off the speed-based scaling of `distanceFilter`. |
 | `elasticityMultiplier` | number (≥ 0) | `1` | Elastic filter: `distanceFilter × max(1, round(speed / 5) × elasticityMultiplier)`. |
-| `stationaryRadius` | number (m, ≥ 1) | `25` | While stationary: the stationary geofence has a radius of `max(stationaryRadius, 150)` m, and a passive fix whose distance from the stop point minus its accuracy is more than `stationaryRadius` switches to moving. While moving, a displacement beyond it counts as evidence of motion for stop detection. |
+| `stationaryRadius` | number (m, ≥ 1) | `25` | While stationary: the stationary geofence has a radius of `max(stationaryRadius, 150)` m, and a fix whose distance from the stop point minus its accuracy is more than `stationaryRadius` (with an accuracy no worse than `filter.trackingAccuracyThreshold`) switches to moving. While moving, a displacement beyond it counts as evidence of motion for stop detection. |
 | `stopTimeout` | number (min, ≥ 0) | `5` | Minutes without evidence of motion (a displacement beyond `stationaryRadius`, or a confident moving activity) before switching to stationary. Values below 1 act as 1. |
-| `stopAfterElapsedMinutes` | number (min, ≥ 0) | `0` (off) | Stops tracking automatically this many minutes after it started (`tracking_stop`, reason `stop_after_elapsed`). |
+| `stopAfterElapsedMinutes` | number (min, ≥ 0) | `0` (off) | Stops tracking automatically this many minutes after it started (`tracking_stop`, reason `stop_after_elapsed`). While the phone sleeps, the stop can come later: see [Field-force example](#field-force-example). |
 | `stopOnStationary` | boolean | `false` | Stops tracking when stop detection switches the device to stationary (`tracking_stop`, reason `stop_on_stationary`). `changePace({ isMoving: false })` does not stop tracking. |
 | `locationTimeout` | number (ms, > 0) | `30000` | Default timeout of `getCurrentPosition()`, and of the first fix after `start()`. |
 | `filter` | object | see below | Location filters. |
@@ -493,10 +493,19 @@ The dialog shown before the Android 11+ "Allow all the time" settings page.
 - `start()` needs foreground location permission (otherwise it rejects with `PERMISSION_DENIED`). It starts the
   foreground service, records a `tracking_start` (reason `start`), emits `enabledchange`, and resolves with the new
   `State`. The first `motionchange` (`is_moving: false`, with a fresh fix or the last known location) follows
-  **asynchronously**, within `locationTimeout` + 5 s. If Android refuses to start the foreground service right away,
-  `start()` records a `tracking_stop` with reason `permission_denied` and rejects with `PERMISSION_DENIED`; if the
-  service fails a moment later, tracking stops with reason `service_start_failed` (the promise has already
-  resolved, so listen for `enabledchange`).
+  **asynchronously**, within `locationTimeout` + 5 s.
+- If Android refuses to start the foreground service right away, `start()` records a `tracking_stop` with reason
+  `service_start_failed` and rejects with `PERMISSION_DENIED`. This happens in two cases:
+  - Android 12+ throws for a foreground-service start from the background (the app is not visible and has no
+    exemption);
+  - on Android 14+, the plugin's own check predicts that Android would refuse the `location` service type, and the
+    plugin does not try. The check refuses only when all of these are true: the tracking service is not in the
+    foreground yet; "Allow all the time" location is not granted; Android rates the app's process below "visible" (a
+    process that runs another foreground service counts as visible); the app's current activity is not started; and
+    no activity of the app was started, stopped or destroyed in the last 15 s.
+
+  If the service fails a moment later (after `start()` resolved), tracking stops with reason `service_start_failed`;
+  listen for `enabledchange`.
 - `startGeofences()` works the same way in geofences-only mode (reason `start_geofences`). Calling `start()` while
   `startGeofences()` runs (or the reverse) switches the mode and records another `tracking_start`. Calling the same
   one twice does nothing.
@@ -504,26 +513,35 @@ The dialog shown before the Android 11+ "Allow all the time" settings page.
   service is still running, then stops the service, the heartbeat and the OS geofences, and emits `enabledchange`.
 - Tracking also stops by itself: `stopOnStationary`, `stopAfterElapsedMinutes`, `stopOnTerminate` (app swiped away),
   a revoked location permission (`permission_denied`), or Android refusing the foreground service
-  (`service_start_failed`). Each case records a `tracking_stop` with that reason and emits `enabledchange`.
+  (`service_start_failed`). Each case records a `tracking_stop` with that reason and emits `enabledchange`. When
+  Android restarts the killed service by itself and the restart fails, the reason is `permission_denied` if location
+  permission is no longer granted, and `service_start_failed` otherwise.
 - Tracking resumes by itself after the process was killed (reason `restore`), after a reboot (`boot`) and after an
   app update (`package_replaced`, both only with `app.startOnBoot`), and when `ready()` finds it enabled but not
   running. See [docs/heartbeat.md](docs/heartbeat.md#android-reliability) for what Android allows.
+- A boot broadcast restores tracking once per boot. The plugin reads the phone's boot counter
+  (`Settings.Global.BOOT_COUNT`) and ignores a boot broadcast when the counter is the same as for the last boot
+  broadcast it handled, or the same as when it last started the tracking service. So a repeated or fake
+  `QUICKBOOT_POWERON` broadcast without a real reboot creates no second `tracking_start`. On a phone that does not
+  report the counter, this check is skipped; as before, only the first boot broadcast in a process is handled.
 
 **Motion states** (`start()` mode only).
 
 - **Moving:** continuous updates with the configured `desiredAccuracy` and intervals. A `location` record is created
   when a fix is at least the (elastic) `distanceFilter` away from the last recorded one.
 - **Stationary:** GPS off. The plugin removes its location request and asks only for **passive** fixes (fixes that
-  other apps requested), and registers one OS geofence, the *stationary region*, around the last fix. The foreground
-  service keeps running and heartbeats continue. Fixes that still arrive only feed motion detection and polygon
-  geofences; **no `location` records are created and the odometer doesn't grow**, so position jitter while parked is
-  neither uploaded nor counted. Details in [Battery](#battery).
-- Stationary → moving, whichever comes first: the device leaves the stationary region; a passive fix is certainly
-  outside (`distance − accuracy > stationaryRadius`, with an accuracy no worse than
-  `filter.trackingAccuracyThreshold`); a moving activity (walking, running, on foot, on bicycle, in vehicle) at or
-  above `minimumActivityRecognitionConfidence` lasts for `motionTriggerDelay`; or `changePace({ isMoving: true })`.
-  Then the configured request (GPS for `'high'`) starts again and a `motionchange` with the first accepted fix is
-  recorded.
+  other apps requested), and registers one OS geofence, the *stationary region*, around the stop point (the
+  *anchor* fix). The foreground service keeps running and heartbeats continue; they carry the anchor fix. Fixes that
+  still arrive only feed motion detection and polygon geofences; **no `location` records are created and the
+  odometer doesn't grow**, so position jitter while parked is neither uploaded nor counted. Details in
+  [Battery](#battery).
+- Stationary → moving, whichever comes first: the OS reports that the device left the stationary region; a fix is
+  certainly outside (its distance from the anchor minus its accuracy is more than `stationaryRadius`, and its accuracy
+  is no worse than `filter.trackingAccuracyThreshold`); a moving activity (walking, running, on foot, on bicycle, in
+  vehicle) at or above `minimumActivityRecognitionConfidence` lasts for `motionTriggerDelay`; or
+  `changePace({ isMoving: true })`. Then the configured request (GPS for `'high'`) starts again and a `motionchange`
+  (`is_moving: true`) is recorded with the fix that showed the movement (the region's exit fix, or the outside fix),
+  or with the best known fix when the trigger was an activity or `changePace`.
 - Moving → stationary (stop detection, unless `disableStopDetection`): `stopTimeout` minutes (at least 1) after the
   last evidence of motion, even if no more fixes arrive.
 - Each transition records a `motionchange` with the new `is_moving`. `changePace({ isMoving })` forces a transition;
@@ -554,32 +572,59 @@ never turn GPS on.
 | State | Runs | Does not run |
 |---|---|---|
 | Moving | The location request with `desiredAccuracy` (`'high'` = GPS) every `locationUpdateInterval` (1 s by default); activity recognition; uploads; the heartbeat schedule (heartbeats are rarely due, because records keep coming). | – |
-| Stationary | The foreground service and its notification; a **passive** location request (it receives only fixes that other apps requested, and costs nothing by itself); the **stationary region**: one OS geofence of `max(stationaryRadius, 150)` m around the last accepted fix, with an exit trigger; activity recognition; a heartbeat every `heartbeat.minInterval` seconds. | GPS, and any network-location request of the plugin. |
+| Stationary | The foreground service and its notification; a **passive** location request (it receives only fixes that other apps requested, and costs nothing by itself); the **stationary region**: one OS geofence of `max(stationaryRadius, 150)` m around the anchor fix (the stop point), with an exit trigger only; activity recognition; a heartbeat every `heartbeat.minInterval` seconds. | GPS, and any network-location request of the plugin (except the low-power fallback below). |
 | Tracking off | Nothing. | Everything. |
 
 **How the plugin notices that the device moves again** (whichever comes first):
 
-1. the OS reports that the device left the stationary region (typically after 150–250 m);
-2. a passive fix is certainly outside: its distance from the stop point minus its accuracy is more than
-   `stationaryRadius`, and its accuracy is no worse than `filter.trackingAccuracyThreshold` (a coarse fix alone never
-   wakes GPS);
+1. the OS reports that the device left the stationary region (typically after 150–250 m). An exit report whose own
+   fix is certainly inside the region (distance from the centre plus accuracy ≤ radius) is ignored: it is a late
+   report about an earlier region;
+2. a fix that arrives while stationary (a passive fix, or a fix of the low-power fallback) is certainly outside: its
+   distance from the anchor minus its accuracy is more than `stationaryRadius`, and its accuracy is no worse than
+   `filter.trackingAccuracyThreshold` (a coarse fix alone never wakes GPS);
 3. activity recognition reports walking, running, on foot, on bicycle or in vehicle, with at least
    `minimumActivityRecognitionConfidence`, for `motionTriggerDelay`;
 4. the app calls `changePace({ isMoving: true })`.
 
-Then GPS starts again, and a `motionchange` (`is_moving: true`) is recorded with the first accepted fix.
+Then GPS starts again, and a `motionchange` (`is_moving: true`) is recorded: with the fix of the region's exit report
+(case 1, when that fix passes the location filters) or the outside fix (case 2), otherwise with the best known fix.
 
-If the stationary region cannot be registered (no "Allow all the time" location, the OS geofence limit is reached, or
-a backend error), the plugin logs it and uses a low-power request instead of the passive one: at most one fix per
-3 minutes, without GPS. Movement is then still detected. A polygon geofence still forces the moving request while the
-device is inside the polygon's enclosing circle (see [Geofencing](#geofencing)).
+**The anchor.** The anchor is the fix where the device became stationary: the fix of the `motionchange` with
+`is_moving: false` (after `start()`, a fresh fix). While stationary, the anchor changes only in these cases:
 
-**Heartbeats while stationary.** A heartbeat carries the last accepted fix. Its `recorded_at` is the time the heartbeat
-was created (now); `timestamp` (`location.timestamp` in JavaScript) is the time the fix was **acquired**, which can be
-hours earlier. So the server can show "the device is on (last heartbeat 11:59), last position from 10:26". Details in
-[docs/heartbeat.md](docs/heartbeat.md#stationary-gps-off-heartbeats-continue).
+- no fix was known when the device became stationary: the first accepted fix becomes the anchor;
+- the anchor was more than 10 minutes old when it became the anchor, and a fix arrives that is at most 10 minutes
+  old and has an accuracy no worse than `filter.trackingAccuracyThreshold`: that fix replaces the anchor;
+- a fix that is not certainly outside has a better (smaller) accuracy than the anchor: that fix replaces the anchor.
 
-<!-- verify after merge: unit 2 (engine) implements the stationary mode as in docs/e2e/architecture.md §3 (passive request, region radius max(stationaryRadius, 150 m), the accuracy-aware passive-fix exit, the low-power fallback at most one fix per 3 minutes) -->
+The stationary region is registered only around an anchor that was at most 10 minutes old when it became the anchor
+(the OS never reports an exit for a device that is already outside a new region). The region is moved only when the
+anchor is more than 50 m from the region's centre.
+
+**Low-power fallback.** The plugin uses a low-power request (Wi-Fi and cell towers, no GPS; at most one fix per
+3 minutes) instead of the passive one when:
+
+- the region cannot be registered: no "Allow all the time" location, a backend error, or no answer from the OS within
+  10 s;
+- no anchor is known, or the anchor was more than 10 minutes old when it became the anchor (see above);
+- the app has 99 or 100 geofences of its own. GMS accepts at most 100 geofences per app, and the plugin gives the last
+  slot to the app's geofences: when a geofence change brings the app to 99 geofences, the plugin removes the
+  stationary region (see [Geofencing](#geofencing)).
+
+The plugin logs each case. With `desiredAccuracy: 'passive'` the fallback request stays passive. After a failed
+registration the plugin tries again when the device leaves the stationary state, when the location backend changes,
+and on every location provider change while stationary (for example after "Allow all the time" is granted); it does
+not try again on every fix. A polygon geofence still forces the moving request while the device is inside the
+polygon's enclosing circle (see [Geofencing](#geofencing)).
+
+**Heartbeats while stationary.** A heartbeat carries the anchor fix. Its `recorded_at` is the time the heartbeat was
+created (now); `timestamp` (`location.timestamp` in JavaScript) is the time the anchor fix was **acquired**, which can
+be hours earlier. A passive or low-power fix that arrives while stationary changes what the heartbeat carries only
+when it becomes the anchor. A record with its own fix does change it: a transition of one of the app's geofences, or
+`getCurrentPosition()` / `watchPosition()` with `persist: true`; later heartbeats carry that record's fix until the
+anchor changes again. So the server can show "the device is on (last heartbeat 11:59), last position from 10:26".
+Details in [docs/heartbeat.md](docs/heartbeat.md#stationary-gps-off-heartbeats-continue).
 
 **What costs battery, and the keys that change it** (largest cost first):
 
@@ -598,7 +643,15 @@ How to measure the cost on a real phone: procedure M-04 in the
 ## Geofencing
 
 - Up to **100** geofences (`TOO_MANY_GEOFENCES` beyond that). An identifier is 1–100 characters; adding a geofence
-  with an existing identifier replaces it. `loiteringDelay` must be ≥ 0.
+  with an existing identifier replaces it. `loiteringDelay` must be ≥ 0. The identifier `__lt_stationary__` is
+  reserved for the plugin's stationary region: `addGeofence` rejects it with `INVALID_ARGUMENT`.
+- The stationary region (see [Battery](#battery)) does not count against the 100. GMS accepts at most 100 geofences
+  per app, stationary region included. While the app has 99 or 100 geofences, the plugin does not register the
+  stationary region (stationary tracking then uses the low-power fallback). When an add brings the app to 99
+  geofences, the plugin removes a registered region after that add has finished; the removal waits for the tracking
+  engine and for the OS. So an `addGeofence` of the 100th geofence right after the 99th, or one `addGeofences` call
+  that goes from 98 to 100 geofences, can still fail with `TOO_MANY_GEOFENCES` from the OS while the region is
+  registered (an open item in [DECISIONS.md](docs/DECISIONS.md#r25-open-requests-and-known-limitations)).
 - **Circle:** `latitude`, `longitude` and a `radius` > 0.
 - **Polygon:** `vertices`, at least 3 distinct points with a non-zero area, not crossing the 180° meridian. The plugin
   registers the polygon's smallest enclosing circle, padded by 10 % (at least 50 m), with the OS; `getGeofences()`
@@ -627,9 +680,10 @@ How to measure the cost on a real phone: procedure M-04 in the
 - Every record is written to SQLite first and uploaded to `http.url` according to the rules in
   [docs/wire-format.md](docs/wire-format.md#when-uploads-happen). Priority records (`heartbeat`, `tracking_start`,
   `tracking_stop`, `providerchange`) are uploaded right away and take the older queued records along.
-- There is **no retry timer** for failed uploads: queued records are retried when a record is inserted (at least every
-  heartbeat while tracking), when the network comes back, when tracking starts, and on `sync()`. The only timer is the
-  `syncInterval` timer, which uploads normal records that have become due (see below).
+- With `syncInterval: 0` (the default) there is **no retry timer** for failed uploads: queued records are retried when
+  a record is inserted (at least every heartbeat while tracking), when the network comes back, when tracking starts,
+  and on `sync()`. With `syncInterval` above 0, a timer uploads normal records that have become due, and retries them
+  once per `syncInterval` after a failed upload (see below).
 - `getLocations({ limit })` returns queued records, oldest first; `getCount()` counts them; `destroyLocations()` and
   `destroyLocation({ uuid })` delete them without uploading.
 - `sync()` uploads the whole queue now, ignoring `autoSync`, `autoSyncThreshold` and `disableAutoSyncOnCellular`, and
@@ -656,24 +710,34 @@ http: {
 ```
 
 - **Normal records** (`location`, `motionchange`, `current_position`, `watch_position`, `geofence`) wait in the
-  queue until the **oldest** of them is `syncInterval` seconds old (by `recorded_at`). Then the whole queue is
-  uploaded, in batches of `maxBatchSize` when `batchSync` is on. While the device moves, that is one upload about
-  every `syncInterval` seconds.
+  queue until the **oldest** of them is `syncInterval` seconds old. "Oldest" is the queued normal record with the
+  smallest `recorded_at`; its age is now − `recorded_at`, and a negative age (the wall clock was set back) counts as
+  due. Then the whole queue is uploaded, in batches of `maxBatchSize` when `batchSync` is on. While the device moves,
+  that is one upload about every `syncInterval` seconds.
 - **Audit records** (`heartbeat`, `tracking_start`, `tracking_stop`, `providerchange`) are still uploaded at once, and
   they take the queued normal records with them.
 - While stationary, no location records are created; the heartbeat (every `minInterval`) is uploaded at once and
   carries the last position with its acquisition time.
 - `autoSyncThreshold` above 0 is a size limit: the queue is uploaded earlier when it reaches that many records.
 - The check runs on every insert, when the network comes back, when the uploader starts, and on a timer in the
-  tracking process (at `oldest.recorded_at + syncInterval`). Doze can delay the timer; the next heartbeat uploads
-  the queue anyway. `disableAutoSyncOnCellular` still holds normal records back on cellular, and `sync()` still
-  uploads everything at once.
+  tracking process (at `oldest.recorded_at + syncInterval`). `disableAutoSyncOnCellular` still holds normal records
+  back on cellular, and `sync()` still uploads everything at once.
+- **The timer holds no wake lock.** It counts only the time the CPU is awake, so in deep sleep or Doze it fires late.
+  Two other triggers limit the delay: while the device moves, every new location record runs the check against the
+  wall clock; while it is stationary, each heartbeat is uploaded at once and takes the queue with it. With the
+  heartbeat disabled and no new record, held records wait until the CPU has been awake long enough.
+- **While tracking is off**, normal records are uploaded as with `syncInterval: 0` (by `autoSyncThreshold`), because
+  there is no timer then. For example, with the default `autoSyncThreshold: 0`, a `getCurrentPosition()` record after
+  the 02:00 stop is uploaded at once. When tracking stops, records that were held are handled by this rule at once.
+- **After a failed automatic upload**, normal records are retried once per `syncInterval` (measured on the
+  elapsed-time clock), by the timer, not on every insert. These still upload at once: the network coming back, a
+  queued audit record, and `sync()`.
 - [Native listeners](#companion-plugins-native-api) receive every record when it is queued, not when it is uploaded,
   so `syncInterval` does not delay them.
 - `syncInterval: 0` (the default) keeps the behavior without it: normal records follow `autoSync` and
   `autoSyncThreshold`.
-
-<!-- verify after merge: unit 4 (http) implements syncInterval as in docs/e2e/architecture.md §4 (oldest pending normal record, whole-queue drain, timer only while tracking, negative age counts as due) -->
+- Held records count against `persistence.maxRecordsToPersist` (unlimited by default). A limit smaller than the number
+  of records created in `syncInterval` lets pruning delete held records before they are uploaded.
 
 Rules and a timeline example: [docs/wire-format.md](docs/wire-format.md#live-location-with-syncinterval).
 
@@ -767,15 +831,14 @@ LocationTrackingNative.getState(context) { result ->
 subscription.remove()                                    // idempotent
 ```
 
-Listener methods and callbacks run on one background thread named `LT-native`, in the order the records and events
-were created (a record's `onRecord` comes before the events that carry it). Exceptions thrown by a listener are caught
-and logged. Keep the methods short; the listener's constructor must not block. Native calls do not need the
-JavaScript `ready()`, and are not subject to the `NOT_READY` rule; call `LocationTrackingNative.ready` first when you
-need a config. The consumer R8 rules keep the API and the listeners' constructors in minified builds.
+Listener methods and callbacks run on one background thread named `LT-native`. Listener methods run in the order the
+records and events were created (a record's `onRecord` comes before the events that carry it). A callback runs when
+its call completes, so callbacks come in completion order, not in call order. Exceptions thrown by a listener or a
+callback are caught and logged. Keep the methods short; the listener's constructor must not block. Native calls do not
+need the JavaScript `ready()`, and are not subject to the `NOT_READY` rule; call `LocationTrackingNative.ready` first
+when you need a config. The consumer R8 rules keep the API and the listeners' constructors in minified builds.
 
 The full guide for companion-plugin authors: [docs/native-api.md](docs/native-api.md).
-
-<!-- verify after merge: docs/native-api.md exists (unit 5) and agrees with this section (thread name LT-native, suffixed meta-data names, NOT_READY not applied to native calls) -->
 
 ## Error codes
 
@@ -788,7 +851,7 @@ Every rejected promise has a `code` (see the `ErrorCode` type) and a `message`.
 | `LOCATION_DISABLED` | Location services are turned off on the device (`getCurrentPosition()`; some HMS geofence errors). |
 | `TIMEOUT` | The operation timed out, for example `getCurrentPosition()` got no fix in time. |
 | `UNAVAILABLE` | A required system service, backend or feature is not available right now, for example no app can send the log email. |
-| `INVALID_ARGUMENT` | Invalid options or config, for example a wrong config type, a geofence without a radius, or a polygon with fewer than 3 vertices. |
+| `INVALID_ARGUMENT` | Invalid options or config, for example a wrong config type, a geofence without a radius, a polygon with fewer than 3 vertices, or the reserved geofence identifier `__lt_stationary__`. |
 | `NOT_FOUND` | Reserved; not currently used. Lookups of unknown items resolve instead (`getGeofence()` with `null`, `destroyLocation()` with `deleted: false`, `clearWatch()` does nothing). |
 | `NO_URL` | `sync()` was called without a valid `http.url`. |
 | `HTTP_ERROR` | `sync()` got a non-2xx response. |
@@ -846,7 +909,8 @@ heartbeat's `heartbeat` object (`strategy`, `next_at`, `battery_exempt`, `device
 next, so a normal 9-minute gap in Doze is not flagged as a failure (see
 [docs/heartbeat.md](docs/heartbeat.md#heartbeat-metadata)). A back office can show tracking as **online** while the
 latest record is not older than that expected gap. A `tracking_stop` with reason `service_start_failed` means Android
-didn't let tracking resume in the background; the app has to call `start()` again.
+refused the tracking foreground service (a `start()` from the background, or a restart in the background); the app
+has to call `start()` again while it is visible.
 
 ## Example app
 
@@ -861,7 +925,8 @@ cd android && ./gradlew assembleDebug -PlocationTracking.providers=gms,hms
 
 Its **debug** build also contains the test hooks of the [end-to-end tests](#end-to-end-tests): a broadcast receiver
 that runs plugin calls without the web page, and an "E2E mode" in which the page never changes the plugin's state by
-itself. Release builds contain neither.
+itself. The receiver accepts only senders that hold `android.permission.DUMP` (the adb shell and root hold it; other
+apps on the phone do not). Release builds contain neither.
 
 ## Field-force example
 
@@ -870,14 +935,27 @@ office audits a moving worker. It is plain HTML/JS (no bundler), Android only, a
 Play build).
 
 - **Auto start.** Every time the app's page loads, it calls `ready()` with the preset below and then `start()` if
-  tracking is not on yet.
+  tracking is not on yet. It runs the same startup again when the app comes back to the foreground while tracking is
+  off, for example the morning after the 02:00 stop when the app was never closed. It detects the foreground with the
+  document event `resume` (Capacitor 8 fires it on every activity resume after the first pause) and, as a fallback,
+  `visibilitychange` to visible; both lead to one check. The check does nothing while a startup runs, while tracking
+  is on, or when the test overrides set `autoStart: false`.
 - **Stop at 02:00.** At start, the app computes the minutes until the next 02:00 local time and passes them as
   `geolocation.stopAfterElapsedMinutes`. The plugin then records `tracking_stop` with reason `stop_after_elapsed` at
   about 02:00. This is app code, not a plugin schedule feature: any app can compute its own stop time the same way.
   When tracking is already on at launch, the app keeps the running session's value, because the plugin measures it
-  from the session start. The daily stop ends each session at night, so the next morning starts a fresh session. (The
-  owner's reason: an app that is never closed must not hit a `ForegroundServiceDidNotStartInTimeException` on a cold
-  start the next morning.)
+  from the session start. When tracking is off, the app computes the minutes again right before `start()` (permission
+  dialogs can take minutes) and applies them with `setConfig` if they changed. The daily stop ends each session at
+  night, so the next morning starts a fresh session. (The owner's reason: an app that is never closed must not hit a
+  `ForegroundServiceDidNotStartInTimeException` on a cold start the next morning.)
+- **When the 02:00 stop happens.** The plugin's stop timer counts only the time the CPU is awake. The plugin therefore
+  also checks the stop time whenever a fix, an activity update, a stationary-region exit or a heartbeat arrives.
+  While the phone moves, fixes arrive every second, so the stop is on time. While it is stationary (GPS off) and
+  asleep, the stop happens at the first heartbeat after the stop time: at most `maxInterval` (300 s) late when the app
+  is exempt from battery optimization (heartbeats about every 180 s), and about 9–11 minutes late in deep Doze without
+  the exemption. The check runs in a separate step right after the heartbeat is queued, and the heartbeat's wake lock
+  may already be released then; if the phone falls asleep in that short moment, the stop comes with a later
+  heartbeat.
 - **Live location at most about 5 minutes old:** `http.syncInterval: 300` with batches.
 - **Device details and battery.** `http.params.device` carries the manufacturer, model, brand, OS version, SDK level,
   plugin version, backend and GMS/HMS availability in every request; every record carries `battery`.
@@ -897,21 +975,27 @@ The preset (production values):
 | `app` | `stopOnTerminate: false`, `startOnBoot: true` |
 | other | `notification: { title: 'Field Force', text: 'Shift tracking is on' }`, `logger.logLevel: 'debug'`, `locationProvider: 'auto'` |
 
-The startup logic is in `examples/field-force/www/ff-core.js`. The page exposes its progress as `window.FF_APP`
-(`status`: `'running'`, `'done'` or `'failed'`; `step`; `result` with the state, the computed
-`stopAfterElapsedMinutes`, the config, the device info and `warnings` about ignored test overrides; `error`; the
-`startup` promise). The startup asks for every permission that is not granted and waits until the permission dialog
-is answered.
+The startup logic is in `examples/field-force/www/ff-core.js`. The page exposes its progress as `window.FF_APP`:
+
+- `status`: `'running'`, `'done'` or `'failed'` (the latest startup run); `step`: the step that runs now;
+- `result`: the state, the computed `stopAfterElapsedMinutes`, the config, the device info and `warnings` about
+  ignored test overrides; `error`: `{code, message, step}` of a failed run;
+- `startup`: the promise of the latest startup run (page load or resume);
+- `startupCount`: the number of startup runs in this page; `lastStartupReason`: `'load'` or `'resume'`;
+- `lastResume`: the latest foreground check, `{at, trigger, outcome}`, where `trigger` is `'resume'`,
+  `'visibilitychange'` or `'manual'` and `outcome` is `'started'`, `'enabled'`, `'busy'`, `'autostart_off'` or
+  `'error'`;
+- `checkResume()`: runs the foreground check by hand and resolves with its outcome.
+
+The startup asks for every permission that is not granted and waits until the permission dialog is answered.
 
 Build it (after `npm ci && npm run build` in the repository root), and run the Node tests of its startup logic:
 
 ```bash
-cd examples/field-force && npm ci && npm run sync   # FF_BACKEND_URL=<url> sets the back office (default http://10.0.2.2:8787)
+cd examples/field-force && npm ci && npm test   # Node tests of www/ff-core.js and www/app.js
+npm run sync                                    # FF_BACKEND_URL=<url> sets the back office (default http://10.0.2.2:8787)
 cd android && ./gradlew assembleDebug
-cd ../../.. && node --test "examples/field-force/test/*.test.js"   # from the repository root
 ```
-
-<!-- verify after merge: examples/field-force (units 12 and 13) matches this section: auto start on every page load, stopAfterElapsedMinutes kept for a running session, the preset values, FF_BACKEND_URL, www/ff-core.js, window.FF_APP fields, examples/field-force/test/*.test.js -->
 
 ## End-to-end tests
 
@@ -936,17 +1020,19 @@ npm run dry-run                                                   # list the sce
 ```
 
 (`npm run test:e2e -- --test-name-pattern=...` does not filter: npm puts the option after the file pattern, where
-Node ignores it.) CI runs the same suites through `.github/scripts/run-e2e.sh` in
-`.github/workflows/e2e-android.yml`: the plugin suite on API 34 (with smaller runs on API 29 and 35), P-P08 on an
-image without Google Play services, the field-force suite on API 34, and the long scenarios nightly. The same workflow
-checks that the Google Play build of the field-force app supports 16 KB memory pages
-(`.github/scripts/check-16kb.py`).
+Node ignores it.)
+
+CI runs the emulator suites through `.github/scripts/run-e2e.sh` in `.github/workflows/e2e-android.yml`, on pull
+requests and pushes to `master` (not for changes to Markdown files and `docs/` only), nightly at 01:23 UTC, and on
+manual dispatch: the plugin suite on API 34 (with smaller runs on API 29 and 35), P-P08 on an image without Google
+Play services, the field-force suite on API 34, and the long scenarios (nightly, or on manual dispatch with
+`include-long`). The build workflow `.github/workflows/ci.yml` type-checks the kit and runs its unit tests,
+type-checks and dry-runs both suites, runs the field-force Node tests, and checks that the Google Play build of the
+field-force app supports 16 KB memory pages (`.github/scripts/check-16kb.py`).
 
 The field-force suite, together with the field-force app and the kit, is written so that it can move into the Bricks
 app as its integration test. The contract behind the tests (scenario ids, debug commands, mock back office) is
 [docs/e2e/architecture.md](docs/e2e/architecture.md).
-
-<!-- verify after merge: the 16 KB check runs in .github/workflows/e2e-android.yml or in the build workflow (unit 6); name the right workflow -->
 
 ## API
 

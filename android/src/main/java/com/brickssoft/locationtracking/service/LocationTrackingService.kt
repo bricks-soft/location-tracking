@@ -57,7 +57,7 @@ import kotlin.coroutines.cancellation.CancellationException
  * **Failures.** If `startForeground` throws (for example a background start on Android 12+, or Android 14+ with only
  * while-in-use location permission), the failure is logged, the service stops, and (for start commands) the engine
  * learns about it through `onServiceStartFailed`, which ends a running or enabled session with the `tracking_stop`
- * reason `service_start_failed`.
+ * reason `service_start_failed` (`permission_denied` when foreground location permission is no longer granted).
  *
  * [onTaskRemoved] forwards to `engine.onTerminate()`, which applies `app.stopOnTerminate`.
  */

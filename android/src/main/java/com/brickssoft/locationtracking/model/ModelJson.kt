@@ -98,7 +98,7 @@ object RecordJson {
 
     /**
      * Builds the wire shape. `timestamp` and `coords` are null when [Record.location] is null; `sent_at` is
-     * present only when [sentAt] is given; `extras`, `geofence`, `provider` and `reason` only when set.
+     * present only when [sentAt] is given; `extras`, `geofence`, `provider`, `reason` and `heartbeat` only when set.
      */
     fun toJson(record: Record, sentAt: Long? = null): JSONObject {
         val location = record.location
@@ -132,8 +132,18 @@ object RecordJson {
         record.geofence?.let { json.put("geofence", geofenceHitToJson(it)) }
         record.provider?.let { json.put("provider", ProviderStateJson.toJson(it)) }
         record.reason?.let { json.put("reason", it) }
+        record.heartbeat?.let { json.put("heartbeat", heartbeatMetaToJson(it)) }
         return json
     }
+
+    /** The `heartbeat` object of a heartbeat record (snake_case keys, `next_at` ISO-8601 or null). */
+    fun heartbeatMetaToJson(meta: HeartbeatMeta): JSONObject = JSONObject()
+        .put("strategy", meta.strategy.wire)
+        .put("min_interval", meta.minInterval)
+        .put("max_interval", meta.maxInterval)
+        .put("next_at", JsonUtil.orNull(Iso8601.formatOrNull(meta.nextAt)))
+        .put("battery_exempt", meta.batteryExempt)
+        .put("device_idle", meta.deviceIdle)
 
     /** Records as a JSON array, in the given order. */
     fun toJsonArray(records: List<Record>, sentAt: Long? = null): JSONArray {
@@ -215,6 +225,20 @@ object RecordJson {
             geofence = json.optJSONObject("geofence")?.let { geofenceHitFromJson(it) },
             provider = json.optJSONObject("provider")?.let { ProviderStateJson.fromJson(it) },
             reason = JsonUtil.optString(json, "reason"),
+            heartbeat = json.optJSONObject("heartbeat")?.let { heartbeatMetaFromJson(it) },
+        )
+    }
+
+    /** Lenient: an unknown strategy is dropped (null), missing numbers become 0 and missing flags false. */
+    private fun heartbeatMetaFromJson(json: JSONObject): HeartbeatMeta? {
+        val strategy = HeartbeatStrategy.fromWire(JsonUtil.optString(json, "strategy")) ?: return null
+        return HeartbeatMeta(
+            strategy = strategy,
+            minInterval = JsonUtil.optInt(json, "min_interval") ?: 0,
+            maxInterval = JsonUtil.optInt(json, "max_interval") ?: 0,
+            nextAt = Iso8601.parse(JsonUtil.optString(json, "next_at")),
+            batteryExempt = JsonUtil.optBoolean(json, "battery_exempt") ?: false,
+            deviceIdle = JsonUtil.optBoolean(json, "device_idle") ?: false,
         )
     }
 

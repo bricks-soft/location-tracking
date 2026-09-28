@@ -8,6 +8,16 @@
  *
  * The syntax stays at ES2017 level (no optional chaining, no `??`) so the page also runs on old
  * Android System WebView versions.
+ *
+ * E2E mode (docs/e2e/architecture.md §6, "Test-mode files"): the first startup step starts reading
+ * files/e2e/example.json from the app's internal storage (the e2e kit writes it before it launches the app). If the
+ * file holds {"e2e": true}, or localStorage['lt.e2e'] is '1', the page never calls a plugin method that changes state
+ * on its own: no auto-ready, and no ready, setConfig, reset, start, startGeofences, stop, changePace, geofence
+ * add/remove, sync, destroyLocations or destroyLog unless a button is tapped. It still subscribes to all events and
+ * shows an "E2E mode" banner. The kit drives the plugin itself (Capacitor.Plugins.LocationTracking over the Chrome
+ * DevTools protocol, or the debug broadcast receiver).
+ * The buttons and the event listeners do not wait for the file; the two automatic state-changing calls (auto-ready
+ * and the "stop" notification action) wait until the file was read, so they never run before e2e mode is known.
  */
 (function () {
   'use strict';
@@ -54,8 +64,19 @@
     'isPowerSaveMode',
   ];
 
+  var APP_ID = 'com.brickssoft.locationtracking.example';
+  var E2E_FILE = 'files/e2e/example.json';
+  var E2E_STORAGE_KEY = 'lt.e2e';
+
   var ns = window.capacitorLocationTracking;
   var plugin = ns && ns.LocationTracking;
+
+  /**
+   * E2E mode, decided once at startup by detectE2eMode(); `source` is 'file', 'localStorage' or 'file+localStorage'.
+   * Until the file was read, `e2e.on` is false; code that may change plugin state waits for `e2eDetection`.
+   */
+  var e2e = { on: false, source: null };
+  var e2eDetection = null;
 
   function byId(id) {
     return document.getElementById(id);
@@ -165,6 +186,84 @@
       if (child !== null && child !== undefined) node.append(child);
     }
     return node;
+  }
+
+  /* ------------------------------------------------------------------ e2e mode */
+
+  /**
+   * Reads the test-mode file files/e2e/example.json through Capacitor's local server. Resolves with the parsed JSON
+   * object, or null for every failure: no Capacitor file URL (web), fetch error, non-2xx status, empty body, invalid
+   * JSON, or a value that is not an object. There is no timeout: a slow read only delays auto-ready, and a timeout
+   * could turn e2e mode off in a slow test run (auto-ready would then reset the plugin config during the test).
+   */
+  function readTestModeFile() {
+    var cap = window.Capacitor;
+    if (!cap || typeof cap.convertFileSrc !== 'function' || typeof fetch !== 'function') return Promise.resolve(null);
+    try {
+      return fetch(cap.convertFileSrc('/data/data/' + APP_ID + '/' + E2E_FILE), { cache: 'no-store' })
+        .then(function (res) {
+          return res.ok ? res.text() : '';
+        })
+        .then(function (body) {
+          if (!body || !body.trim()) return null;
+          var value = JSON.parse(body);
+          return isPlainObject(value) ? value : null;
+        })
+        .catch(function () {
+          return null;
+        });
+    } catch (e) {
+      return Promise.resolve(null);
+    }
+  }
+
+  function e2eFlagInStorage() {
+    try {
+      return localStorage.getItem(E2E_STORAGE_KEY) === '1';
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /** Resolves with `{on, source}`; never rejects. */
+  function detectE2eMode() {
+    return readTestModeFile().then(function (file) {
+      var fromFile = Boolean(file) && file.e2e === true;
+      var fromStorage = e2eFlagInStorage();
+      var sources = [];
+      if (fromFile) sources.push('file');
+      if (fromStorage) sources.push('localStorage');
+      return { on: sources.length > 0, source: sources.length ? sources.join('+') : null };
+    });
+  }
+
+  /**
+   * Status reads (getState, getHeartbeatStatus) are refreshed automatically after the page's own ready(), and always
+   * in e2e mode, where the kit calls ready() (through the WebView or the debug receiver) instead of the page.
+   */
+  function canRefreshStatus() {
+    return isReady || e2e.on;
+  }
+
+  function leaveE2eMode() {
+    try {
+      localStorage.removeItem(E2E_STORAGE_KEY);
+    } catch (e) {
+      /* storage unavailable: nothing to remove */
+    }
+    window.location.reload();
+  }
+
+  function showE2eBanner() {
+    document.documentElement.setAttribute('data-e2e-mode', e2e.source);
+    var banner = byId('e2e-banner');
+    var where = [];
+    if (e2e.source.indexOf('file') !== -1) where.push(E2E_FILE + ' {"e2e": true}');
+    if (e2e.source.indexOf('localStorage') !== -1) where.push("localStorage['" + E2E_STORAGE_KEY + "'] = '1'");
+    byId('e2e-banner-source').textContent = where.join(' and ');
+    // Only the localStorage flag can be removed from the page; the kit removes the file.
+    byId('e2e-leave').hidden = e2e.source.indexOf('localStorage') === -1;
+    banner.hidden = false;
   }
 
   /* ------------------------------------------------------------------ form persistence */
@@ -544,7 +643,7 @@
   }
 
   function refreshHeartbeatQuietly() {
-    if (!isReady || hbInFlight) return;
+    if (!canRefreshStatus() || hbInFlight) return;
     hbInFlight = true;
     plugin
       .getHeartbeatStatus()
@@ -555,6 +654,12 @@
       .catch(function (e) {
         var err = errorInfo(e);
         var box = byId('hb-error');
+        // In e2e mode NOT_READY only means that ready() was not called through this WebView (for example the kit
+        // used the debug receiver); it is not an error of the page.
+        if (e2e.on && !isReady && err.code === 'NOT_READY') {
+          box.hidden = true;
+          return;
+        }
         box.textContent = 'Auto-refresh failed: ' + err.code + ': ' + err.message;
         box.hidden = false;
       })
@@ -710,8 +815,14 @@
         break;
       case 'notificationaction':
         if (p.id === 'stop') {
-          run('stop (notification action)', function () {
-            return plugin.stop();
+          e2eDetection.then(function () {
+            if (e2e.on) {
+              showOutput('notification action "stop"', 'E2E mode: the page does not call stop() on its own.', 'ok');
+            } else {
+              run('stop (notification action)', function () {
+                return plugin.stop();
+              });
+            }
           });
         }
         break;
@@ -1207,7 +1318,7 @@
   }
 
   function onVisibilityChange() {
-    if (document.visibilityState !== 'visible' || !isReady) return;
+    if (document.visibilityState !== 'visible' || !canRefreshStatus()) return;
     if (checked('hb-auto')) refreshHeartbeatQuietly();
     plugin.getState().then(renderState, function () {
       /* shown on the next explicit call */
@@ -1242,6 +1353,7 @@
     });
     document.addEventListener('visibilitychange', onVisibilityChange);
     byId('dock-toggle').addEventListener('click', toggleDock);
+    byId('e2e-leave').addEventListener('click', leaveE2eMode);
 
     setInterval(tick, 1000);
     setInterval(function () {
@@ -1253,14 +1365,27 @@
       setListenerStatus('subscription failed: ' + err.code + ': ' + err.message);
     });
 
-    if (checked('cfg-autoready')) {
-      actions.ready();
-    } else {
-      plugin.getState().then(renderState, function () {
-        /* getState is allowed before ready(); ignore failures on platforms without it */
-      });
-    }
+    // Auto-ready waits for the test-mode file: in e2e mode the page never calls ready() on its own.
+    e2eDetection.then(function () {
+      if (e2e.on) showE2eBanner();
+      if (checked('cfg-autoready') && !e2e.on) {
+        actions.ready();
+      } else {
+        plugin.getState().then(renderState, function () {
+          /* getState is allowed before ready(); ignore failures on platforms without it */
+        });
+      }
+    });
   }
 
+  // First startup step: start reading the test-mode file (see the top of this file).
+  e2eDetection = detectE2eMode().then(
+    function (mode) {
+      e2e = mode;
+    },
+    function () {
+      /* detectE2eMode never rejects; keep normal mode if it does */
+    },
+  );
   init();
 })();

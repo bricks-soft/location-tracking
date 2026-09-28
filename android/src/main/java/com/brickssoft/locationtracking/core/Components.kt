@@ -3,6 +3,7 @@ package com.brickssoft.locationtracking.core
 import android.annotation.SuppressLint
 import android.content.Context
 import androidx.annotation.VisibleForTesting
+import com.brickssoft.locationtracking.api.NativeListeners
 import com.brickssoft.locationtracking.config.ConfigStore
 import com.brickssoft.locationtracking.config.SharedPrefsConfigStore
 import com.brickssoft.locationtracking.data.GeofenceStore
@@ -36,6 +37,7 @@ import com.brickssoft.locationtracking.processing.Odometer
 import com.brickssoft.locationtracking.processing.RecordFactory
 import com.brickssoft.locationtracking.provider.DefaultProviderFactory
 import com.brickssoft.locationtracking.provider.ProviderFactory
+import com.brickssoft.locationtracking.provider.StationaryRegionSink
 import com.brickssoft.locationtracking.record.DefaultRecordSink
 import com.brickssoft.locationtracking.record.RecordSink
 import com.brickssoft.locationtracking.service.DefaultServiceController
@@ -67,6 +69,9 @@ class Components private constructor(context: Context) {
         SupervisorJob() + dispatchers.engine + CoroutineExceptionHandler { _, t -> Logger.e("LT", "uncaught", t) },
     )
     val events: EventBus = SimpleEventBus()
+
+    /** Round 2: every queued record (sink and insertLocation) for the companion native API (unit 5). */
+    val recordHooks: RecordHooks = RecordHooks()
     val http: OkHttpClient by lazy { OkHttpClient() }
 
     // U17
@@ -114,11 +119,16 @@ class Components private constructor(context: Context) {
     }
 
     // SCAFFOLD
-    val recordSink: RecordSink by lazy { DefaultRecordSink(locationStore, configStore, heartbeat, syncer, events) }
+    val recordSink: RecordSink by lazy {
+        DefaultRecordSink(locationStore, configStore, heartbeat, syncer, events, recordHooks)
+    }
 
-    // U13
+    // U13 (round 2: STATIONARY_REGION_ID transitions go to the engine)
     val geofences: GeofenceManager by lazy {
-        DefaultGeofenceManager(geofenceStore, providers, configStore, recordFactory, recordSink, events, clock, scope)
+        DefaultGeofenceManager(
+            geofenceStore, providers, configStore, recordFactory, recordSink, events, clock, scope,
+            lazy { stationarySink },
+        )
     }
 
     // U16
@@ -127,17 +137,24 @@ class Components private constructor(context: Context) {
     }
 
     // U8
-    val serviceController: ServiceController by lazy { DefaultServiceController(this.context, configStore, events) }
+    val serviceController: ServiceController by lazy { DefaultServiceController(this.context, configStore, events, clock) }
 
     // U7
     val engine: TrackingEngine by lazy {
         DefaultTrackingEngine(
             configStore, providers, processor, odometer, recordFactory, recordSink,
             heartbeat, geofences, serviceController, device, syncer, permissions, events, clock, scope,
+            ForceStopProbe.system(this.context),
         )
     }
 
-    /** Runs once, right after construction: installs the file logger and keeps its level in sync with config. */
+    /** Round 2: the engine receives the transitions of its stationary region (unit 2). */
+    val stationarySink: StationaryRegionSink get() = engine
+
+    /**
+     * Runs once, right after construction: installs the file logger, keeps its level in sync with config and (round 2)
+     * installs the native companion listeners before any component can emit.
+     */
     private fun bootstrap() {
         Logger.sink = logStore
         val store = configStore
@@ -149,6 +166,11 @@ class Components private constructor(context: Context) {
                 .distinctUntilChanged()
                 .collect { logStore.configure(it.logLevel, it.logMaxDays) }
         }
+        try {
+            NativeListeners.install(context, this)
+        } catch (e: Exception) {
+            Logger.e(Constants.TAG, "failed to install native listeners", e)
+        }
     }
 
     companion object {
@@ -156,13 +178,28 @@ class Components private constructor(context: Context) {
         @Volatile
         private var instance: Components? = null
 
-        /** Thread-safe; always uses the application context. */
+        /** The instance whose [bootstrap] is running; only read and written while holding the lock. */
+        @SuppressLint("StaticFieldLeak") // holds the application context only
+        private var constructing: Components? = null
+
+        /**
+         * Thread-safe; always uses the application context.
+         *
+         * The instance is published only after [bootstrap] has run, so no other thread can use it (and emit a record)
+         * before the manifest-declared native listeners are installed. Other threads wait on the lock meanwhile; a
+         * nested call on the constructing thread (the lock is reentrant) gets the instance under construction.
+         */
         fun get(context: Context): Components {
             instance?.let { return it }
             return synchronized(this) {
-                instance ?: Components(context).also {
-                    instance = it
-                    it.bootstrap()
+                instance ?: constructing ?: Components(context).also {
+                    constructing = it
+                    try {
+                        it.bootstrap()
+                    } finally {
+                        constructing = null
+                        instance = it
+                    }
                 }
             }
         }

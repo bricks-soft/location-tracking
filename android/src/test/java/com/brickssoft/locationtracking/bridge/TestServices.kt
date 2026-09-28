@@ -2,6 +2,7 @@ package com.brickssoft.locationtracking.bridge
 
 import com.brickssoft.locationtracking.core.AppDispatchers
 import com.brickssoft.locationtracking.core.ErrorCode
+import com.brickssoft.locationtracking.core.RecordHooks
 import com.brickssoft.locationtracking.device.DeviceInfoProvider
 import com.brickssoft.locationtracking.model.DeviceInfo
 import com.brickssoft.locationtracking.model.ProviderKind
@@ -47,6 +48,7 @@ internal class TestServices(
     override val odometer: FakeOdometer = FakeOdometer(),
     override val events: RecordingEventBus = RecordingEventBus(),
     override val dispatchers: AppDispatchers = testDispatchers(),
+    override val recordHooks: RecordHooks = RecordHooks(),
 ) : BridgeServices {
     val fakePositions: FakePositionService get() = positions as FakePositionService
     val fakeSettings: FakeDeviceSettings get() = deviceSettings as FakeDeviceSettings

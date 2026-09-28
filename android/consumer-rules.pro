@@ -15,12 +15,28 @@
 -keepnames class com.google.android.gms.common.GoogleApiAvailability
 -keepnames class com.huawei.hms.location.LocationServices
 
+# Companion native API (docs/native-api.md): companion plugins and app code call these classes and interfaces. Keep
+# every public member of the package, and the error type its callbacks deliver (TrackingException with an ErrorCode),
+# so a companion library that is shrunk separately still finds them.
+-keep class com.brickssoft.locationtracking.api.** { public *; }
+-keep class com.brickssoft.locationtracking.core.TrackingException { public *; }
+-keep class com.brickssoft.locationtracking.core.ErrorCode { public *; }
+
+# Listener classes named in <meta-data android:name="com.brickssoft.locationtracking.LISTENER[.suffix]"> are created
+# by reflection (Class.forName with the manifest name, then the public no-arg constructor). Keep the class names,
+# that constructor and the listener methods of every implementation.
+-keep class * implements com.brickssoft.locationtracking.api.LocationTrackingListener {
+    public <init>();
+    public void onRecord(android.content.Context, org.json.JSONObject);
+    public void onEvent(android.content.Context, java.lang.String, org.json.JSONObject);
+}
+
 # Huawei HMS recommended keeps.
 -keep class com.huawei.hms.** { *; }
 -keep class com.huawei.hianalytics.** { *; }
 -keep class com.huawei.updatesdk.** { *; }
 -keepattributes *Annotation*
 -keepattributes Exceptions
--keepattributes InnerClasses
+-keepattributes InnerClasses,EnclosingMethod
 -keepattributes Signature
 -keepattributes SourceFile,LineNumberTable

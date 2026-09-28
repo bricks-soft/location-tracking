@@ -6,6 +6,7 @@ import com.brickssoft.locationtracking.model.ActivityType
 import com.brickssoft.locationtracking.model.BatterySnapshot
 import com.brickssoft.locationtracking.model.GeofenceHit
 import com.brickssoft.locationtracking.model.GeofenceSpec
+import com.brickssoft.locationtracking.model.HeartbeatMeta
 import com.brickssoft.locationtracking.model.LatLng
 import com.brickssoft.locationtracking.model.PermissionLevel
 import com.brickssoft.locationtracking.model.ProviderKind
@@ -83,6 +84,7 @@ object Fixtures {
         geofence: GeofenceHit? = null,
         provider: ProviderState? = null,
         reason: String? = null,
+        heartbeat: HeartbeatMeta? = null,
     ) = Record(
         uuid = uuid,
         event = event,
@@ -99,6 +101,7 @@ object Fixtures {
         geofence = geofence,
         provider = provider,
         reason = reason,
+        heartbeat = heartbeat,
     )
 
     fun providerState(

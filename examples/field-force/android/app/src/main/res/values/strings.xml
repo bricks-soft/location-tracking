@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Field Force Example</string>
+    <string name="title_activity_main">Field Force Example</string>
+    <string name="package_name">com.brickssoft.fieldforce.example</string>
+    <string name="custom_url_scheme">com.brickssoft.fieldforce.example</string>
+</resources>

@@ -2,10 +2,12 @@ package com.brickssoft.locationtracking.engine
 
 import com.brickssoft.locationtracking.config.State
 import com.brickssoft.locationtracking.provider.ActivitySink
+import com.brickssoft.locationtracking.provider.OsGeofenceTransition
+import com.brickssoft.locationtracking.provider.StationaryRegionSink
 import org.json.JSONObject
 
 /** The tracking state machine. All state changes happen on `dispatchers.engine`. */
-interface TrackingEngine : ActivitySink {
+interface TrackingEngine : ActivitySink, StationaryRegionSink {
     suspend fun ready(config: JSONObject?, reset: Boolean): State
 
     suspend fun setConfig(config: JSONObject): State
@@ -43,4 +45,10 @@ interface TrackingEngine : ActivitySink {
      * the heartbeats stopped, and clears `enabled`.
      */
     suspend fun endWithoutRestore(reason: String) = Unit
+
+    /**
+     * A transition of the engine's stationary region (`Constants.STATIONARY_REGION_ID`), routed by the
+     * GeofenceManager. Round 2, unit 2 implements it (EXIT = the device left the stationary anchor). Default: ignored.
+     */
+    override suspend fun onStationaryRegionTransition(transition: OsGeofenceTransition) = Unit
 }

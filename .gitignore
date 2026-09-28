@@ -22,3 +22,19 @@ example/android/capacitor-cordova-android-plugins
 .DS_Store
 *.iml
 .idea
+
+# Field-force example app (round 2)
+examples/field-force/www/vendor
+examples/field-force/www/env.js
+examples/field-force/android/.gradle
+examples/field-force/android/.kotlin
+examples/field-force/android/build
+examples/field-force/android/app/build
+examples/field-force/android/app/src/main/assets/public
+examples/field-force/android/capacitor-cordova-android-plugins
+# the fake PremiseMonitor plugin has no build step: its dist/ is hand-written and committed
+!examples/field-force/plugins/premise-monitor/dist
+examples/field-force/plugins/premise-monitor/android/build
+
+# e2e (round 2)
+e2e-artifacts

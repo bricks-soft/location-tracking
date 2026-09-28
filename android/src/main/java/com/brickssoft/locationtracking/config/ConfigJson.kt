@@ -202,6 +202,7 @@ object ConfigJson {
             params = r.objectText("params", c.params, d.params),
             autoSync = r.boolean("autoSync", c.autoSync, d.autoSync),
             autoSyncThreshold = r.int("autoSyncThreshold", c.autoSyncThreshold, d.autoSyncThreshold),
+            syncInterval = r.int("syncInterval", c.syncInterval, d.syncInterval),
             batchSync = r.boolean("batchSync", c.batchSync, d.batchSync),
             maxBatchSize = r.int("maxBatchSize", c.maxBatchSize, d.maxBatchSize),
             disableAutoSyncOnCellular = r.boolean(
@@ -367,6 +368,7 @@ object ConfigJson {
         .put("params", objectOrEmpty(h.params, "http.params"))
         .put("autoSync", h.autoSync)
         .put("autoSyncThreshold", h.autoSyncThreshold)
+        .put("syncInterval", h.syncInterval)
         .put("batchSync", h.batchSync)
         .put("maxBatchSize", h.maxBatchSize)
         .put("disableAutoSyncOnCellular", h.disableAutoSyncOnCellular)

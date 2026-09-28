@@ -16,6 +16,8 @@ internal enum class MotionState {
  * The config values the [MotionStateMachine] needs.
  *
  * @property stopTimeoutMs time without evidence of motion after which MOVING becomes STATIONARY (at least 1 min).
+ * @property trackingAccuracyThreshold `geolocation.filter.trackingAccuracyThreshold` (m): a STATIONARY fix with a
+ *   worse accuracy never leaves STATIONARY by itself; 0 or less turns this check off.
  */
 internal data class MotionSettings(
     val stationaryRadius: Double = 25.0,
@@ -23,6 +25,7 @@ internal data class MotionSettings(
     val motionTriggerDelayMs: Long = 0,
     val stopTimeoutMs: Long = 5 * MINUTE_MS,
     val disableStopDetection: Boolean = false,
+    val trackingAccuracyThreshold: Double = 100.0,
 ) {
     companion object {
         private const val MINUTE_MS = 60_000L
@@ -34,6 +37,8 @@ internal data class MotionSettings(
             // A zero timeout would flip back to STATIONARY right after every fix; one minute is the floor.
             stopTimeoutMs = config.geolocation.stopTimeout.coerceAtLeast(1) * MINUTE_MS,
             disableStopDetection = config.activity.disableStopDetection,
+            trackingAccuracyThreshold =
+                config.geolocation.filter.trackingAccuracyThreshold.takeIf { it.isFinite() } ?: 0.0,
         )
     }
 }
@@ -62,10 +67,13 @@ internal sealed interface MotionAction {
  * timers it asks for and reports back when they fire.
  *
  * - **STATIONARY** has an anchor (the first fix, or the location where the device stopped). It becomes MOVING
- *   when a fix is more than `max(stationaryRadius, fix accuracy)` from the anchor, or when a moving activity
+ *   when a fix is certainly outside the stationary radius (`distance(anchor, fix) - fix accuracy >
+ *   stationaryRadius`) and its accuracy is at most `trackingAccuracyThreshold`, or when a moving activity
  *   (walking, running, on_foot, on_bicycle, in_vehicle) at or above the confidence threshold lasts for
- *   `motionTriggerDelay` (a confident `still` cancels the pending trigger). A fix inside that radius that is
- *   more accurate than the anchor replaces it.
+ *   `motionTriggerDelay` (a confident `still` cancels the pending trigger). A fix that is certainly outside but
+ *   coarser than the threshold changes nothing. A fix that is not certainly outside and is more accurate than the
+ *   anchor replaces it. (The engine also leaves STATIONARY on the EXIT of its OS stationary region, through
+ *   [force].)
  * - **MOVING**: stop detection (unless disabled) keeps the stop-timeout timer running. Every piece of evidence
  *   of motion restarts it: a fix more than `max(stationaryRadius, accuracy)` from the last such fix, or a
  *   confident moving activity. A confident `still` or a fix without displacement only makes sure it is armed,
@@ -109,6 +117,11 @@ internal class MotionStateMachine(settings: MotionSettings = MotionSettings()) {
         if (state == MotionState.STATIONARY && anchor == null && location != null) anchor = location
     }
 
+    /** STATIONARY: [location] becomes the anchor, replacing any earlier one (the fresh initial fix after start). */
+    fun setAnchor(location: TrackedLocation) {
+        if (state == MotionState.STATIONARY) anchor = location
+    }
+
     /**
      * Applies new settings. MOVING: may arm, cancel or restart the stop timer. STATIONARY: a pending motion
      * trigger is cancelled when its delay changed, so the next moving activity starts over with the new delay.
@@ -137,7 +150,7 @@ internal class MotionStateMachine(settings: MotionSettings = MotionSettings()) {
                     anchor = fix
                     emptyList()
                 }
-                distanceMeters(current, fix) > max(settings.stationaryRadius, fix.accuracyMeters) -> enterMoving(fix)
+                isCertainlyOutside(current, fix) -> if (isAccurateEnough(fix)) enterMoving(fix) else emptyList()
                 else -> {
                     if (fix.accuracyMeters < current.accuracyMeters) anchor = fix
                     emptyList()
@@ -206,6 +219,20 @@ internal class MotionStateMachine(settings: MotionSettings = MotionSettings()) {
         isMoving -> enterMoving(location)
         state == MotionState.MOVING -> enterStationary(location, automatic = false)
         else -> emptyList()
+    }
+
+    /** True if [fix] lies outside the stationary radius around [anchor] even at the far edge of its accuracy. */
+    private fun isCertainlyOutside(anchor: TrackedLocation, fix: TrackedLocation): Boolean =
+        distanceMeters(anchor, fix) - fix.accuracyMeters > settings.stationaryRadius
+
+    /**
+     * False for a fix coarser than `trackingAccuracyThreshold`: such a fix never leaves STATIONARY by itself. (The
+     * engine's location processor already rejects such fixes; this keeps the rule of architecture round 2, §3 true
+     * for any processor.)
+     */
+    fun isAccurateEnough(fix: TrackedLocation): Boolean {
+        val threshold = settings.trackingAccuracyThreshold
+        return threshold <= 0.0 || fix.accuracyMeters <= threshold
     }
 
     private fun enterMoving(location: TrackedLocation?): List<MotionAction> {

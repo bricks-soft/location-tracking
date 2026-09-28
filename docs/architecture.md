@@ -4,6 +4,8 @@ This document is the contract between the scaffold and all work units. The scaff
 
 **Status: as built (0.1.0).** All units are merged, and this document was updated after integration to describe the contracts as implemented, including the accepted contract change requests (`TrackingEngine.onServiceStartFailed` and the `service_start_failed` reason, geofence re-registration on provider changes, the web stub's extra methods, the R8 keep rules and the docgen config). User-facing behavior is documented in `README.md` and `docs/*.md`; this document keeps only what the components promise each other.
 
+**Round 2** (field-force audit: companion native API, stationary GPS-off mode, `http.syncInterval`, heartbeat metadata, AVD end-to-end tests) is specified in [docs/e2e/architecture.md](e2e/architecture.md), which overrides this document where they differ.
+
 ## Product decisions
 
 - This is a clean-room implementation with the feature set of `transistorsoft/capacitor-background-geolocation`. Its native engine is closed-source and commercial, and **none of it is copied**.
@@ -876,6 +878,7 @@ The dependency cycles (the record sink and the heartbeat scheduler; the device m
 - **Backend switch** (`locationProvider` changed): while tracking, remove location/activity updates and call `geofences.onTrackingStopped()` before `providers.reselect()`, then `geofences.onTrackingStarted(mode)` and the requests on the new backend; `device.checkProviderState("reselect")` if the kind changed.
 - **`startGeofences()`** uses mode GEOFENCES. The foreground service and heartbeat keep running. There is no continuous location request, except while `geofences.needsContinuousLocation` is true.
 - **Motion (U7).**
+  - (Round 2 replaced the STATIONARY request, the exit rule and the `runtime.lastLocation` refresh below with the GPS-off mode of [docs/e2e/architecture.md §3](e2e/architecture.md#3-stationary-gps-off-mode).)
   - STATIONARY uses a balanced location request (or the configured accuracy if lower-power), at most one fix per minute; it becomes the configured (MOVING) request while `geofences.needsContinuousLocation`. It exits to MOVING when either happens:
     - a fix is more than `max(stationaryRadius, accuracy)` from the anchor;
     - a moving activity at or above the confidence threshold lasts for `motionTriggerDelay`.

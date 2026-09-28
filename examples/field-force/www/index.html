@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Field Force Example</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <!-- Field-force example (docs/e2e/architecture.md §10). Tracking starts automatically on every page load
+         (ff-core.js runStartup) and stops at 02:00 local time. This page only shows the status. -->
+    <header class="bar">
+      <div class="bar-row">
+        <h1>Field Force</h1>
+        <button id="refresh" type="button">Refresh</button>
+      </div>
+      <div class="chips" aria-live="polite">
+        <span id="chip-tracking" class="chip">tracking: ?</span>
+        <span id="chip-startup" class="chip">startup: running</span>
+        <span id="updated" class="muted"></span>
+      </div>
+    </header>
+
+    <main>
+      <div id="banner" class="banner" role="status" hidden></div>
+
+      <section class="card" aria-labelledby="h-shift">
+        <h2 id="h-shift">Shift</h2>
+        <dl id="shift-rows" class="rows"><dt>Tracking</dt><dd>–</dd></dl>
+      </section>
+
+      <section class="card" aria-labelledby="h-provider">
+        <h2 id="h-provider">Location provider and permissions</h2>
+        <dl id="provider-rows" class="rows"><dt>Provider</dt><dd>–</dd></dl>
+      </section>
+
+      <section class="card" aria-labelledby="h-heartbeat">
+        <h2 id="h-heartbeat">Heartbeat</h2>
+        <dl id="heartbeat-rows" class="rows"><dt>Strategy</dt><dd>–</dd></dl>
+      </section>
+
+      <section class="card" aria-labelledby="h-premise">
+        <h2 id="h-premise">Premise</h2>
+        <dl id="premise-rows" class="rows"><dt>Monitoring</dt><dd>–</dd></dl>
+      </section>
+
+      <section class="card" aria-labelledby="h-events">
+        <h2 id="h-events">Last events <span class="muted">(newest first)</span></h2>
+        <ol id="events" class="events"></ol>
+      </section>
+
+      <section class="card" aria-labelledby="h-startup">
+        <h2 id="h-startup">Startup</h2>
+        <dl id="startup-rows" class="rows"><dt>Startup</dt><dd>running</dd></dl>
+      </section>
+    </main>
+
+    <script src="env.js"></script>
+    <script src="vendor/capacitor.js"></script>
+    <script src="vendor/plugin.js"></script>
+    <script src="vendor/premise-monitor.js"></script>
+    <script src="ff-core.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

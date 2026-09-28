@@ -22,6 +22,19 @@ import kotlin.coroutines.cancellation.CancellationException
  * - Tracking not enabled → nothing.
  *
  * Devices that send several boot broadcasts are handled once per process.
+ *
+ * **Boot count gate.** The receiver is exported (plugin manifest) and `QUICKBOOT_POWERON` is not a protected
+ * broadcast, so any app, or `adb shell am broadcast`, can send it without a reboot. A boot action is therefore
+ * handled only when `Settings.Global.BOOT_COUNT` (via `Clock.bootCount()`) shows a boot that has not been seen yet;
+ * it is ignored when the current boot count
+ * - equals the boot count of the last boot broadcast this receiver handled (stored in [BootCountStore] after handling,
+ *   also when tracking was not enabled or the restore failed), or
+ * - equals the boot count during which [DefaultServiceController] last started the location service
+ *   ([BootCountStore.lastServiceStart]): a tracking session was already started or restored during this boot, so a
+ *   boot restore would duplicate `tracking_start` (or end a running audit trail with `tracking_stop: reboot`). This
+ *   also covers an app that was installed and started without a reboot since.
+ *
+ * If the boot count cannot be read (-1), every boot action is handled as before. `MY_PACKAGE_REPLACED` is not gated.
  */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -40,9 +53,14 @@ class BootReceiver : BroadcastReceiver() {
         val pending: PendingResult? = goAsync()
         val finished = AtomicBoolean(false)
         val finish = { if (finished.compareAndSet(false, true)) pending?.finish() }
+        val bootCounts = BootCountStore(context)
         val work = deps.scope.launch {
             try {
-                handle(reason, deps.configStore) { deps.engine.value }
+                if (reason == REASON_BOOT) {
+                    handleBoot(intent.action, deps, bootCounts)
+                } else {
+                    handle(reason, deps.configStore) { deps.engine.value }
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -61,6 +79,25 @@ class BootReceiver : BroadcastReceiver() {
             watchdog.cancel()
             finish()
         }
+    }
+
+    /** Applies the boot count gate, then [handle]; stores the boot count once it was handled (also on failure). */
+    private suspend fun handleBoot(action: String?, deps: ServiceDeps, bootCounts: BootCountStore) {
+        val bootCount = deps.clock.bootCount()
+        ignoredBootReason(bootCount, bootCounts.lastHandled(), bootCounts.lastServiceStart())?.let {
+            Logger.i(TAG, "$action ignored: $it")
+            return
+        }
+        var failure: Exception? = null
+        try {
+            handle(REASON_BOOT, deps.configStore) { deps.engine.value }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            failure = e
+        }
+        if (bootCount >= 0) bootCounts.setLastHandled(bootCount)
+        failure?.let { throw it }
     }
 
     /** What [handle] did. */
@@ -87,6 +124,18 @@ class BootReceiver : BroadcastReceiver() {
         fun reasonFor(action: String?): String? = when (action) {
             in BOOT_ACTIONS -> REASON_BOOT
             Intent.ACTION_MY_PACKAGE_REPLACED -> REASON_PACKAGE_REPLACED
+            else -> null
+        }
+
+        /**
+         * Why a boot action must be ignored, or null to handle it. [bootCount] is the current `BOOT_COUNT` (-1 if it
+         * cannot be read: always handled), [lastHandled] the boot count of the last handled boot broadcast (null if
+         * none), [lastServiceStart] the boot count during which the location service was last started (null if none).
+         */
+        fun ignoredBootReason(bootCount: Int, lastHandled: Int?, lastServiceStart: Int?): String? = when {
+            bootCount < 0 -> null
+            bootCount == lastHandled -> "boot $bootCount was already handled (no reboot since)"
+            bootCount == lastServiceStart -> "tracking was already started during boot $bootCount (no reboot since)"
             else -> null
         }
 

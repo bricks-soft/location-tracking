@@ -1,0 +1,213 @@
+/* Field-force example: plain CSS, one column, light and dark themes via prefers-color-scheme. */
+:root {
+  color-scheme: light dark;
+  --bg: #f4f6f8;
+  --card: #ffffff;
+  --fg: #1b1f24;
+  --muted: #5b6470;
+  --border: #d5dbe1;
+  --accent: #0b5cc2;
+  --accent-fg: #ffffff;
+  --good: #1a7f37;
+  --good-bg: #dcf5e3;
+  --bad: #b42318;
+  --bad-bg: #fde4e1;
+  --warn: #8a5a00;
+  --warn-bg: #fff3cd;
+  --chip-bg: #e6eaef;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1116;
+    --card: #171b22;
+    --fg: #e6e9ed;
+    --muted: #9aa5b1;
+    --border: #2c333d;
+    --accent: #5aa2ff;
+    --accent-fg: #07111f;
+    --good: #56d364;
+    --good-bg: #12301b;
+    --bad: #ff8a80;
+    --bad-bg: #3b1512;
+    --warn: #e3b341;
+    --warn-bg: #33270a;
+    --chip-bg: #232a33;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.45 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  padding-bottom: calc(16px + var(--safe-bottom));
+  -webkit-text-size-adjust: 100%;
+}
+
+.bar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  padding: calc(8px + var(--safe-top)) 16px 8px;
+}
+
+.bar-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 20px;
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+button {
+  font: inherit;
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  min-height: 36px;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.chip {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--chip-bg);
+  font-size: 13px;
+}
+
+.chip.good {
+  background: var(--good-bg);
+  color: var(--good);
+}
+
+.chip.bad {
+  background: var(--bad-bg);
+  color: var(--bad);
+}
+
+.muted {
+  color: var(--muted);
+  font-weight: normal;
+  font-size: 13px;
+}
+
+main {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 12px 16px 0;
+}
+
+.banner {
+  padding: 10px 12px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  overflow-wrap: anywhere;
+}
+
+.banner.bad {
+  background: var(--bad-bg);
+  color: var(--bad);
+}
+
+.banner.warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+/* key / value rows: two columns, the value wraps under narrow widths */
+.rows {
+  display: grid;
+  grid-template-columns: minmax(0, 11em) minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 0;
+}
+
+.rows dt {
+  color: var(--muted);
+}
+
+.rows dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.rows dd.good {
+  color: var(--good);
+}
+
+.rows dd.bad {
+  color: var(--bad);
+}
+
+.rows dd.warn {
+  color: var(--warn);
+}
+
+.events {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 13px;
+}
+
+.events li {
+  padding: 4px 0;
+  border-top: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+.events li:first-child {
+  border-top: 0;
+}
+
+.events time {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--muted);
+}
+
+@media (max-width: 360px) {
+  .rows {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .rows dd {
+    margin-bottom: 6px;
+  }
+}

@@ -122,6 +122,11 @@ data class HttpConfig(
     val autoSync: Boolean = true,
     /** Upload when queue >= threshold; 0 = every record. */
     val autoSyncThreshold: Int = 0,
+    /**
+     * Seconds, 0 = off (round 2). Normal records are uploaded once the oldest pending normal record is at least this
+     * old (live location at most this stale); priority records are unaffected. See docs/e2e/architecture.md §4.
+     */
+    val syncInterval: Int = 0,
     val batchSync: Boolean = false,
     val maxBatchSize: Int = 100,
     val disableAutoSyncOnCellular: Boolean = false,

@@ -1,23 +1,40 @@
 name: CI
 
+# Started by hand only (Actions tab -> CI -> Run workflow, or `gh workflow run ci.yml --ref <branch>`): the owner
+# decided that pushes and pull requests do not start runs, to save Actions minutes (docs/DECISIONS.md R2.1).
+# The same checks run locally: run the steps below from the repository root.
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A second manual run of the same ref waits for the first one.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
+          # The e2e kit and the suites run their .ts files directly (type stripping needs Node >= 22.18), so do not
+          # accept an older Node 22 from the runner's tool cache.
           node-version: 22
+          check-latest: true
           cache: npm
           cache-dependency-path: |
             package-lock.json
             example/package-lock.json
+            examples/field-force/package-lock.json
+            testing/e2e-kit/package-lock.json
+            e2e/plugin/package-lock.json
+            examples/field-force/e2e/package-lock.json
 
       - uses: actions/setup-java@v4
         with:
@@ -37,6 +54,27 @@ jobs:
           npm run build
           npm test
 
+      - name: e2e kit (typecheck and unit tests)
+        working-directory: testing/e2e-kit
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+
+      - name: Plugin e2e suite (typecheck and dry run)
+        working-directory: e2e/plugin
+        run: |
+          npm ci
+          npm run typecheck
+          npm run dry-run
+
+      - name: Field-force e2e suite (typecheck and dry run)
+        working-directory: examples/field-force/e2e
+        run: |
+          npm ci
+          npm run typecheck
+          npm run dry-run
+
       - name: Android unit tests
         working-directory: android
         run: gradle testDebugUnitTest --console=plain
@@ -49,9 +87,62 @@ jobs:
           cd android
           gradle assembleDebug -PlocationTracking.providers=gms,hms --console=plain
 
+      - name: Build field-force app (debug, GMS)
+        working-directory: examples/field-force
+        run: |
+          npm ci
+          npm test
+          npm run sync
+          cd android
+          gradle assembleDebug --console=plain
+
+      - name: PremiseMonitor unit tests
+        working-directory: examples/field-force/android
+        run: gradle :bricks-soft-capacitor-premise-monitor:testDebugUnitTest --console=plain
+
+      # Google Play requires 16 KB page-size support for apps that target Android 15+. The field-force release APK is
+      # the Play build (gms only); release signing is not configured, so AGP writes app-release-unsigned.apk, which
+      # has the same zip layout and native libraries as a signed one.
+      - name: Build field-force app (release, GMS)
+        working-directory: examples/field-force/android
+        run: gradle assembleRelease --console=plain
+
+      # Report only (runs first, so the enforced check below cannot hide it): the HMS SDK packages native libraries
+      # that are not 16 KB aligned, a Play risk for GMS+HMS builds. The example app's GMS+HMS debug APK built above
+      # has the same native libraries as a release build.
+      - name: 16 KB page-size report (example app, GMS + HMS; never fails)
+        run: >-
+          python3 .github/scripts/check-16kb.py --report-only
+          --label "example debug (gms,hms)"
+          example/android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: 16 KB page-size check (field-force release, GMS; fails the job)
+        run: >-
+          python3 .github/scripts/check-16kb.py
+          --label "field-force release (gms)"
+          examples/field-force/android/app/build/outputs/apk/release/app-release-unsigned.apk
+
+      - name: Collect debug APKs
+        run: |
+          mkdir -p apks
+          cp example/android/app/build/outputs/apk/debug/app-debug.apk apks/plugin-example-debug.apk
+          cp examples/field-force/android/app/build/outputs/apk/debug/app-debug.apk apks/field-force-debug.apk
+
+      # Both APKs are signed with testing/debug.keystore, so `adb install -r` over a local build keeps the app's data.
+      - name: Upload debug APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-apks
+          path: apks/
+          retention-days: 14
+          if-no-files-found: error
+
       - name: Upload test reports
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: android-test-reports
-          path: android/build/reports/tests/
+          path: |
+            android/build/reports/tests/
+            examples/field-force/plugins/premise-monitor/android/build/reports/tests/
+          if-no-files-found: ignore

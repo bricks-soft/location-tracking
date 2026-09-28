@@ -10,7 +10,7 @@ import com.brickssoft.locationtracking.core.Logger
  * - `activity.minimumActivityRecognitionConfidence` in 0..100;
  * - `geolocation.stationaryRadius` >= 1; distances, intervals, delays and filter thresholds >= 0;
  * - `geolocation.locationTimeout` and `http.timeout` > 0 (otherwise their defaults);
- * - `http.maxBatchSize` >= 1, `http.autoSyncThreshold` >= 0;
+ * - `http.maxBatchSize` >= 1, `http.autoSyncThreshold` >= 0, `http.syncInterval` >= 0;
  * - `persistence.maxDaysToPersist` >= 1, `persistence.maxRecordsToPersist` >= -1 (-1 = unlimited);
  * - `logger.logMaxDays` >= 1;
  * - at most [Constants.MAX_NOTIFICATION_ACTIONS] notification actions (the first ones are kept);
@@ -109,6 +109,7 @@ object ConfigValidator {
 
     private fun http(h: HttpConfig): HttpConfig = h.copy(
         autoSyncThreshold = atLeast("http.autoSyncThreshold", h.autoSyncThreshold, 0),
+        syncInterval = atLeast("http.syncInterval", h.syncInterval, 0),
         maxBatchSize = atLeast("http.maxBatchSize", h.maxBatchSize, 1),
         timeout = positive("http.timeout", h.timeout, HttpConfig().timeout),
     )

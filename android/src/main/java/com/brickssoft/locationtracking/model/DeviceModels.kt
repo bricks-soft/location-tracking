@@ -101,6 +101,26 @@ enum class HeartbeatStrategy {
     }
 }
 
+/**
+ * Round 2: the optional `heartbeat` object of a heartbeat record (wire keys `strategy`, `min_interval`,
+ * `max_interval`, `next_at`, `battery_exempt`, `device_idle`). It tells the server which cadence to expect.
+ *
+ * @property strategy how the next heartbeat is scheduled (never [HeartbeatStrategy.DISABLED] in a record).
+ * @property minInterval `heartbeat.minInterval` at creation, seconds.
+ * @property maxInterval `heartbeat.maxInterval` at creation, seconds.
+ * @property nextAt when the next heartbeat is expected (the alarm armed after this one), epoch ms; null if unknown.
+ * @property batteryExempt the app is exempt from battery optimization.
+ * @property deviceIdle the device was in (deep) Doze when the heartbeat was created.
+ */
+data class HeartbeatMeta(
+    val strategy: HeartbeatStrategy,
+    val minInterval: Int,
+    val maxInterval: Int,
+    val nextAt: Long?,
+    val batteryExempt: Boolean,
+    val deviceIdle: Boolean,
+)
+
 /** JS `HeartbeatStatus`; times are epoch ms (ISO strings in JS); intervals are seconds. */
 data class HeartbeatStatus(
     val enabled: Boolean,

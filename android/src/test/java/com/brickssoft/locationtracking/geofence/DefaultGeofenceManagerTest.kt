@@ -4,6 +4,7 @@ import com.brickssoft.locationtracking.config.Config
 import com.brickssoft.locationtracking.config.GeofenceConfig
 import com.brickssoft.locationtracking.config.RuntimeState
 import com.brickssoft.locationtracking.config.TrackingMode
+import com.brickssoft.locationtracking.core.Constants
 import com.brickssoft.locationtracking.core.ErrorCode
 import com.brickssoft.locationtracking.core.Logger
 import com.brickssoft.locationtracking.core.TrackingEvent
@@ -114,6 +115,7 @@ class DefaultGeofenceManagerTest {
             Fixtures.circle(identifier = ""),
             Fixtures.circle(identifier = "   "),
             Fixtures.circle(identifier = "x".repeat(101)),
+            Fixtures.circle(identifier = Constants.STATIONARY_REGION_ID),
             Fixtures.circle(radius = 0f),
             Fixtures.circle(radius = -5f),
             Fixtures.circle(radius = Float.NaN),
@@ -265,7 +267,10 @@ class DefaultGeofenceManagerTest {
         h.manager.removeAll()
 
         assertEquals(0, h.store.count())
-        assertEquals(1, h.backend.removeAllCalls)
+        // The stored ids, not backend.removeAll(), which would also drop the engine's stationary region.
+        assertTrue(h.backend.registered.isEmpty())
+        assertEquals(0, h.backend.removeAllCalls)
+        assertEquals(listOf(listOf("a", "b")), h.backend.removeCalls)
         assertEquals(listOf(TrackingEvent.GeofencesChange(emptyList(), listOf("a", "b"))), h.changes)
     }
 
@@ -314,6 +319,81 @@ class DefaultGeofenceManagerTest {
 
         assertTrue(h.backend.registered.isEmpty())
         assertEquals(30, h.store.count())
+    }
+
+    @Test
+    fun `an UNAVAILABLE registration at tracking start is retried until it succeeds`() = runTest {
+        val h = Harness(this, enabled = false)
+        h.manager.add(listOf(Fixtures.circle("a")))
+        h.setEnabled(true)
+        h.backend.failWith = TrackingException(ErrorCode.UNAVAILABLE, "GEOFENCE_NOT_AVAILABLE (1000)")
+
+        h.manager.onTrackingStarted(TrackingMode.LOCATION)
+        assertTrue(h.backend.registered.isEmpty())
+
+        advanceTimeBy(10_001)
+        runCurrent()
+        assertTrue("the first retry (10 s) still meets UNAVAILABLE", h.backend.registered.isEmpty())
+
+        h.backend.failWith = null
+        advanceTimeBy(30_001)
+        runCurrent()
+        assertEquals(setOf("a"), h.backend.registered.keys)
+
+        val calls = h.backend.addCalls.size
+        advanceTimeBy(3_600_000)
+        runCurrent()
+        assertEquals("no retry after a successful registration", calls, h.backend.addCalls.size)
+    }
+
+    @Test
+    fun `stopping tracking cancels the retry of an UNAVAILABLE registration`() = runTest {
+        val h = Harness(this, enabled = false)
+        h.manager.add(listOf(Fixtures.circle("a")))
+        h.setEnabled(true)
+        h.backend.failWith = TrackingException(ErrorCode.UNAVAILABLE, "GEOFENCE_NOT_AVAILABLE (1000)")
+        h.manager.onTrackingStarted(TrackingMode.LOCATION)
+
+        h.manager.onTrackingStopped()
+        h.backend.failWith = null
+        advanceTimeBy(3_600_000)
+        runCurrent()
+
+        assertTrue(h.backend.addCalls.isEmpty())
+        assertTrue(h.backend.registered.isEmpty())
+    }
+
+    @Test
+    fun `registration errors other than UNAVAILABLE are not retried`() = runTest {
+        val h = Harness(this, enabled = false)
+        h.manager.add(listOf(Fixtures.circle("a")))
+        h.setEnabled(true)
+        h.backend.failWith = TrackingException(ErrorCode.PERMISSION_DENIED, "GEOFENCE_INSUFFICIENT_LOCATION_PERMISSION")
+        h.manager.onTrackingStarted(TrackingMode.LOCATION)
+
+        h.backend.failWith = null
+        advanceTimeBy(3_600_000)
+        runCurrent()
+
+        assertTrue(h.backend.addCalls.isEmpty())
+    }
+
+    @Test
+    fun `the retries of an UNAVAILABLE registration stop after the last delay`() = runTest {
+        val h = Harness(this, enabled = false)
+        h.manager.add(listOf(Fixtures.circle("a")))
+        h.setEnabled(true)
+        h.backend.failWith = TrackingException(ErrorCode.UNAVAILABLE, "GEOFENCE_NOT_AVAILABLE (1000)")
+        h.manager.onTrackingStarted(TrackingMode.LOCATION)
+
+        // 10 + 30 + 60 + 120 + 300 s of retries, all unavailable.
+        advanceTimeBy(521_000)
+        runCurrent()
+        h.backend.failWith = null
+        advanceTimeBy(3_600_000)
+        runCurrent()
+
+        assertTrue(h.backend.registered.isEmpty())
     }
 
     // ---- circle transitions

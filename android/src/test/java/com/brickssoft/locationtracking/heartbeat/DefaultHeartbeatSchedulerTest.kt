@@ -4,7 +4,6 @@ import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import com.brickssoft.locationtracking.config.Config
@@ -252,16 +251,16 @@ class DefaultHeartbeatSchedulerTest {
 
     @Test
     fun `an unchanged window is not re-armed`() = runTest {
-        var sets = 0
-        val h = harness(alarmsOverride = { real -> CountingAlarms(real) { sets++ } })
+        var counting: CountingAlarms? = null
+        val h = harness(alarmsOverride = { real -> CountingAlarms(real).also { counting = it } })
         h.scheduler.start()
-        val afterStart = sets
+        val afterStart = counting!!.sets
 
         h.scheduler.start()
         h.scheduler.onRecordRecorded(Fixtures.record()) // runtime unchanged -> same window
         runCurrent() // the config observer's first emission
 
-        assertEquals(afterStart, sets)
+        assertEquals(afterStart, counting!!.sets)
     }
 
     // ---- scenario 3: upload failure keeps the heartbeat queued with recorded_at, sent_at added on upload
@@ -620,6 +619,31 @@ class DefaultHeartbeatSchedulerTest {
     }
 
     @Test
+    fun `a record submitted while the heartbeat record is built supersedes the heartbeat`() = runTest {
+        var duringCreate: (() -> Unit)? = null
+        val h = harness(factoryOverride = { real -> HookedHeartbeatFactory(real) { duringCreate?.invoke() } })
+        // Another thread's record: the sink updates runtime, then restarts the window.
+        duringCreate = {
+            h.configStore.updateRuntime {
+                it.copy(
+                    lastRecordAt = h.clock.now(),
+                    lastRecordElapsed = h.clock.elapsedRealtime(),
+                    lastRecordBootCount = h.clock.bootCount(),
+                )
+            }
+            h.scheduler.onRecordRecorded(Fixtures.record())
+        }
+        h.scheduler.start()
+
+        h.at(MIN_MS)
+        h.scheduler.onAlarm(HeartbeatTrigger.LISTENER_ALARM)
+
+        assertTrue(h.heartbeats().isEmpty())
+        assertTrue(h.events.ofType<TrackingEvent.Heartbeat>().isEmpty())
+        assertListenerWithBackupAt(h, h.t(2 * MIN_MS))
+    }
+
+    @Test
     fun `stop during the provider check suppresses the heartbeat`() = runTest {
         var duringCheck: (suspend () -> Unit)? = null
         val h = harness(deviceOverride = { real -> HookedDeviceMonitor(real) { duringCheck?.invoke() } })
@@ -636,7 +660,7 @@ class DefaultHeartbeatSchedulerTest {
     @Test
     fun `a record re-arms with two set calls and no cancel`() = runTest {
         val counting = arrayOfNulls<CountingAlarms>(1)
-        val h = harness(alarmsOverride = { real -> CountingAlarms(real) {}.also { counting[0] = it } })
+        val h = harness(alarmsOverride = { real -> CountingAlarms(real).also { counting[0] = it } })
         h.scheduler.start()
         val alarms = counting[0]!!
         val setsBefore = alarms.sets
@@ -876,6 +900,21 @@ class DefaultHeartbeatSchedulerTest {
         }
     }
 
+    /** Record factory that runs [hook] before it builds a heartbeat record. */
+    private class HookedHeartbeatFactory(private val real: RecordFactory, private val hook: () -> Unit) : RecordFactory by real {
+        override fun create(
+            event: RecordEvent,
+            location: TrackedLocation?,
+            extras: String?,
+            geofence: GeofenceHit?,
+            provider: ProviderState?,
+            reason: String?,
+        ): Record {
+            if (event == RecordEvent.HEARTBEAT) hook()
+            return real.create(event, location, extras, geofence, provider, reason)
+        }
+    }
+
     /** Providers whose last-location lookup takes 1 s. */
     private class SlowLastLocationProviders(private val real: FakeProviderFactory) : ProviderFactory by real {
         private val slow = object : LocationBackend by real.locationBackend {
@@ -886,52 +925,5 @@ class DefaultHeartbeatSchedulerTest {
         }
 
         override fun location(): LocationBackend = slow
-    }
-
-    /** Delegates to the real alarms but refuses exact alarms like a device without the exemption. */
-    private class RefusingExactAlarms(private val real: HeartbeatAlarms) : HeartbeatAlarms by real {
-        override fun setExactAndAllowWhileIdle(type: Int, triggerAtMillis: Long, operation: PendingIntent) {
-            throw SecurityException("Caller needs SCHEDULE_EXACT_ALARM")
-        }
-    }
-
-    /** Counts every set and cancel call. */
-    private class CountingAlarms(private val real: HeartbeatAlarms, private val onSet: () -> Unit) : HeartbeatAlarms by real {
-        var sets = 0
-        var cancels = 0
-
-        override fun cancel(operation: PendingIntent) {
-            cancels++
-            real.cancel(operation)
-        }
-
-        override fun cancel(listener: AlarmManager.OnAlarmListener) {
-            cancels++
-            real.cancel(listener)
-        }
-
-        override fun setExactAndAllowWhileIdle(type: Int, triggerAtMillis: Long, operation: PendingIntent) {
-            sets++
-            onSet()
-            real.setExactAndAllowWhileIdle(type, triggerAtMillis, operation)
-        }
-
-        override fun setExact(
-            type: Int,
-            triggerAtMillis: Long,
-            tag: String,
-            listener: AlarmManager.OnAlarmListener,
-            handler: Handler,
-        ) {
-            sets++
-            onSet()
-            real.setExact(type, triggerAtMillis, tag, listener, handler)
-        }
-
-        override fun setAndAllowWhileIdle(type: Int, triggerAtMillis: Long, operation: PendingIntent) {
-            sets++
-            onSet()
-            real.setAndAllowWhileIdle(type, triggerAtMillis, operation)
-        }
     }
 }

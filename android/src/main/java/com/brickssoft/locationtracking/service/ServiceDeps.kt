@@ -3,6 +3,7 @@ package com.brickssoft.locationtracking.service
 import android.content.Context
 import androidx.annotation.VisibleForTesting
 import com.brickssoft.locationtracking.config.ConfigStore
+import com.brickssoft.locationtracking.core.Clock
 import com.brickssoft.locationtracking.core.Components
 import com.brickssoft.locationtracking.core.EventBus
 import com.brickssoft.locationtracking.core.Logger
@@ -17,12 +18,16 @@ import kotlin.coroutines.cancellation.CancellationException
  * [Components]. [engine] is lazy so that components the caller does not need are never constructed.
  *
  * Tests set [override] to inject fakes instead of the real components.
+ *
+ * [from] loads [Components] (SharedPreferences, logger, native listeners) on its first call in a process, so the service
+ * calls it only off the main thread and only after `startForeground`.
  */
 internal class ServiceDeps(
     val configStore: ConfigStore,
     val events: EventBus,
     val scope: CoroutineScope,
     val engine: Lazy<TrackingEngine>,
+    val clock: Clock,
 ) {
     /** Launches [block] on the engine in [scope]; failures are logged, never thrown. */
     fun launchEngine(tag: String, what: String, block: suspend TrackingEngine.() -> Unit): Job = scope.launch {
@@ -49,6 +54,7 @@ internal class ServiceDeps(
                 events = components.events,
                 scope = components.scope,
                 engine = lazy { components.engine },
+                clock = components.clock,
             )
         }
     }

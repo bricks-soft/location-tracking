@@ -233,12 +233,53 @@ class HeartbeatWindowTest {
     }
 
     @Test
-    fun `sameSchedule compares strategy and trigger times only`() {
+    fun `needsRearm compares strategy and trigger times only`() {
         val a = window()
         val b = window(nowWall = now + 5_000L, nowEl = nowElapsed + 5_000L)
 
-        assertTrue(a.sameSchedule(b))
-        assertFalse(a.sameSchedule(window(isIdle = true)))
-        assertFalse(a.sameSchedule(window(lastRecordElapsed = nowElapsed - 99_000L)))
+        assertFalse(b.needsRearm(a))
+        assertTrue(window(isIdle = true).needsRearm(a))
+        assertTrue(a.needsRearm(null))
+    }
+
+    @Test
+    fun `needsRearm keeps the alarms for a due time that moved later by less than 30 s`() {
+        val armed = window()
+
+        assertFalse(window(lastRecordElapsed = nowElapsed - 100_000L + 29_999L).needsRearm(armed))
+        assertTrue(window(lastRecordElapsed = nowElapsed - 100_000L + 30_000L).needsRearm(armed))
+        assertTrue(window(lastRecordElapsed = nowElapsed - 100_000L + 120_000L).needsRearm(armed))
+        // Exact: one alarm, same threshold.
+        val exact = window(canExact = true)
+        assertFalse(window(canExact = true, lastRecordElapsed = nowElapsed - 90_000L).needsRearm(exact))
+        assertTrue(window(canExact = true, lastRecordElapsed = nowElapsed - 70_000L).needsRearm(exact))
+    }
+
+    @Test
+    fun `needsRearm re-arms any move earlier, however small`() {
+        val armed = window()
+
+        // A shorter minInterval moves the due time 1 s earlier: the armed alarm would fire 1 s late.
+        assertTrue(window(minIntervalSec = 179).needsRearm(armed))
+        // Leaving pacing moves the backup earlier (the strategy changes too).
+        val paced = window(isIdle = true, lastBackupFireElapsed = nowElapsed - 60_000L)
+        assertTrue(window(lastBackupFireElapsed = nowElapsed - 60_000L).needsRearm(paced))
+    }
+
+    @Test
+    fun `needsRearm re-arms any move of an idle-paced backup`() {
+        val lastBackup = nowElapsed - 60_000L
+        // Backup driven by the due time (the last backup fire is long enough ago).
+        val oldBackup = nowElapsed - 20 * 60_000L
+        val armed = window(isIdle = true, lastBackupFireElapsed = oldBackup)
+        val moved = window(isIdle = true, lastBackupFireElapsed = oldBackup, lastRecordElapsed = nowElapsed - 95_000L)
+        assertEquals(5_000L, moved.backupAtElapsed - armed.backupAtElapsed)
+        assertTrue(moved.needsRearm(armed))
+
+        // Backup driven by the pacing: a record moves only the listener's due time, by less than 30 s.
+        val pacedArmed = window(isIdle = true, lastBackupFireElapsed = lastBackup)
+        val pacedLater = window(isIdle = true, lastBackupFireElapsed = lastBackup, lastRecordElapsed = nowElapsed - 95_000L)
+        assertEquals(pacedArmed.backupAtElapsed, pacedLater.backupAtElapsed)
+        assertFalse(pacedLater.needsRearm(pacedArmed))
     }
 }

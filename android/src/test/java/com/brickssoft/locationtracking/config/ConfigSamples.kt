@@ -51,6 +51,7 @@ object ConfigSamples {
             params = """{"device_id":"abc","fleet":7}""",
             autoSync = false,
             autoSyncThreshold = 5,
+            syncInterval = 300,
             batchSync = true,
             maxBatchSize = 50,
             disableAutoSyncOnCellular = true,
@@ -116,7 +117,7 @@ object ConfigSamples {
             "url": "https://example.com/locations", "method": "PUT",
             "headers": { "X-Api-Key": "k1", "X-Tenant": "t" },
             "params": { "device_id": "abc", "fleet": 7 },
-            "autoSync": false, "autoSyncThreshold": 5, "batchSync": true, "maxBatchSize": 50,
+            "autoSync": false, "autoSyncThreshold": 5, "syncInterval": 300, "batchSync": true, "maxBatchSize": 50,
             "disableAutoSyncOnCellular": true, "rootProperty": "data",
             "locationTemplate": "{\"lat\":<%= latitude %>,\"ts\":\"<%= timestamp %>\"}",
             "geofenceTemplate": "{\"id\":\"<%= geofence.identifier %>\"}",
@@ -160,7 +161,7 @@ object ConfigSamples {
           "heartbeat": { "enabled": true, "minInterval": 180, "maxInterval": 300 },
           "http": {
             "url": null, "method": "POST", "headers": {}, "params": {}, "autoSync": true, "autoSyncThreshold": 0,
-            "batchSync": false, "maxBatchSize": 100, "disableAutoSyncOnCellular": false, "rootProperty": "location",
+            "syncInterval": 0, "batchSync": false, "maxBatchSize": 100, "disableAutoSyncOnCellular": false, "rootProperty": "location",
             "locationTemplate": null, "geofenceTemplate": null, "timeout": 60000, "authorization": null
           },
           "persistence": { "maxDaysToPersist": 7, "maxRecordsToPersist": -1, "extras": {} },

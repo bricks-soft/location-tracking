@@ -120,6 +120,7 @@ class FakeConfigStore(
                         url = if (j.has("url")) JsonUtil.optString(j, "url") else h.url,
                         autoSync = JsonUtil.optBoolean(j, "autoSync") ?: h.autoSync,
                         autoSyncThreshold = JsonUtil.optInt(j, "autoSyncThreshold") ?: h.autoSyncThreshold,
+                        syncInterval = JsonUtil.optInt(j, "syncInterval") ?: h.syncInterval,
                         batchSync = JsonUtil.optBoolean(j, "batchSync") ?: h.batchSync,
                         maxBatchSize = JsonUtil.optInt(j, "maxBatchSize") ?: h.maxBatchSize,
                         disableAutoSyncOnCellular = JsonUtil.optBoolean(j, "disableAutoSyncOnCellular")

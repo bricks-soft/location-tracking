@@ -84,6 +84,7 @@ data class GeofenceHit(val identifier: String, val action: GeofenceAction, val e
  * @property geofence event `geofence` only.
  * @property provider event `providerchange` only.
  * @property reason `tracking_start` / `tracking_stop` only.
+ * @property heartbeat `heartbeat` only, and optional (round 2): the scheduling metadata of the heartbeat.
  */
 data class Record(
     val uuid: String,
@@ -101,4 +102,5 @@ data class Record(
     val geofence: GeofenceHit? = null,
     val provider: ProviderState? = null,
     val reason: String? = null,
+    val heartbeat: HeartbeatMeta? = null,
 )

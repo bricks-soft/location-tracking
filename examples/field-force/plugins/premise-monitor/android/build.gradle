@@ -1,0 +1,73 @@
+// Fake PremiseMonitor companion plugin (field-force example only). Same toolchain as the tracking plugin.
+// Built only inside an app whose `cap sync` includes both plugins: it depends on the tracking plugin's Gradle project
+// ':bricks-soft-capacitor-location-tracking' (the name `cap sync` derives from the npm package name).
+ext {
+    androidxCoreKTXVersion = project.hasProperty('androidxCoreKTXVersion') ? rootProject.ext.androidxCoreKTXVersion : '1.17.0'
+}
+
+buildscript {
+    ext.kotlin_version = project.hasProperty('kotlin_version') ? rootProject.ext.kotlin_version : '2.2.20'
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:8.13.0'
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+    }
+}
+
+apply plugin: 'com.android.library'
+if (project.extensions.findByName('kotlin') == null) {
+    apply plugin: 'kotlin-android'
+}
+
+android {
+    namespace = 'com.brickssoft.premisemonitor'
+    compileSdk = project.hasProperty('compileSdkVersion') ? rootProject.ext.compileSdkVersion : 36
+    resourcePrefix 'pm_'
+    defaultConfig {
+        minSdkVersion project.hasProperty('minSdkVersion') ? rootProject.ext.minSdkVersion : 24
+        targetSdkVersion project.hasProperty('targetSdkVersion') ? rootProject.ext.targetSdkVersion : 36
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_21
+        targetCompatibility JavaVersion.VERSION_21
+    }
+    lint {
+        abortOnError = false
+    }
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+            returnDefaultValues = true
+        }
+    }
+}
+
+kotlin {
+    jvmToolchain(21)
+}
+
+repositories {
+    google()
+    mavenCentral()
+}
+
+dependencies {
+    implementation project(':capacitor-android')
+    implementation project(':bricks-soft-capacitor-location-tracking')
+    implementation "androidx.core:core-ktx:$androidxCoreKTXVersion"
+
+    // Robolectric unit tests (same versions as the tracking plugin).
+    testImplementation "junit:junit:4.13.2"
+    testImplementation 'org.robolectric:robolectric:4.16.1'
+    testImplementation 'androidx.test:core-ktx:1.7.0'
+    testImplementation 'io.mockk:mockk:1.14.6'
+    testImplementation "com.squareup.okhttp3:mockwebserver:4.12.0"
+}

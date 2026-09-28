@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Fake PremiseMonitor companion plugin. docs/e2e/architecture.md §2 (listener meta-data) and §10. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.INTERNET"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
+  <application>
+    <service android:name="com.brickssoft.premisemonitor.PremiseMonitorService"
+        android:exported="false" android:foregroundServiceType="location"/>
+    <!-- Instantiated by the tracking plugin in every process (Components.bootstrap), before any record is emitted. -->
+    <meta-data android:name="com.brickssoft.locationtracking.LISTENER"
+        android:value="com.brickssoft.premisemonitor.PremiseAuditListener"/>
+  </application>
+</manifest>

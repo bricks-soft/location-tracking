@@ -4,6 +4,7 @@ import com.brickssoft.locationtracking.config.ConfigStore
 import com.brickssoft.locationtracking.core.AppDispatchers
 import com.brickssoft.locationtracking.core.Components
 import com.brickssoft.locationtracking.core.EventBus
+import com.brickssoft.locationtracking.core.RecordHooks
 import com.brickssoft.locationtracking.data.LocationStore
 import com.brickssoft.locationtracking.device.DeviceInfoProvider
 import com.brickssoft.locationtracking.device.DeviceMonitor
@@ -36,6 +37,9 @@ internal interface BridgeServices {
     val configStore: ConfigStore
     val events: EventBus
     val dispatchers: AppDispatchers
+
+    /** Round 2: `insertLocation` dispatches its record here (unit 5). */
+    val recordHooks: RecordHooks
 }
 
 /** [BridgeServices] backed by [Components]; each component is resolved (and created) on first use only. */
@@ -56,4 +60,5 @@ internal class ComponentServices(private val components: Components) : BridgeSer
     override val configStore: ConfigStore get() = components.configStore
     override val events: EventBus get() = components.events
     override val dispatchers: AppDispatchers get() = components.dispatchers
+    override val recordHooks: RecordHooks get() = components.recordHooks
 }

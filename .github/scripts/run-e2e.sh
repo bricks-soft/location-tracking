@@ -194,7 +194,9 @@ wait_for_boot
 # API 34 image the restart came in every run, 64-132 s after the persistent Play services process started; on the
 # API 29 and API 35 images it never came. Wait until the restart was logged (at most 200 s), then until the persistent
 # process has kept the same pid for 60 s (at most 8 minutes in all).
-gms_pid() { "$adb" shell pidof com.google.android.gms.persistent 2>/dev/null | tr -d '\r'; }
+# `|| true`: pidof exits 1 while the process is not running (during its restart), which set -e and pipefail would
+# turn into the end of this script (API 35 run on 51f7721).
+gms_pid() { "$adb" shell pidof com.google.android.gms.persistent 2>/dev/null | tr -d '\r' || true; }
 gms_restart_logged() {
   local out
   # Captured first: with pipefail, `adb logcat | grep -q` fails when grep exits before adb (SIGPIPE).

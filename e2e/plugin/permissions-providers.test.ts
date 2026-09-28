@@ -601,10 +601,12 @@ scenario(
       const whileOff = changes.filter((r) => recordedMs(r) < on.device);
       const afterOn = changes.filter((r) => recordedMs(r) >= on.device);
       assert.equal(whileOff.length, 1, `one providerchange for switching location off; records:\n${timeline(after)}`);
-      // A second record after switching on is allowed when the network provider comes up after the debounce (1 s).
+      // A second record after switching on is allowed when the network provider comes up after the debounce (1 s);
+      // two more when the kit had to switch the network provider off and on so that Play services switched its own
+      // network location on again (Android 10, Adb.refreshGmsNetworkLocation).
       assert.ok(
-        afterOn.length >= 1 && afterOn.length <= 2 && afterOn.every((r) => r.provider?.enabled === true),
-        `one or two providerchange records with provider.enabled true after switching location on; records:\n${timeline(after)}`,
+        afterOn.length >= 1 && afterOn.length <= 4 && afterOn.every((r) => r.provider?.enabled === true),
+        `one to four providerchange records with provider.enabled true after switching location on; records:\n${timeline(after)}`,
       );
       assert.equal(afterOn.at(-1)?.provider?.gps, true, `provider.gps after switching location on:\n${timeline(afterOn)}`);
 

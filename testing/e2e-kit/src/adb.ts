@@ -703,6 +703,7 @@ export class Adb {
    * the `location_mode` setting, then the older `location_providers_allowed` setting.
    */
   async setLocationEnabled(enabled: boolean): Promise<void> {
+    const gmsCheckSince = enabled ? await this.gmsNetworkLocationCheckStart() : undefined;
     const attempts = [
       `cmd location set-location-enabled ${enabled}`,
       `settings put secure location_mode ${enabled ? 3 : 0}`,
@@ -718,9 +719,63 @@ export class Adb {
         () => true,
         () => false,
       );
-      if (changed) return;
+      if (changed) {
+        if (gmsCheckSince && !(await this.refreshGmsNetworkLocation(gmsCheckSince))) {
+          console.warn('setLocationEnabled(true): Google Play services did not log "Network location enabled"; its geofencing may stay unavailable');
+        }
+        return;
+      }
     }
     throw new Error(`could not switch location ${enabled ? 'on' : 'off'}; tried: ${attempts.join(' | ')}`);
+  }
+
+  /**
+   * Android 10 and older with Google Play services, location off: the device time before location is switched on.
+   * Undefined otherwise (also when location is already on: nothing changes, so Play services logs nothing).
+   */
+  private async gmsNetworkLocationCheckStart(): Promise<Date | undefined> {
+    try {
+      if ((await this.apiLevel()) >= 30 || !(await this.isInstalled('com.google.android.gms'))) return undefined;
+      if (await this.isLocationEnabled()) return undefined;
+      return new Date((await this.deviceTime()) - 1000);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Android 10 and older (location is switched through settings): when location comes back on, Google Play services
+   * asks for its network location state ("GeofencerStateMachine: sendQueryLocationOptIn") and logs "Network location
+   * enabled". On the API 29 image that answer was once lost: Play services kept its network location off and refused
+   * every geofence with GEOFENCE_NOT_AVAILABLE for minutes (P-P06, then P-P10). Waits up to `waitMs` (10 s) for the
+   * line since [since]; when it does not come, switches the network provider off and on (`gapMs` apart), so Play
+   * services asks again (at most `rounds` = 3 times). Resolves whether the line was seen.
+   */
+  async refreshGmsNetworkLocation(
+    since: Date,
+    options: { rounds?: number; waitMs?: number; intervalMs?: number; gapMs?: number } = {},
+  ): Promise<boolean> {
+    const rounds = options.rounds ?? 3;
+    let from = since;
+    for (let round = 0; ; round++) {
+      const seen = await waitUntil(
+        async () => {
+          const text = await this.logcat
+            .dump({ since: from, buffers: ['main'], filters: ['GeofencerStateMachine:I', '*:S'] })
+            .catch(() => '');
+          return /Network location enabled/.test(text);
+        },
+        { timeoutMs: options.waitMs ?? 10_000, intervalMs: options.intervalMs ?? 1_000, message: 'Play services network location enabled' },
+      ).then(
+        () => true,
+        () => false,
+      );
+      if (seen || round >= rounds) return seen;
+      from = new Date((await this.deviceTime()) - 1000);
+      await this.exec(['shell', 'settings put secure location_providers_allowed -network'], { allowFailure: true });
+      await sleep(options.gapMs ?? 1_000);
+      await this.exec(['shell', 'settings put secure location_providers_allowed +network'], { allowFailure: true });
+    }
   }
 
   async isLocationEnabled(): Promise<boolean> {

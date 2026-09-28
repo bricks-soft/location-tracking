@@ -374,8 +374,11 @@ describe('Adb location, power, connectivity, time', () => {
     ]);
     await old.adb.setLocationEnabled(true);
     const lines = old.fake.commandLines();
-    assert.equal(lines[0], 'shell cmd location set-location-enabled true');
-    assert.ok(lines.includes('shell settings put secure location_mode 3'), lines.join('\n'));
+    assert.ok(lines.includes('shell cmd location set-location-enabled true'), lines.join('\n'));
+    assert.ok(
+      lines.indexOf('shell settings put secure location_mode 3') > lines.indexOf('shell cmd location set-location-enabled true'),
+      lines.join('\n'),
+    );
     const stuck = setup([
       { match: '^shell cmd location', stdout: "cmd: Can't find service: location\n" },
       { match: '^shell settings get secure location_mode$', stdout: '3\n' },
@@ -383,6 +386,59 @@ describe('Adb location, power, connectivity, time', () => {
     await assert.rejects(stuck.adb.setLocationEnabled(false), /could not switch location off/);
     const check = setup([{ match: 'is-location-enabled', stdout: 'true\n' }]);
     assert.equal(await check.adb.isLocationEnabled(), true);
+  });
+
+  test('setLocationEnabled(true) on API 29 with Play services waits for its network location', async () => {
+    const { fake, adb } = setup([
+      { match: 'getprop ro\\.build\\.version\\.sdk', stdout: '29\n' },
+      { match: '^shell pm path com\\.google\\.android\\.gms$', stdout: 'package:/system/priv-app/GmsCore.apk\n' },
+      { match: '^shell date \\+%s%N$', stdout: '1790000000000000000\n' },
+      { match: '^shell cmd location', stdout: "cmd: Can't find service: location\n" },
+      { match: '^shell settings put secure location_mode (?<mode>\\d)$', stdout: '' },
+      { match: '^shell settings get secure location_mode$', requires: ['mode'], stdout: '{{mode}}\n' },
+      { match: '^shell settings get secure location_mode$', stdout: '0\n' },
+      { match: '^logcat .*GeofencerStateMachine:I', stdout: '09-28 12:00:01.000  1  1 I GeofencerStateMachine: Network location enabled.\n' },
+    ]);
+    await adb.setLocationEnabled(true);
+    const lines = fake.commandLines();
+    assert.ok(lines.some((l) => l.startsWith('logcat ') && l.includes('GeofencerStateMachine:I')), lines.join('\n'));
+    assert.ok(!lines.some((l) => l.includes('location_providers_allowed')), 'no network provider cycle when the line came');
+
+    // Location already on (every prepare()): nothing to wait for.
+    const on = setup([
+      { match: 'getprop ro\\.build\\.version\\.sdk', stdout: '29\n' },
+      { match: '^shell pm path com\\.google\\.android\\.gms$', stdout: 'package:/system/priv-app/GmsCore.apk\n' },
+      { match: '^shell cmd location', stdout: "cmd: Can't find service: location\n" },
+      { match: '^shell settings get secure location_mode$', stdout: '3\n' },
+    ]);
+    await on.adb.setLocationEnabled(true);
+    assert.ok(!on.fake.commandLines().some((l) => l.startsWith('logcat ')), on.fake.commandLines().join('\n'));
+  });
+
+  test('refreshGmsNetworkLocation switches the network provider off and on until Play services answers', async () => {
+    const { fake, adb } = setup([
+      { match: '^shell date \\+%s%N$', stdout: '1790000000000000000\n' },
+      { match: '^shell settings put secure location_providers_allowed (?<cycled>\\+network)$', stdout: '' },
+      {
+        match: '^logcat .*GeofencerStateMachine:I',
+        requires: ['cycled'],
+        stdout: '09-28 12:00:01.000  1  1 I GeofencerStateMachine: Network location enabled.\n',
+      },
+      { match: '^logcat .*GeofencerStateMachine:I', stdout: '09-28 12:00:00.000  1  1 I GeofencerStateMachine: sendQueryLocationOptIn\n' },
+    ]);
+    const seen = await adb.refreshGmsNetworkLocation(new Date(1_790_000_000_000), { waitMs: 50, intervalMs: 10, gapMs: 1 });
+    assert.equal(seen, true);
+    const cycle = fake.commandLines().filter((l) => l.includes('location_providers_allowed'));
+    assert.deepEqual(cycle, [
+      'shell settings put secure location_providers_allowed -network',
+      'shell settings put secure location_providers_allowed +network',
+    ]);
+    const never = setup([
+      { match: '^shell date \\+%s%N$', stdout: '1790000000000000000\n' },
+      { match: '^logcat ', stdout: '' },
+    ]);
+    assert.equal(await never.adb.refreshGmsNetworkLocation(new Date(0), { rounds: 2, waitMs: 20, intervalMs: 5, gapMs: 1 }), false);
+    assert.equal(never.fake.commandLines().filter((l) => l.endsWith('location_providers_allowed +network')).length, 2);
   });
 
   test('airplane mode: cmd connectivity, else settings + broadcast', async () => {

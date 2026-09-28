@@ -188,27 +188,42 @@ wait_for_boot
 #   Doze is a framework state and still works; the kit sets the lock again after each reboot.
 "$adb" shell 'echo e2e-kit > /sys/power/wake_lock' >/dev/null 2>&1 || true
 
-# Google Play services restarts its own processes a few minutes after boot (configuration refresh). An app that uses
-# one of its content providers is killed with it ("depends on provider … in dying proc"): on the first API 34 run
-# that restarted the example app in the middle of P-H01. Wait until the persistent Play services process has kept
-# the same pid for 90 s (at most 6 minutes) before the first scenario.
+# Google Play services restarts its own processes once after boot when a module's configuration changes
+# ("ChimeraModuleLdr: Module config changed, forcing restart"). An app that uses one of its content providers is killed
+# with it ("depends on provider … in dying proc"): P-H01 and F-01 (API 34) lost the app under test that way. On the
+# API 34 image the restart came in every run, 64-132 s after the persistent Play services process started; on the
+# API 29 and API 35 images it never came. Wait until the restart was logged (at most 200 s), then until the persistent
+# process has kept the same pid for 60 s (at most 8 minutes in all).
 gms_pid() { "$adb" shell pidof com.google.android.gms.persistent 2>/dev/null | tr -d '\r'; }
+gms_restart_logged() {
+  local out
+  # Captured first: with pipefail, `adb logcat | grep -q` fails when grep exits before adb (SIGPIPE).
+  out="$("$adb" logcat -d -b main -s ChimeraModuleLdr:I 2>/dev/null || true)"
+  case "$out" in *"forcing restart"*) return 0 ;; *) return 1 ;; esac
+}
 if "$adb" shell pm path com.google.android.gms >/dev/null 2>&1; then
   log "waiting for Google Play services to settle"
-  settle_deadline=$((SECONDS + 360))
+  settle_start=$SECONDS
+  settle_deadline=$((SECONDS + 480))
+  restart_seen=no
   stable_since=$SECONDS
   last_pid="$(gms_pid)"
   while [ "$SECONDS" -lt "$settle_deadline" ]; do
     sleep 10
+    if [ "$restart_seen" = no ] && gms_restart_logged; then
+      restart_seen=yes
+      log "Google Play services restarted itself (module config changed)"
+    fi
     pid="$(gms_pid)"
     if [ -z "$pid" ] || [ "$pid" != "$last_pid" ]; then
       last_pid="$pid"
       stable_since=$SECONDS
-    elif [ $((SECONDS - stable_since)) -ge 90 ]; then
+    elif [ $((SECONDS - stable_since)) -ge 60 ] &&
+      { [ "$restart_seen" = yes ] || [ $((SECONDS - settle_start)) -ge 200 ]; }; then
       break
     fi
   done
-  log "Google Play services pid ${last_pid:-none}, stable for $((SECONDS - stable_since)) s"
+  log "Google Play services pid ${last_pid:-none}, stable for $((SECONDS - stable_since)) s, restart seen: $restart_seen"
 fi
 
 getprop_value() { "$adb" shell getprop "$1" 2>/dev/null | tr -d '\r'; }

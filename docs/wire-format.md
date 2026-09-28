@@ -869,6 +869,10 @@ If your server rejects a refresh token for good, the plugin cannot recover by it
 - Answer `2xx` for records you will never accept, so they aren't retried for days.
 - Keep `event`, `reason`, `recorded_at`, `sent_at`, `elapsed_realtime_ms` and `boot_count`. You need them for auditing.
 - Treat `heartbeat` coordinates as "last known position", not as a fresh fix: compare `timestamp` with `recorded_at`.
+- When you draw the route or add up distance from coordinates, leave out records whose `timestamp` is much older
+  than their `recorded_at` (the field-force tests use 30 s). Besides heartbeats and audit records, a `motionchange`
+  recorded before the first GPS fix after a start carries the last known position, which can be far away if the phone
+  moved while tracking was off. The plugin's `odometer` does not count movement while tracking was off.
 - Use the heartbeat's `heartbeat` object to decide which gap to expect next
   ([heartbeat.md](heartbeat.md#heartbeat-metadata)).
 - Implement the gap audit described in [heartbeat.md](heartbeat.md#server-side-audit).

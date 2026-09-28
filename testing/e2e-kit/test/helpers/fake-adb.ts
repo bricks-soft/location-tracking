@@ -42,11 +42,29 @@ if (args[0] === '-s') { serial = args[1]; args = args.slice(2); }
 let input = '';
 try { input = fs.readFileSync(0, 'utf8'); } catch (e) { /* no stdin */ }
 const statePath = path.join(DIR, 'state.json');
+const lockPath = path.join(DIR, 'state.lock');
+const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+// The kit runs adb calls concurrently (the broadcast and the logcat poll overlap), so the read-modify-write of
+// state.json holds an exclusive lock file; otherwise a poll could overwrite the id the broadcast just captured.
+const lock = () => {
+  const started = Date.now();
+  for (;;) {
+    try { return fs.openSync(lockPath, 'wx'); } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      // A lock older than 5 s belongs to a crashed call.
+      try { if (Date.now() - fs.statSync(lockPath).mtimeMs > 5000) fs.rmSync(lockPath, { force: true }); } catch (e2) { /* gone */ }
+      if (Date.now() - started > 20000) throw new Error('fake adb: state lock timeout');
+      sleep(2);
+    }
+  }
+};
+const unlock = (fd) => { fs.closeSync(fd); fs.rmSync(lockPath, { force: true }); };
 const readJson = (p, fallback) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (e) { return fallback; } };
-const state = readJson(statePath, { vars: {}, counts: {} });
 fs.appendFileSync(path.join(DIR, 'calls.jsonl'), JSON.stringify({ args, serial, input, at: Date.now() }) + '\n');
 const rules = readJson(path.join(DIR, 'rules.json'), []);
 const joined = args.join(' ');
+const lockFd = lock();
+const state = readJson(statePath, { vars: {}, counts: {} });
 const fill = (text) => String(text).replace(/\{\{(\w+)\}\}/g, (_, name) => (state.vars[name] !== undefined ? state.vars[name] : ''));
 for (let i = 0; i < rules.length; i++) {
   const rule = rules[i];
@@ -60,6 +78,7 @@ for (let i = 0; i < rules.length; i++) {
   const tmp = statePath + '.' + process.pid;
   fs.writeFileSync(tmp, JSON.stringify(state));
   fs.renameSync(tmp, statePath);
+  unlock(lockFd);
   if (rule.sleepMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, rule.sleepMs);
   if (rule.stdoutBase64) process.stdout.write(Buffer.from(rule.stdoutBase64, 'base64'));
   else if (rule.stdout !== undefined) process.stdout.write(fill(rule.stdout));
@@ -67,6 +86,7 @@ for (let i = 0; i < rules.length; i++) {
   process.exitCode = rule.code || 0;
   return;
 }
+unlock(lockFd);
 `;
 
 /** A fake adb in its own temp directory. */

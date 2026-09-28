@@ -271,8 +271,8 @@ validator clamps it to ≥ 0; the web stub has the same default and clamp. Behav
   drains the queue anyway). The field-force preset is `syncInterval: 300`, `batchSync: true`, `maxBatchSize: 100`.
 - Tests: P-H09, F-04.
 
-**As merged** (unit 4, `http/OkHttpSyncer.kt`, `http/SyncPolicy.kt`). Two extensions (the owner is asked to confirm
-them):
+**As merged** (unit 4, `http/OkHttpSyncer.kt`, `http/SyncPolicy.kt`). Two extensions (confirmed by the owner,
+`docs/DECISIONS.md` R2-Q17 and R2-Q18):
 - **Tracking off.** While tracking is off, normal records follow the `syncInterval = 0` rule (`autoSyncThreshold`):
   there is no timer then, so a held record (for example a `getCurrentPosition()` after the 02:00 stop) would wait
   without limit. When tracking stops, held records follow this rule at once.

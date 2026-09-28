@@ -613,8 +613,35 @@ test('waitForPersistedPermissions rejects with what it read when the grants do n
   ]);
   await assert.rejects(
     adb.waitForPersistedPermissions('com.app', ['android.permission.ACCESS_FINE_LOCATION'], { timeoutMs: 30, intervalMs: 10 }),
-    /users\/0\/runtime-permissions\.xml did not list android\.permission\.ACCESS_FINE_LOCATION as granted for com\.app .*app section: <pkg name="com\.app">/,
+    /did not list android\.permission\.ACCESS_FINE_LOCATION as granted for com\.app within 0\.03 s: \/data\/system\/users\/0\/runtime-permissions\.xml: \d+ characters, app section: <pkg name="com\.app">/,
   );
+});
+
+test('waitForPersistedPermissions reads the Android 10 location too on Android 11+', async () => {
+  const granted = '<pkg name="com.app"><item name="android.permission.ACCESS_FINE_LOCATION" granted="true" /></pkg>';
+  const { fake, adb } = setup([
+    { match: '^shell id -u$', stdout: '0\n' },
+    { match: 'getprop ro\\.build\\.version\\.sdk', stdout: '35\n' },
+    { match: 'apexdata/com\\.android\\.permission/runtime-permissions\\.xml', stdout: '<runtime-permissions />' },
+    { match: 'system/users/0/runtime-permissions\\.xml', stdout: granted },
+  ]);
+  assert.equal(await adb.waitForPersistedPermissions('com.app', ['android.permission.ACCESS_FINE_LOCATION'], { intervalMs: 10 }), true);
+  assert.equal(fake.commandLines().filter((line) => line.includes('runtime-permissions.xml')).length, 2);
+});
+
+test('waitForPersistedPermissions gives up early when no file has a section for the app', async () => {
+  const { fake, adb } = setup([
+    { match: '^shell id -u$', stdout: '0\n' },
+    { match: 'getprop ro\\.build\\.version\\.sdk', stdout: '35\n' },
+    { match: 'runtime-permissions\\.xml', stdout: '<runtime-permissions><package name="com.other" /></runtime-permissions>' },
+  ]);
+  const started = Date.now();
+  await assert.rejects(
+    adb.waitForPersistedPermissions('com.app', ['android.permission.ACCESS_FINE_LOCATION'], { intervalMs: 10, readsWithoutSection: 3 }),
+    /no file has a section for the app after 3 reads.*apexdata\/com\.android\.permission\/runtime-permissions\.xml: \d+ characters, no section for the app; \/data\/system\/users\/0\/runtime-permissions\.xml/,
+  );
+  assert.ok(Date.now() - started < 10_000, 'it did not wait for the 90 s timeout');
+  assert.equal(fake.commandLines().filter((line) => line.includes('runtime-permissions.xml')).length, 6);
 });
 
 test('waitForPersistedPermissions returns false without root and does not read the file', async () => {

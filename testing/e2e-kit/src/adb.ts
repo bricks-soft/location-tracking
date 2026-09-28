@@ -814,37 +814,55 @@ export class Adb {
    * Waits (root only) until the device's persisted runtime-permission file lists every one of [permissions] as granted
    * for [appId]. Android writes permission changes to disk in the background; on the CI emulator a reboot about 15-20 s
    * after `pm grant` came back without the grants (P-L08, P-P11: the boot restore recorded `permission_denied`), which
-   * a phone never sees because its permissions are granted long before a reboot. Resolves true once the file shows the
-   * grants, false without root (nothing is read). Rejects when [timeoutMs] passes first, with what the last read found.
+   * a phone never sees because its permissions are granted long before a reboot. Resolves true once a file shows the
+   * grants, false without root (nothing is read). Rejects with what the last read found when [timeoutMs] passes first,
+   * or when no file has a section for the app in [readsWithoutSection] reads in a row (default 3).
    */
   async waitForPersistedPermissions(
     appId: string,
     permissions: readonly string[],
-    options: { timeoutMs?: number; intervalMs?: number } = {},
+    options: { timeoutMs?: number; intervalMs?: number; readsWithoutSection?: number } = {},
   ): Promise<boolean> {
     if (permissions.length === 0 || !(await this.isRoot().catch(() => false))) return false;
-    const path =
+    // Android 11+ keeps the file in the permission module's directory; the Android 10 location is read too. On the
+    // API 35 image the module's file had no section for the app at all (948 characters), so the wait gives up after
+    // [readsWithoutSection] reads in which no file has one, instead of waiting the whole timeout.
+    const paths =
       (await this.apiLevel()) >= 30
-        ? '/data/misc_de/0/apexdata/com.android.permission/runtime-permissions.xml'
-        : '/data/system/users/0/runtime-permissions.xml';
+        ? ['/data/misc_de/0/apexdata/com.android.permission/runtime-permissions.xml', '/data/system/users/0/runtime-permissions.xml']
+        : ['/data/system/users/0/runtime-permissions.xml'];
     // Android 12+ stores it as binary XML (ABX); abx2xml converts it, and a text file makes abx2xml fail, so cat it.
-    const read = `abx2xml ${path} - 2>/dev/null || cat ${path}`;
+    const read = (path: string) => `abx2xml ${path} - 2>/dev/null || cat ${path} 2>/dev/null`;
     const timeoutMs = options.timeoutMs ?? 90_000;
+    const maxReadsWithoutSection = options.readsWithoutSection ?? 3;
     const deadline = Date.now() + timeoutMs;
+    let readsWithoutSection = 0;
     for (;;) {
-      const out = await this.exec(['shell', read], { allowFailure: true, timeoutMs: 30_000 });
-      if (persistedPermissionsGranted(out.stdout, appId, permissions)) return true;
-      if (Date.now() >= deadline) {
-        const section = packageSection(out.stdout, appId);
+      const outputs: { path: string; text: string }[] = [];
+      for (const path of paths) {
+        const out = await this.exec(['shell', read(path)], { allowFailure: true, timeoutMs: 30_000 });
+        if (persistedPermissionsGranted(out.stdout, appId, permissions)) return true;
+        outputs.push({ path, text: out.stdout });
+      }
+      const sections = outputs.map((o) => ({ ...o, section: packageSection(o.text, appId) }));
+      readsWithoutSection = sections.some((o) => o.section !== undefined) ? 0 : readsWithoutSection + 1;
+      const noSection = readsWithoutSection >= maxReadsWithoutSection;
+      if (noSection || Date.now() >= deadline) {
+        const found = sections
+          .map((o) =>
+            `${o.path}: ${o.text.length} characters, ` +
+            (o.section === undefined ? 'no section for the app' : `app section: ${tail(o.section, 600)}`),
+          )
+          .join('; ');
         throw new Error(
-          `${path} did not list ${permissions.join(', ')} as granted for ${appId} within ${timeoutMs / 1000} s ` +
-            `(read ${out.stdout.length} characters; ` +
-            `${section === undefined ? 'no section for the app' : `app section: ${tail(section, 600)}`})`,
+          `the persisted runtime permissions did not list ${permissions.join(', ')} as granted for ${appId} ` +
+            `${noSection ? `(no file has a section for the app after ${readsWithoutSection} reads)` : `within ${timeoutMs / 1000} s`}: ${found}`,
         );
       }
       await sleep(options.intervalMs ?? 2000);
     }
   }
+
 
   /** `cmd location providers set-test-provider-location <provider> --location <lat>,<lon> [--accuracy <m>]` (API 31+). */
   async setTestLocation(provider: string, lat: number, lon: number, accuracy?: number): Promise<void> {

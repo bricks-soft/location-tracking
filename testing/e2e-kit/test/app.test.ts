@@ -13,6 +13,7 @@ function deviceRules(appId: string, api = 34): FakeRule[] {
   return [
     { match: 'getprop ro\\.build\\.version\\.sdk', stdout: `${api}\n` },
     { match: '^shell id -u$', stdout: '2000\n' },
+    { match: '^shell cmd location is-location-enabled$', stdout: 'true\n' },
     { match: `^shell pm path ${re(appId)}$`, stdout: 'package:/data/app/base.apk\n' },
     { match: `^shell pm clear ${re(appId)}$`, stdout: 'Success\n' },
     { match: `^shell run-as ${re(appId)} cat files/e2e/example\\.json$`, stdout: '{"e2e":true}' },

@@ -696,10 +696,31 @@ export class Adb {
   // ---- location
 
   /** Location services on/off (`cmd location set-location-enabled`, falling back to `settings put secure location_mode`). */
+  /**
+   * Switches the device location setting and checks that it changed. `cmd location set-location-enabled` exists from
+   * API 30; on API 29 its answer ("Can't find service: location") passed as success and location stayed on (P-P06 on
+   * the first API 29 run). So each way is tried until [isLocationEnabled] reports the wanted state: `cmd location`,
+   * the `location_mode` setting, then the older `location_providers_allowed` setting.
+   */
   async setLocationEnabled(enabled: boolean): Promise<void> {
-    const result = await this.exec(['shell', `cmd location set-location-enabled ${enabled}`], { allowFailure: true });
-    if (result.code === 0 && !COMMAND_FAILED.test(result.stdout + result.stderr)) return;
-    await this.shell(`settings put secure location_mode ${enabled ? 3 : 0}`);
+    const attempts = [
+      `cmd location set-location-enabled ${enabled}`,
+      `settings put secure location_mode ${enabled ? 3 : 0}`,
+      `settings put secure location_providers_allowed ${enabled ? '+gps,+network' : '-gps,-network'}`,
+    ];
+    for (const command of attempts) {
+      await this.exec(['shell', command], { allowFailure: true });
+      const changed = await waitUntil(async () => (await this.isLocationEnabled()) === enabled, {
+        timeoutMs: 5000,
+        intervalMs: 500,
+        message: `location ${enabled ? 'on' : 'off'}`,
+      }).then(
+        () => true,
+        () => false,
+      );
+      if (changed) return;
+    }
+    throw new Error(`could not switch location ${enabled ? 'on' : 'off'}; tried: ${attempts.join(' | ')}`);
   }
 
   async isLocationEnabled(): Promise<boolean> {

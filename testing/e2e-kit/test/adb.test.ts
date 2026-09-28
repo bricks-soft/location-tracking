@@ -357,13 +357,30 @@ describe('Adb location, power, connectivity, time', () => {
     assert.ok(!api30.fake.commandLines().some((l) => l.includes('remove-test-provider')));
   });
 
-  test('setLocationEnabled uses cmd location, falls back to location_mode', async () => {
-    const modern = setup();
+  test('setLocationEnabled uses cmd location, falls back to location_mode, and checks the result', async () => {
+    const modern = setup([{ match: 'is-location-enabled', stdout: 'false\n' }]);
     await modern.adb.setLocationEnabled(false);
-    assert.deepEqual(modern.fake.commandLines(), ['shell cmd location set-location-enabled false']);
-    const old = setup([{ match: 'cmd location', code: 255, stdout: 'Unknown command: set-location-enabled' }]);
+    assert.deepEqual(modern.fake.commandLines(), [
+      'shell cmd location set-location-enabled false',
+      'shell cmd location is-location-enabled',
+    ]);
+    // API 29: no location service for `cmd`; the answer looks like success, so only the check shows it did nothing.
+    const old = setup([
+      { match: '^shell cmd location', stdout: "cmd: Can't find service: location\n" },
+      // the setting changes only once `settings put` ran (captures {{mode}})
+      { match: '^shell settings put secure location_mode (?<mode>\\d)$', stdout: '' },
+      { match: '^shell settings get secure location_mode$', requires: ['mode'], stdout: '{{mode}}\n' },
+      { match: '^shell settings get secure location_mode$', stdout: '0\n' },
+    ]);
     await old.adb.setLocationEnabled(true);
-    assert.deepEqual(old.fake.commandLines(), ['shell cmd location set-location-enabled true', 'shell settings put secure location_mode 3']);
+    const lines = old.fake.commandLines();
+    assert.equal(lines[0], 'shell cmd location set-location-enabled true');
+    assert.ok(lines.includes('shell settings put secure location_mode 3'), lines.join('\n'));
+    const stuck = setup([
+      { match: '^shell cmd location', stdout: "cmd: Can't find service: location\n" },
+      { match: '^shell settings get secure location_mode$', stdout: '3\n' },
+    ]);
+    await assert.rejects(stuck.adb.setLocationEnabled(false), /could not switch location off/);
     const check = setup([{ match: 'is-location-enabled', stdout: 'true\n' }]);
     assert.equal(await check.adb.isLocationEnabled(), true);
   });

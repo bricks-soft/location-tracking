@@ -841,7 +841,9 @@ Dry runs and typechecks of the kit and both suites run in the normal build job.
 **As merged** (unit 6): the emulator jobs are in `.github/workflows/e2e-android.yml` (job names and labels:
 [runbook 6.8](../e2e-runbook.md#68-the-ci-emulator-jobs)); they upload `e2e-artifacts-<label>` always, also on
 success. The subset runs pass the pattern through `NODE_OPTIONS='--test-name-pattern=…'` (see above), and
-`.github/scripts/run-e2e.sh` holds the device steps. The 16 KB check runs in the build job of
+`.github/scripts/run-e2e.sh` holds the device steps. After the CI runs of round 2 the owner decided that both
+workflows start only by hand (no pull request, push or `schedule` trigger), to save Actions minutes; the suites run on
+local emulators with `run-e2e.sh`. The 16 KB check runs in the build job of
 `.github/workflows/ci.yml` with `.github/scripts/check-16kb.py` (a committed Python ELF reader instead of
 `llvm-readelf`): it fails the job for the field-force release APK (GMS) and only reports for the example's
 `gms,hms` debug APK. The build job also runs the field-force Node tests (`npm test` in `examples/field-force`).

@@ -721,7 +721,7 @@ E2E_INCLUDE_LONG=1 E2E_APK=../../example/android/app/build/outputs/apk/debug/app
 E2E_INCLUDE_LONG=1 NODE_OPTIONS='--test-name-pattern=^P-H04' npm run test:e2e
 ```
 
-CI runs them on a nightly schedule and on manual dispatch (see [6.8](#68-the-ci-emulator-jobs)).
+CI runs them only on a manual dispatch with `include-long` (see [6.8](#68-the-ci-emulator-jobs)).
 
 ### 6.4 The same run as CI: `.github/scripts/run-e2e.sh`
 
@@ -799,8 +799,8 @@ emulator.
 ### 6.8 The CI emulator jobs
 
 GitHub Actions runs the suites in `.github/workflows/e2e-android.yml` (workflow name "E2E (Android emulator)"). It
-runs on pull requests and on pushes to `master` (not when only Markdown files and `docs/` changed), nightly at 01:23
-UTC, and on manual dispatch. The job "Build debug APKs" builds both debug APKs once (artifact `e2e-apks`); every
+runs only when started by hand (manual dispatch): pushes, pull requests and a schedule start no run, to save Actions
+minutes (a full run uses about 4–5 runner hours). The job "Build debug APKs" builds both debug APKs once (artifact `e2e-apks`); every
 emulator job downloads them and calls the reusable workflow `.github/workflows/e2e-android-run.yml`, which calls
 `.github/scripts/run-e2e.sh`. Every emulator run cold-boots the AVD (`-no-snapshot`).
 
@@ -811,7 +811,7 @@ emulator job downloads them and calls the reusable workflow `.github/workflows/e
 | Plugin subset (API 35) | `plugin-api35` | API 35 `google_apis` | `P-(L01\|L03\|L06\|L08\|L11\|L12\|L13\|H01\|H03\|H05\|P01\|P05\|P06\|P10)\b` | 120 min |
 | Plugin P-P08 (API 34, no Google Play services) | `plugin-api34-no-gms` | API 34 `default` | P-P08 only. | 45 min |
 | Field-force suite (API 34) | `field-force-api34` | API 34 `google_apis` | Every field-force scenario that is not `long`. | 150 min |
-| Long scenarios (long-plugin-api34), Long scenarios (long-field-force-api34) | `long-plugin-api34`, `long-field-force-api34` | API 34 `google_apis` | Only the `long` scenarios of each suite; nightly, or on manual dispatch with `include-long`. A suite without `long` scenarios boots no emulator. | 300 min |
+| Long scenarios (long-plugin-api34), Long scenarios (long-field-force-api34) | `long-plugin-api34`, `long-field-force-api34` | API 34 `google_apis` | Only the `long` scenarios of each suite; on manual dispatch with `include-long`. A suite without `long` scenarios boots no emulator. | 300 min |
 
 The artifacts of every emulator job are uploaded as `e2e-artifacts-<label>`, also when the job passed.
 
@@ -819,7 +819,7 @@ The manual dispatch has two inputs: `test-name-pattern` (a regular expression fo
 "Field-force suite (API 34)" jobs; empty = the whole suite; the subset and P-P08 jobs keep their own patterns) and
 `include-long` (also run the long jobs).
 
-The build workflow `.github/workflows/ci.yml` (job `build`) runs on every push and pull request: TypeScript build and
+The build workflow `.github/workflows/ci.yml` (job `build`) also runs only when started by hand: TypeScript build and
 tests, the kit's type check and unit tests, type checks and dry runs of both suites, the Android unit tests, both
 example apps' debug builds, the field-force Node tests (`npm test`), the PremiseMonitor unit tests, the field-force
 release build and the 16 KB check ([M-07](#m-07-play-build-gms-only-16-kb-page-size-alignment)). It uploads both debug

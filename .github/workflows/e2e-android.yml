@@ -7,20 +7,16 @@
 #   plugin-api-levels   plugin subset on API 29 and API 35 google_apis (--test-name-pattern, see the matrix).
 #   plugin-no-gms       P-P08 on an API 34 `default` image (no Google Play services).
 #   field-force         field-force suite (examples/field-force/e2e), API 34 google_apis.
-#   long                scenarios that require `long` (E2E_INCLUDE_LONG=1), both suites, API 34; only on the nightly
-#                       schedule and on workflow_dispatch.
+#   long                scenarios that require `long` (E2E_INCLUDE_LONG=1), both suites, API 34; only when the
+#                       manual run sets include-long.
+#
+# Started by hand only (Actions tab -> E2E (Android emulator) -> Run workflow, or
+# `gh workflow run e2e-android.yml --ref <branch> -f test-name-pattern=...`): the owner decided that pull requests,
+# pushes and a nightly schedule do not start runs, to save Actions minutes (docs/DECISIONS.md R2.1). A full run uses
+# about 4-5 runner hours. The suites run on local emulators with .github/scripts/run-e2e.sh (docs/e2e-runbook.md).
 name: E2E (Android emulator)
 
 on:
-  pull_request:
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-  push:
-    branches: [master]
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
   workflow_dispatch:
     inputs:
       test-name-pattern:
@@ -31,18 +27,14 @@ on:
         description: Also run the "long" job (scenarios that require long, E2E_INCLUDE_LONG=1; up to 5 hours per suite).
         type: boolean
         default: false
-  schedule:
-    # Nightly at 01:23 UTC. Scheduled runs use the workflow file of the default branch.
-    - cron: '23 1 * * *'
 
 permissions:
   contents: read
 
 concurrency:
-  # A new push to a pull request cancels the older run of that pull request. Push, schedule and manual runs have their
-  # own groups and are never cancelled.
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # A second manual run of the same ref waits for the first one.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build-apks:
@@ -179,7 +171,7 @@ jobs:
   long:
     name: Long scenarios (${{ matrix.label }})
     needs: build-apks
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.include-long)
+    if: inputs.include-long
     strategy:
       fail-fast: false
       matrix:

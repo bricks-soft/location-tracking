@@ -254,6 +254,7 @@ typing errors.
 | R2-Q11 | Live location | "At most 5 min old" → new config key `http.syncInterval` (seconds); the field-force app uses `300`. |
 | R2-Q12 | Native API shape | Manifest-declared listener classes plus programmatic subscription (the recommended option was chosen). |
 | R2-Q13 | Where the AVD tests run | A GitHub Actions emulator job plus a runbook that an AI agent executes (the recommended option was chosen). |
+| R2-Q15 | CI minutes | After the CI runs used the account's Actions minutes: "the CI runs consumed all the minutes, I want to switch to local test runs. I want to hand off this session to another local session. That can run AVD for a faster iteration loop." Chosen options: both workflows (`e2e-android.yml` and `ci.yml`) start only by hand (`workflow_dispatch`; no pull request, push or schedule trigger); the handoff to the local session is a file on the branch (`docs/e2e/HANDOFF.md`, deleted before the pull request is marked ready); the running CI runs were cancelled. |
 | R2-Q14 | Delivery | Pull request #1 was merged by the owner before round 2 started. The base branch was renamed from `main` to `master` at the owner's request. Round 2 is one new pull request into `master`. |
 
 ### R2.2 Decisions made by the coordinator

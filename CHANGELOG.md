@@ -72,8 +72,9 @@ emulator. Decisions: [docs/DECISIONS.md](docs/DECISIONS.md#round-2-field-force-a
   requests GPS the way another app would, because the emulator produces a fix only while some client asks for GPS.
 - **CI emulator workflow** (`.github/workflows/e2e-android.yml` with the reusable `e2e-android-run.yml`, script
   `.github/scripts/run-e2e.sh`): the plugin suite on API 34 (subsets on API 29 and 35), P-P08 on an image without
-  Google Play services, the field-force suite on API 34, the long scenarios nightly (01:23 UTC) and on manual
-  dispatch, artifacts of every job. The build workflow (`.github/workflows/ci.yml`) adds the kit's tests, type checks
+  Google Play services, the field-force suite on API 34, the long scenarios with the `include-long` input,
+  artifacts of every job. Both workflows start only by hand (no runs on push, pull request or schedule, to save
+  Actions minutes). The build workflow (`.github/workflows/ci.yml`) adds the kit's tests, type checks
   and dry runs of the suites, the field-force Node tests, the PremiseMonitor unit tests, and a 16 KB page-size check
   of the Google Play build (`.github/scripts/check-16kb.py`).
 - **Runbook** ([docs/e2e-runbook.md](docs/e2e-runbook.md)) for an AI agent: local AVD setup, running and triaging the

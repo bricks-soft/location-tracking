@@ -1,16 +1,18 @@
 name: CI
 
+# Started by hand only (Actions tab -> CI -> Run workflow, or `gh workflow run ci.yml --ref <branch>`): the owner
+# decided that pushes and pull requests do not start runs, to save Actions minutes (docs/DECISIONS.md R2.1).
+# The same checks run locally, see docs/e2e/HANDOFF.md or the steps below.
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  # A new push to a pull request cancels the older run of that pull request. Push runs are never cancelled.
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # A second manual run of the same ref waits for the first one.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:

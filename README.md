@@ -1030,11 +1030,11 @@ npm run dry-run                                                   # list the sce
 (`npm run test:e2e -- --test-name-pattern=...` does not filter: npm puts the option after the file pattern, where
 Node ignores it.)
 
-CI runs the emulator suites through `.github/scripts/run-e2e.sh` in `.github/workflows/e2e-android.yml`, on pull
-requests and pushes to `master` (not for changes to Markdown files and `docs/` only), nightly at 01:23 UTC, and on
-manual dispatch: the plugin suite on API 34 (with smaller runs on API 29 and 35), P-P08 on an image without Google
-Play services, the field-force suite on API 34, and the long scenarios (nightly, or on manual dispatch with
-`include-long`). The build workflow `.github/workflows/ci.yml` type-checks the kit and runs its unit tests,
+CI runs the emulator suites through `.github/scripts/run-e2e.sh` in `.github/workflows/e2e-android.yml`, only when
+started by hand (Actions tab or `gh workflow run`; pushes and pull requests start no run, to save Actions minutes):
+the plugin suite on API 34 (with smaller runs on API 29 and 35), P-P08 on an image without Google Play services, the
+field-force suite on API 34, and the long scenarios (with the `include-long` input). The build workflow
+`.github/workflows/ci.yml`, also started by hand only, type-checks the kit and runs its unit tests,
 type-checks and dry-runs both suites, runs the field-force Node tests, and checks that the Google Play build of the
 field-force app supports 16 KB memory pages (`.github/scripts/check-16kb.py`).
 

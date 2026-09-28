@@ -64,6 +64,8 @@ export interface LogcatDumpOptions {
   regex?: string;
   /** logcat filter specs, e.g. ['LT-E2E:I', '*:S'] */
   filters?: string[];
+  /** only the last N lines (`logcat -t <N>`); ignored together with [since] */
+  tailLines?: number;
   /** timeout of the dump, ms (default: the Adb default) */
   timeoutMs?: number;
 }
@@ -204,6 +206,7 @@ export class Logcat {
     const args = ['logcat', '-d', '-v', 'threadtime', '-v', 'UTC', '-v', 'year'];
     for (const buffer of options.buffers ?? ['main', 'system', 'crash']) args.push('-b', buffer);
     if (options.since) args.push('-T', (options.since.getTime() / 1000).toFixed(3));
+    else if (options.tailLines !== undefined) args.push('-t', String(Math.max(1, Math.floor(options.tailLines))));
     if (options.regex !== undefined) args.push('-e', options.regex);
     args.push(...(options.filters ?? []));
     const result = await this.adb.exec(args, { timeoutMs: options.timeoutMs });

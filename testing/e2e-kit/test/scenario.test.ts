@@ -117,7 +117,7 @@ test('a device run: requirement skips, shared back office, artifacts on failure,
     assert.match(runLog, /\[P-L02\] \S+ #\d+ GET \/__health -> 200/);
     // P-L01 marked the crash scanner and collected artifacts through adb
     const lines = fake.commandLines();
-    assert.ok(lines.includes('logcat -d -v threadtime -v UTC -v year -b crash -b main -b system'));
+    assert.ok(lines.includes('logcat -d -v threadtime -v UTC -v year -b crash -b main -b system AndroidRuntime:E ActivityManager:W libc:F DEBUG:F *:S'));
     assert.ok(lines.includes('exec-out screencap -p'));
   } finally {
     fake.cleanup();

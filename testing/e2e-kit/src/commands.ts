@@ -27,6 +27,7 @@ export type E2eCommandName =
   | 'insertLocation'
   | 'addGeofence'
   | 'removeGeofence'
+  | 'otherAppLocation'
   | 'getGeofences'
   | 'blockMainThread'
   | 'premise.start'
@@ -317,6 +318,17 @@ export class E2eCommands {
   /** Logs its line, then sleeps the main thread for [ms] (after [delayMs]). */
   async blockMainThread(ms: number, delayMs = 0): Promise<void> {
     await this.send('blockMainThread', { ms, delayMs });
+  }
+
+  /**
+   * Plugin example only (test support): requests GPS updates from the app's process through `LocationManager`, the
+   * way another app would, or stops them. The emulator produces fixes only while someone asks the GPS provider, so a
+   * scenario that tests movement detection while the plugin has GPS off (passive updates + stationary geofence) turns
+   * this on during its route replay. `dumpsys location` attributes the request to the app: scenarios that assert "no
+   * GPS request" must keep it off. Resolves with the number of fixes the request received since it was turned on.
+   */
+  async otherAppLocation(enabled: boolean, intervalMs = 1000): Promise<{ enabled: boolean; intervalMs: number; fixes: number }> {
+    return this.send('otherAppLocation', { enabled, intervalMs });
   }
 
   // ---- field-force only

@@ -59,6 +59,19 @@ object E2eCommandRunner {
             val (ms, delayMs) = E2eProtocol.blockArgs(args)
             done(Outcome.Success(JSONObject().put("blockedMs", ms), afterLog = { blockMainThread(ms, delayMs) }))
         },
+        // Test support, not a plugin command: another app's GPS request (see OtherAppLocation).
+        "otherAppLocation" to Command { app, args, done ->
+            val enabled = E2eProtocol.requireBoolean(args, "enabled")
+            val intervalMs = E2eProtocol.optMillis(args, "intervalMs", 1000L, 60_000L)
+            Handler(Looper.getMainLooper()).post {
+                val outcome = try {
+                    Outcome.Success(OtherAppLocation.set(app, enabled, intervalMs))
+                } catch (e: Throwable) {
+                    E2eProtocol.failureOf(e)
+                }
+                done(outcome)
+            }
+        },
     )
 
     /** Every command name, in the order of the §6 table. */

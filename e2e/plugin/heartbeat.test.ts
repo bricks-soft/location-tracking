@@ -1095,6 +1095,10 @@ scenario(
     // device stays far outside the stationary region until the plugin notices. With GPS off, the plugin notices through
     // the OS geofence EXIT of its stationary region or a passive fix of another app (Google Play services evaluates
     // geofences every few minutes; its documentation allows up to 6 minutes for a stationary device).
+    // The emulator has no network location and no activity recognition, and it produces a fix only while some client
+    // asks the GPS provider: `otherAppLocation` plays the other app that does (on a phone, network location and other
+    // apps do this). Without it no fix reaches the plugin or Google Play services' geofencer (first CI run: no
+    // motionchange in 10 minutes).
     const lead: LatLon[] = [PLACES.hq, PLACES.hqNorth1500m, ROUTES.cityLoop3km[0]];
     const loop: readonly LatLon[] = ROUTES.cityLoop3km;
     const path: LatLon[] = [...lead, ...loop];
@@ -1102,6 +1106,7 @@ scenario(
     const routeStartDevice = await ctx.adb.deviceTime();
     // Device clock minus host clock (± half the adb round trip): used only to judge fix freshness below.
     const deviceMinusHostMs = routeStartDevice - (hostBefore + Date.now()) / 2;
+    await ctx.commands.otherAppLocation(true);
     const route = startRouteLoop(ctx, lead, loop, DRIVE_SPEED_MPS);
     let moving: WireRecord;
     try {
@@ -1120,6 +1125,10 @@ scenario(
     } finally {
       await route.stop();
       if (route.failure !== undefined) ctx.log(`route replay failed: ${errorText(route.failure)}`);
+      await ctx.commands
+        .otherAppLocation(false)
+        .then((other) => ctx.log(`other app's GPS request received ${other.fixes} fix(es) before it was stopped`))
+        .catch((error: unknown) => ctx.log(`stopping the other app's GPS request failed: ${errorText(error)}`));
     }
     assert.equal(route.failure, undefined, `the emulator route replay failed: ${errorText(route.failure)}`);
 

@@ -88,7 +88,12 @@ export class Artifacts {
 
     await item('reason.txt', () => this.writeText('reason.txt', `${new Date().toISOString()}\n${reason}\n`));
     await item('logcat.txt', async () =>
-      this.writeText('logcat.txt', await adb.logcat.dump({ buffers: ['main', 'system', 'crash', 'events'], timeoutMs: 120_000 })),
+      // The last 20,000 lines: a full dump of these buffers is 10+ MB on the CI emulator, and large transfers have made
+      // adbd drop the connection. The whole run's logcat is kept separately (`.github/scripts/run-e2e.sh`, `_run/`).
+      this.writeText(
+        'logcat.txt',
+        await adb.logcat.dump({ buffers: ['main', 'system', 'crash', 'events'], tailLines: 20_000, timeoutMs: 120_000 }),
+      ),
     );
     await item('crash.txt', async () => this.writeText('crash.txt', await adb.logcat.crashBuffer()));
     await item('dumpsys-activity-services.txt', async () =>

@@ -121,7 +121,7 @@ test('CrashScanner reports only what appeared after the mark', async () => {
   await assert.rejects(crashes.assertNoCrash(), /crashed 1 time\(s\).*ForegroundServiceDidNotStartInTimeException/s);
   await assert.rejects(crashes.assertNoFgsDidNotStartInTime(), /did not start in time/);
   const dump = fake.calls().find((c) => c.args[0] === 'logcat')!;
-  assert.deepEqual(dump.args, ['logcat', '-d', '-v', 'threadtime', '-v', 'UTC', '-v', 'year', '-b', 'crash', '-b', 'main', '-b', 'system']);
+  assert.deepEqual(dump.args, ['logcat', '-d', '-v', 'threadtime', '-v', 'UTC', '-v', 'year', '-b', 'crash', '-b', 'main', '-b', 'system', 'AndroidRuntime:E', 'ActivityManager:W', 'libc:F', 'DEBUG:F', '*:S']);
 });
 
 test('CrashScanner: a crash present at the mark does not fail later scans', async () => {

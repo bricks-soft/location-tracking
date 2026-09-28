@@ -409,6 +409,10 @@ scenario(
         const stationaryRadius = Number(state.config['geolocation']?.['stationaryRadius'] ?? 25);
 
         await ctx.adb.keyHome(); // the worker drives with the app in the background
+        // The plugin has GPS off while stationary. The emulator has no network location and produces a fix only while
+        // some client asks the GPS provider; `otherAppLocation` plays that other app (on a phone, network location and
+        // other apps do this), so the plugin's passive updates see the drive.
+        await ctx.commands.otherAppLocation(true);
         const moved = await mark(ctx);
         const driveMs = routeDurationMs([start, ...route], DRIVE_SPEED_MPS);
         const drive = position.moveAlong(route, DRIVE_SPEED_MPS);
@@ -450,6 +454,7 @@ scenario(
         expectCount(after, isEvent('tracking_start'), 1, 'tracking_start record after the revoke');
         expectCount(after, isEvent('tracking_stop'), 0, 'tracking_stop records (tracking must continue without activity recognition)');
       } finally {
+        await bestEffort(ctx, "stop the other app's GPS request", () => ctx.commands.otherAppLocation(false));
         await bestEffort(ctx, 'grant ACTIVITY_RECOGNITION again', () => ctx.adb.grant(ctx.appId, PERMISSIONS.activity));
       }
     } finally {

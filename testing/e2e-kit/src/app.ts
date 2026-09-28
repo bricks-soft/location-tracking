@@ -116,9 +116,11 @@ export function parseServiceRecords(dump: string): ServiceRecordInfo[] {
   const out: ServiceRecordInfo[] = [];
   let current: ServiceRecordInfo | undefined;
   for (const line of dump.split('\n')) {
-    const header = /^\s*\*\s*ServiceRecord\{[^}]*\s(\S+\/\S+)\}/.exec(line);
-    if (header) {
-      const [pkg, cls] = header[1]!.split('/') as [string, string];
+    // `* ServiceRecord{<hash> u0 <pkg>/<cls>}`; Android 15 appends ` c:<calling package>` inside the braces.
+    const header = /^\s*\*\s*ServiceRecord\{([^}]*)\}/.exec(line);
+    const componentToken = header?.[1]!.split(/\s+/).find((token) => token.includes('/'));
+    if (componentToken) {
+      const [pkg, cls] = componentToken.split('/') as [string, string];
       current = { component: `${pkg}/${cls.startsWith('.') ? pkg + cls : cls}`, isForeground: false };
       out.push(current);
       continue;

@@ -22,6 +22,14 @@ export const FGS_DID_NOT_START_PATTERNS: readonly RegExp[] = [
   /Context\.startForegroundService\(\) did not then call Service\.startForeground\(\)/,
 ];
 
+/**
+ * Device-side logcat filters of [CrashScanner]: only the tags the parsers read (`AndroidRuntime` crashes, `ActivityManager`
+ * ANR and foreground-service lines, `libc`/`DEBUG` native crashes). Unfiltered, the main and system buffers of a freshly
+ * booted emulator are several MB; on the CI emulator one such transfer made adbd drop the connection ("write failed",
+ * device offline for the next scenarios).
+ */
+export const CRASH_LOGCAT_FILTERS: readonly string[] = ['AndroidRuntime:E', 'ActivityManager:W', 'libc:F', 'DEBUG:F', '*:S'];
+
 /** Texts of `RemoteServiceException` crashes (the system crashes the app for a service it mishandled). */
 const REMOTE_SERVICE_EXCEPTION = /RemoteServiceException/;
 
@@ -175,7 +183,7 @@ export class CrashScanner {
   }
 
   private dump(): Promise<string> {
-    return this.adb.logcat.dump({ buffers: ['crash', 'main', 'system'] });
+    return this.adb.logcat.dump({ buffers: ['crash', 'main', 'system'], filters: [...CRASH_LOGCAT_FILTERS] });
   }
 
   /** Remembers the device time and what the buffers already contain; later scans only report newer entries. */

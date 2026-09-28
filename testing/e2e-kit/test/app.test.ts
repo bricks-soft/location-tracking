@@ -223,6 +223,22 @@ describe('AppUnderTest process and service helpers', () => {
     assert.equal(await app.isForegroundServiceRunning(`${appId}.e2e.Helper`), true);
   });
 
+  test('parseServiceRecords reads the Android 15 header with the calling package after the component', () => {
+    const appId = APP_IDS.plugin;
+    // Copied from a CI API 35 run: the header ends with ` c:<calling package>`.
+    const dump = [
+      `  * ServiceRecord{ce073a1 u0 ${appId}/${SERVICES.tracking} c:${appId}}`,
+      `    intent={cmp=${appId}/${SERVICES.tracking}}`,
+      '    isForeground=true foregroundId=7301 types=0x00000008 foregroundNoti=Notification(channel=location_tracking)',
+      `  * ServiceRecord{b156a15 u0 ${appId}/org.chromium.content.app.SandboxedProcessService0:0 c:${appId}}`,
+      '    isForeground=false',
+    ].join('\n');
+    assert.deepEqual(parseServiceRecords(dump), [
+      { component: `${appId}/${SERVICES.tracking}`, isForeground: true },
+      { component: `${appId}/org.chromium.content.app.SandboxedProcessService0:0`, isForeground: false },
+    ]);
+  });
+
   test('parseRuntimePermissions reads the runtime permissions section only', () => {
     assert.deepEqual(parseRuntimePermissions(PACKAGE_DUMP), [PERMISSIONS.fine, 'android.permission.CAMERA', PERMISSIONS.notifications]);
     assert.deepEqual(parseRuntimePermissions('nothing'), []);

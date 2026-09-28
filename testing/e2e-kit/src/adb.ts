@@ -789,6 +789,34 @@ export class Adb {
     return this.shellChecked(command);
   }
 
+  /**
+   * Waits (root only) until the device's persisted runtime-permission file lists every one of [permissions] as granted
+   * for [appId]. Android writes permission changes to disk in the background; on the CI emulator a reboot about 15-20 s
+   * after `pm grant` came back without the grants (P-L08, P-P11: the boot restore recorded `permission_denied`), which
+   * a phone never sees because its permissions are granted long before a reboot. Resolves with whether the file showed
+   * the grants before [timeoutMs] (false without root or when the file cannot be read; the caller continues then).
+   */
+  async waitForPersistedPermissions(
+    appId: string,
+    permissions: readonly string[],
+    options: { timeoutMs?: number; intervalMs?: number } = {},
+  ): Promise<boolean> {
+    if (permissions.length === 0 || !(await this.isRoot().catch(() => false))) return false;
+    const path =
+      (await this.apiLevel()) >= 30
+        ? '/data/misc_de/0/apexdata/com.android.permission/runtime-permissions.xml'
+        : '/data/system/users/0/runtime-permissions.xml';
+    // Android 12+ stores it as binary XML (ABX); abx2xml converts it, and a text file makes abx2xml fail, so cat it.
+    const read = `abx2xml ${path} - 2>/dev/null || cat ${path}`;
+    const deadline = Date.now() + (options.timeoutMs ?? 90_000);
+    for (;;) {
+      const out = await this.exec(['shell', read], { allowFailure: true, timeoutMs: 30_000 });
+      if (persistedPermissionsGranted(out.stdout, appId, permissions)) return true;
+      if (Date.now() >= deadline) return false;
+      await sleep(options.intervalMs ?? 2000);
+    }
+  }
+
   /** `cmd location providers set-test-provider-location <provider> --location <lat>,<lon> [--accuracy <m>]` (API 31+). */
   async setTestLocation(provider: string, lat: number, lon: number, accuracy?: number): Promise<void> {
     await this.requireApi(31, 'test location providers (cmd location providers)');
@@ -939,4 +967,19 @@ export class Adb {
     await this.shell('input keyevent KEYCODE_WAKEUP');
     await this.exec(['shell', 'wm dismiss-keyguard'], { allowFailure: true });
   }
+}
+
+/**
+ * True when the runtime-permission XML [xml] has a `<pkg name="[appId]">` section in which every one of [permissions]
+ * is a `<perm … granted="true" …>` entry (attribute order does not matter).
+ */
+export function persistedPermissionsGranted(xml: string, appId: string, permissions: readonly string[]): boolean {
+  const start = xml.indexOf(`<pkg name="${appId}"`);
+  if (start < 0) return false;
+  const end = xml.indexOf('</pkg>', start);
+  const section = xml.slice(start, end < 0 ? undefined : end);
+  const tags = section.match(/<perm\b[^>]*>/g) ?? [];
+  return permissions.every((permission) =>
+    tags.some((tag) => tag.includes(`name="${permission}"`) && /\bgranted="true"/.test(tag)),
+  );
 }

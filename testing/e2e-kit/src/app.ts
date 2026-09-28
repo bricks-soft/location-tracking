@@ -203,6 +203,10 @@ export class AppUnderTest {
       }
     }
 
+    // A reboot soon after `pm grant` can lose the grants (they are written to disk in the background): wait until the
+    // persisted file has them (root only; see Adb.waitForPersistedPermissions).
+    await this.adb.waitForPersistedPermissions(this.appId, wanted).catch(() => false);
+
     if (options.batteryExempt) await this.adb.deviceIdle.whitelistAdd(this.appId);
     else await this.adb.deviceIdle.whitelistRemove(this.appId);
 

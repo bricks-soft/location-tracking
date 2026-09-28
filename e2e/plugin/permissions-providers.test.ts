@@ -65,6 +65,9 @@ const LOITERING_DELAY_MS = 30_000;
 const HOLD_INTERVAL_MS = 2_000;
 /** Ground speed of replayed routes: 10 m/s (36 km/h, a car in town). */
 const ROUTE_SPEED_MPS = 10;
+/** P-P04: how long the drive may take until the plugin notices it without activity recognition and with GPS off. */
+const MOTION_WITHOUT_ACTIVITY_TIMEOUT_MS = 10 * 60_000;
+
 /** Ground speed of the long route in P-P04. */
 const DRIVE_SPEED_MPS = 12;
 /** Accuracy of test-provider fixes (below `filter.odometerAccuracyThreshold` 20 m). */
@@ -414,8 +417,15 @@ scenario(
         // other apps do this), so the plugin's passive updates see the drive.
         await ctx.commands.otherAppLocation(true);
         const moved = await mark(ctx);
-        const driveMs = routeDurationMs([start, ...route], DRIVE_SPEED_MPS);
-        const drive = position.moveAlong(route, DRIVE_SPEED_MPS);
+        const driveStartedDevice = await ctx.adb.deviceTime();
+        // Drive the route north and back again until the evidence is complete. In the background, without activity
+        // recognition and with GPS off, the plugin noticed the movement only after about 4.5 minutes on the first
+        // API 34 run (at the end of a single 3 km pass), so no location records followed; driving on keeps it moving.
+        const legs: LatLon[][] = [route, [start, ...route].reverse().slice(1)];
+        let driving = true;
+        const drive = (async () => {
+          for (let leg = 0; driving; leg++) await position.moveAlong(legs[leg % 2]!, DRIVE_SPEED_MPS);
+        })();
         drive.catch(() => undefined); // awaited below; this only prevents an unhandled rejection if a wait fails first
         const motion = await awaitRecord(
           ctx,
@@ -423,8 +433,9 @@ scenario(
           moved,
           'a motionchange with is_moving true (motion detected from the distance travelled, without activity recognition)',
           (r) => r.event === 'motionchange' && r.is_moving,
-          driveMs + 60_000,
+          MOTION_WITHOUT_ACTIVITY_TIMEOUT_MS,
         );
+        ctx.log(`motion detected ${((recordedMs(motion) - driveStartedDevice) / 1000).toFixed(0)} s after the drive started`);
         const fixes = await awaitRecords(
           ctx,
           office,
@@ -432,9 +443,10 @@ scenario(
           'location records after the motionchange (is_moving true)',
           (r) => r.event === 'location' && recordedMs(r) >= recordedMs(motion),
           3,
-          driveMs + 60_000,
+          3 * 60_000,
         );
-        // Enough evidence: stop the rest of the replay instead of idling until the route ends.
+        // Enough evidence: stop the replay.
+        driving = false;
         await position.stop();
         await drive.catch(() => undefined);
 
@@ -461,7 +473,7 @@ scenario(
       await position.stop();
     }
   },
-  { requires: { api: 29 }, timeoutMs: 12 * 60_000 },
+  { requires: { api: 29 }, timeoutMs: 18 * 60_000 },
 );
 
 scenario(
@@ -1559,10 +1571,6 @@ function expectOnRoute(records: readonly WireRecord[], route: readonly LatLon[],
     0,
     `${what} must lie within ${ROUTE_TOLERANCE_M} m of the replayed route ${route.map(formatPoint).join(' -> ')}:\n${timeline(off)}`,
   );
-}
-
-function routeDurationMs(points: readonly LatLon[], speedMps: number): number {
-  return (assertions.routeLengthMeters(points) / speedMps) * 1000;
 }
 
 function coordsOf(record: WireRecord): LatLon | null {

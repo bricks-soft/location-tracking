@@ -9,6 +9,7 @@ whether the user really kept tracking on.
 > [transistorsoft/capacitor-background-geolocation](https://github.com/transistorsoft/capacitor-background-geolocation),
 > with a new, smaller API. It was written from scratch: it contains no code from that project (whose native engine is
 > closed-source and commercial) and is **not affiliated with, endorsed by or supported by Transistor Software**.
+> Moving an app from its v8 release: [docs/migrating-from-transistor-v8.md](docs/migrating-from-transistor-v8.md).
 
 ## Contents
 
@@ -908,6 +909,8 @@ nothing and cannot track.
 
 - [docs/wire-format.md](docs/wire-format.md) describes every record variant, batching, templates, upload and retry
   rules, and JWT refresh.
+- [docs/migrating-from-transistor-v8.md](docs/migrating-from-transistor-v8.md) lists what a server built for
+  Transistor v8 uploads has to change, together with the app-side migration.
 - [docs/heartbeat.md](docs/heartbeat.md) covers heartbeat semantics, what reliability to expect on Android, and how
   to audit tracking gaps on the server.
 - [docs/device-test-checklist.md](docs/device-test-checklist.md) is a manual test plan for real GMS, HMS and

@@ -322,7 +322,9 @@ geofence was added.
 
 ### `tracking_start`
 
-An audit record, created when tracking starts or resumes. It carries the last known coords, or `null`. Calling
+An audit record, created when tracking starts or resumes. It carries the last known coords, or `null`: right after
+install it often has no coords, even on an emulator with a default location, because the first fix arrives a few
+seconds after the start. Calling
 `start()` while `startGeofences()` runs (or the reverse) switches the mode and creates another `tracking_start`,
 without a `tracking_stop` in between.
 

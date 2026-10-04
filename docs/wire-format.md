@@ -558,6 +558,9 @@ Substitution rules:
     `"raw_event": <%= record %>`. It carries every field, including the ones without a placeholder of their own
     (`provider.accuracy`, `provider.backend`, `heartbeat`) and any added later, and `coords` and `timestamp` stay
     `null` when the record has no fix.
+  - `provider` is inserted as the record's [`provider` object](#providerchange) (`enabled`, `gps`, `network`,
+    `permission`, `accuracy`, `backend`), or `null` when the record has none, so write it bare:
+    `"provider": <%= provider %>`.
 - A `null` value in a placeholder that is wrapped exactly in quotes, such as `"<%= reason %>"`, replaces the quotes
   too, so the result is JSON `null`, not the string `"null"`. This happens with `timestamp`, `backend`, `reason`,
   `geofence.*`, `provider.*` and the coordinates on records where they don't apply. Inside a longer string (for
@@ -590,7 +593,7 @@ Available placeholders:
 | `heading_accuracy` | number \| null | `provider.permission` | string \| null |
 | `is_moving` | boolean | `extras` | object (`{}` if none) |
 | `odometer` | number | `record` | object (the default record) |
-| `mock` | boolean | | |
+| `mock` | boolean | `provider` | object \| null |
 
 Example:
 

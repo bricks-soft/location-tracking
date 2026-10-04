@@ -32,6 +32,8 @@ version follows the Capacitor major version (Capacitor 8), as `@bricks-soft/cap-
 - **`<%= record %>` template placeholder**: the whole default record object (`sent_at` included), so a template can
   nest every field without listing them, e.g. `"raw_event": <%= record %>`
   ([wire-format.md, Templates](docs/wire-format.md#templates)).
+- **`<%= provider %>` template placeholder**: the record's `provider` object, or `null`, e.g.
+  `"provider": <%= provider %>`.
 
 
 Round 2: the field-force audit setup, a native API for companion plugins, and end-to-end tests on an Android

@@ -176,7 +176,7 @@ class TemplateRendererTest {
         for (name in TemplateRenderer.PLACEHOLDERS) {
             assertNotNull("placeholder $name", TemplateRenderer.literal(name, record, sentAt))
         }
-        assertEquals(33, TemplateRenderer.PLACEHOLDERS.size)
+        assertEquals(34, TemplateRenderer.PLACEHOLDERS.size)
     }
 
     @Test
@@ -192,6 +192,20 @@ class TemplateRendererTest {
         assertJsonEquals(RecordJson.toJson(heartbeat, sentAt).toString(), json.getJSONObject("raw"))
         assertTrue(json.getJSONObject("raw").isNull("coords"))
         assertEquals("precise", json.getJSONObject("raw").getJSONObject("provider").getString("accuracy"))
+    }
+
+    @Test
+    fun `provider is the provider object, or null`() {
+        val withProvider =
+            render("""{"provider":<%= provider %>}""", Fixtures.record(provider = Fixtures.providerState(gps = false)))
+                as JSONObject
+        // A quoted null placeholder becomes JSON null too.
+        val without = render("""{"provider":<%= provider %>,"quoted":"<%= provider %>"}""", Fixtures.record()) as JSONObject
+
+        val expected = """{"enabled":true,"gps":false,"network":true,"permission":"always","accuracy":"precise","backend":"gms"}"""
+        assertJsonEquals(expected, withProvider.getJSONObject("provider"))
+        assertTrue(without.isNull("provider"))
+        assertTrue(without.isNull("quoted"))
     }
 
     @Test

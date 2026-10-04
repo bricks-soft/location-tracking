@@ -1070,7 +1070,7 @@ from a clean checkout, logged in with `npm login` as a member of the `@bricks-so
 
 ```bash
 npm ci && npm run build && npm test
-npm publish               # prepublishOnly builds again; publishConfig.access makes it public
+npm publish               # prepare builds again; publishConfig.access makes it public
 ```
 
 Each later release:

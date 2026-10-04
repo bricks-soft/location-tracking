@@ -11,7 +11,8 @@ version follows the Capacitor major version (Capacitor 8), as `@bricks-soft/cap-
 ### Changed
 
 - **Published to npm** as `@bricks-soft/capacitor-location-tracking` with public access: `package.json` no longer has
-  `"private": true`, and has `repository`, `bugs`, `homepage`, `publishConfig` and a `prepublishOnly` build. The
+  `"private": true`, and has `repository`, `bugs`, `homepage`, `publishConfig` and a `prepare` build (it also builds
+  `dist/` when an app installs the package from git, since `dist/` is not committed). The
   workflow `.github/workflows/npm-publish.yml` stages a version on npm when a GitHub release is created (trusted
   publishing, no npm token); a maintainer approves it on npmjs.com. Steps: README, "Publishing to npm".
 - **License: MIT** (was `UNLICENSED`). `LICENSE` added.

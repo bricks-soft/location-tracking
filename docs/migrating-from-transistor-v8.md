@@ -82,7 +82,8 @@ Undo Transistor's Android setup:
 
 Also undo whatever the [background-fetch Android setup](https://github.com/transistorsoft/capacitor-background-fetch/blob/master/help/INSTALL-ANDROID.md)
 added. `playServicesLocationVersion` and `hmsLocationVersion` in `android/variables.gradle` can stay: this plugin reads
-the same names.
+the same names. If you package `hms`, remove `hmsLocationVersion` or set it to `6.20.0.300` or newer: most older
+versions bring native libraries that fail Google Play's 16 KB page-size requirement (README, "Android setup").
 
 Then follow [Android setup](../README.md#android-setup) in the README: choose the packaged location SDKs
 (`locationTracking.providers`, default `gms`), add Huawei's Maven repository if you package `hms`, and review the

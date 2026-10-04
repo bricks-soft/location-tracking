@@ -17,12 +17,19 @@ version follows the Capacitor major version (Capacitor 8), as `@bricks-soft/cap-
   publishing, no npm token); a maintainer approves it on npmjs.com. Steps: README, "Publishing to npm".
 - **License: MIT** (was `UNLICENSED`). `LICENSE` added.
 - `getDeviceInfo().pluginVersion` and the log file header report `8.0.0`.
+- **`com.huawei.hms:location` 6.20.0.300** (was 6.12.0.300). It has no native libraries, so a build that packages
+  HMS (`hms` or `gms,hms`) now meets Google Play's 16 KB page-size requirement; 6.12.0.300 brought `libTransform.so`
+  (`arm64-v8a`) and `libucs-credential.so` (`x86_64`) with 4 KB alignment. Its manifest declares
+  `android:allowBackup="false"`: an app with `allowBackup="true"` that packages HMS needs
+  `tools:replace="android:allowBackup"` (README, "Android setup"). The HMS backend no longer calls
+  `setCoordinateType(WGS84)`, which 6.20 removed; it was the default, and the plugin still builds against 6.12.0.300.
 
 ### Added
 
 - **`<%= record %>` template placeholder**: the whole default record object (`sent_at` included), so a template can
   nest every field without listing them, e.g. `"raw_event": <%= record %>`
   ([wire-format.md, Templates](docs/wire-format.md#templates)).
+
 
 Round 2: the field-force audit setup, a native API for companion plugins, and end-to-end tests on an Android
 emulator. Decisions: [docs/DECISIONS.md](docs/DECISIONS.md#round-2-field-force-audit-companion-api-and-avd-tests).
@@ -139,8 +146,6 @@ emulator. Decisions: [docs/DECISIONS.md](docs/DECISIONS.md#round-2-field-force-a
 
 ### Known limitations
 
-- A build that packages HMS (`hms` or `gms,hms`) is not 16 KB page-size compatible: `com.huawei.hms:location`
-  6.12.0.300 brings `libTransform.so` (`arm64-v8a`) and `libucs-credential.so` (`x86_64`) with 4 KB alignment.
 - The 02:00 stop (`stopAfterElapsedMinutes`) happens at the first check after the stop time. While stationary that is
   the first heartbeat: at most `maxInterval` (300 s) late for an exempt app, about 9–11 minutes late in Doze without
   the exemption.

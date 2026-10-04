@@ -85,7 +85,6 @@ class HmsLocationBackendTest {
             assertEquals(5_000L, request.interval)
             assertEquals(2_000L, request.fastestInterval)
             assertEquals(25f, request.smallestDisplacement, 0f)
-            assertEquals(LocationRequest.COORDINATE_TYPE_WGS84, request.coordinateType)
             assertEquals(Int.MAX_VALUE, request.numUpdates)
         }
         assertTrue(loopers.all { it === looper })
@@ -109,7 +108,6 @@ class HmsLocationBackendTest {
             assertEquals(hmsPriority(accuracy), request.priority)
             assertEquals(1, request.numUpdates)
             assertEquals(HmsLocationBackend.ONE_SHOT_INTERVAL_MS, request.interval)
-            assertEquals(LocationRequest.COORDINATE_TYPE_WGS84, request.coordinateType)
         }
     }
 

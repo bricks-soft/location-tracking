@@ -1577,10 +1577,11 @@ must start at 16 KB boundaries, and every native library must have ELF `LOAD` se
 5. **[auto]** Informational, not part of the pass criteria: build the plugin example with GMS and HMS
    (`cd example/android && ./gradlew assembleRelease -PlocationTracking.providers=gms,hms`) and run
    `python3 .github/scripts/check-16kb.py --report-only example/android/app/build/outputs/apk/release/app-release-unsigned.apk`.
-   Record which libraries fail. Known in round 2: `lib/arm64-v8a/libTransform.so` (from
+   Record which libraries fail. Expected: none. With `com.huawei.hms:location` 6.20.0.300 the APK has no native
+   libraries. Known in round 2, with 6.12.0.300: `lib/arm64-v8a/libTransform.so` (from
    `com.huawei.hms.LocationLiteSdk:core` 2.12.0.300) and `lib/x86_64/libucs-credential.so` (from
-   `com.huawei.hms:ucs-credential-developers` 1.0.4.312) have `p_align` 4096. Both come with `com.huawei.hms:location`
-   6.12.0.300. See [DECISIONS.md](DECISIONS.md#r25-open-requests-and-known-limitations).
+   `com.huawei.hms:ucs-credential-developers` 1.0.4.312) had `p_align` 4096. See
+   [DECISIONS.md](DECISIONS.md#bricksrep-adoption).
 6. **[auto]** Optional runtime check: install `system-images;android-35;google_apis_ps16k;x86_64` if
    `sdkmanager --list` offers it, create an AVD from it, check `adb shell getconf PAGE_SIZE` prints `16384`, install
    the field-force debug APK, launch it, and confirm tracking starts (`tracking_start` in the back office) without a

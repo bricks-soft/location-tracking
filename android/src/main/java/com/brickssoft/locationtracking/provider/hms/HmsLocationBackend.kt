@@ -164,7 +164,6 @@ internal fun buildLocationRequest(spec: LocationRequestSpec): LocationRequest {
         .setInterval(interval)
         .setFastestInterval(spec.fastestIntervalMs.coerceIn(0L, interval))
         .setSmallestDisplacement(spec.distanceFilterM.coerceAtLeast(0f))
-        .setCoordinateType(LocationRequest.COORDINATE_TYPE_WGS84)
 }
 
 /** One-shot request for `getCurrentLocation`. */
@@ -174,7 +173,6 @@ internal fun buildOneShotRequest(accuracy: DesiredAccuracy): LocationRequest =
         .setInterval(HmsLocationBackend.ONE_SHOT_INTERVAL_MS)
         .setFastestInterval(HmsLocationBackend.ONE_SHOT_INTERVAL_MS / 2)
         .setNumUpdates(1)
-        .setCoordinateType(LocationRequest.COORDINATE_TYPE_WGS84)
 
 /**
  * [TrackedLocation.from] plus the extras HMS uses on some devices and API levels: `mockLocation` marks a mock fix

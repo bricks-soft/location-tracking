@@ -106,9 +106,21 @@ locationTracking.providers=gms,hms
 You can also pass the property on the command line (`./gradlew assembleRelease -PlocationTracking.providers=hms`),
 for example to build separate Play and AppGallery flavors from one project.
 
-The SDK versions default to `play-services-location` 21.3.0 and `com.huawei.hms:location` 6.12.0.300. To use other
+The SDK versions default to `play-services-location` 21.3.0 and `com.huawei.hms:location` 6.20.0.300. To use other
 versions, set `playServicesLocationVersion` or `hmsLocationVersion` in the `ext` block of your app's
-`android/variables.gradle`.
+`android/variables.gradle`. If you package `hms` for Google Play, keep 6.20.0.300 or newer: it has no native libraries,
+while 6.12.0.300, 6.15.0.303, 6.17.0.301, 6.18.0.305 and 6.19.1.300 bring native libraries with 4 KB alignment, which
+fail Play's 16 KB page-size requirement.
+
+**`allowBackup` with `hms`.** `com.huawei.hms:location` 6.20.0.300 declares `android:allowBackup="false"`. If your app
+sets `android:allowBackup="true"` (the Capacitor template does) and packages `hms`, the manifest merge fails. Keep your
+value with `tools:replace` on `<application>` in `android/app/src/main/AndroidManifest.xml`:
+
+```xml
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <application android:allowBackup="true" tools:replace="android:allowBackup" ...>
+```
 
 At runtime, the `locationProvider` config option picks the backend:
 

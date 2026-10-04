@@ -53,7 +53,7 @@ This document is the contract between the scaffold and all work units. The scaff
 | androidx.core:core-ktx | 1.17.0 |
 | appcompat | 1.7.1 |
 | play-services-location | 21.3.0 |
-| com.huawei.hms:location | 6.12.0.300 |
+| com.huawei.hms:location | 6.20.0.300 (was 6.12.0.300; see DECISIONS.md, "BricksRep adoption") |
 
 ## 0. Global rules for every unit
 

@@ -1,7 +1,6 @@
 {
   "name": "@bricks-soft/capacitor-location-tracking",
-  "version": "0.1.0",
-  "private": true,
+  "version": "8.0.0",
   "description": "Background location tracking for Capacitor with GMS/HMS fused location, geofencing, HTTP sync and heartbeat audit records.",
   "main": "dist/plugin.cjs.js",
   "module": "dist/esm/index.js",
@@ -14,7 +13,15 @@
     "dist/"
   ],
   "author": "Bricks Soft",
-  "license": "UNLICENSED",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bricks-soft/location-tracking.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bricks-soft/location-tracking/issues"
+  },
+  "homepage": "https://github.com/bricks-soft/location-tracking#readme",
   "keywords": [
     "capacitor",
     "plugin",
@@ -29,7 +36,8 @@
     "build": "npm run clean && tsc && rollup -c rollup.config.mjs",
     "test": "node --test \"test/**/*.mjs\"",
     "docgen": "docgen --api LocationTrackingPlugin --project tsconfig.docgen.json --output-readme README.md --output-json dist/docs.json",
-    "watch": "tsc --watch"
+    "watch": "tsc --watch",
+    "prepublishOnly": "npm run build"
   },
   "devDependencies": {
     "@capacitor/android": "8.5.2",
@@ -46,5 +54,8 @@
     "android": {
       "src": "android"
     }
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

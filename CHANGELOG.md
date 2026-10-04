@@ -3,7 +3,19 @@
 All notable changes to `@bricks-soft/capacitor-location-tracking` are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [8.0.0] - Unreleased
+
+The first version published to npm. It contains everything below, including [0.1.0], which was never published. The
+version follows the Capacitor major version (Capacitor 8), as `@bricks-soft/cap-downloader` does.
+
+### Changed
+
+- **Published to npm** as `@bricks-soft/capacitor-location-tracking` with public access: `package.json` no longer has
+  `"private": true`, and has `repository`, `bugs`, `homepage`, `publishConfig` and a `prepublishOnly` build. The
+  workflow `.github/workflows/npm-publish.yml` stages a version on npm when a GitHub release is created (trusted
+  publishing, no npm token); a maintainer approves it on npmjs.com. Steps: README, "Publishing to npm".
+- **License: MIT** (was `UNLICENSED`). `LICENSE` added.
+- `getDeviceInfo().pluginVersion` and the log file header report `8.0.0`.
 
 Round 2: the field-force audit setup, a native API for companion plugins, and end-to-end tests on an Android
 emulator. Decisions: [docs/DECISIONS.md](docs/DECISIONS.md#round-2-field-force-audit-companion-api-and-avd-tests).
@@ -130,7 +142,7 @@ emulator. Decisions: [docs/DECISIONS.md](docs/DECISIONS.md#round-2-field-force-a
 - The heartbeat's wake lock ends when the heartbeat is queued; the upload itself holds no wake lock.
 - Open items and owner questions: [docs/DECISIONS.md, R2.5](docs/DECISIONS.md#r25-open-requests-and-known-limitations).
 
-## [0.1.0] - Unreleased
+## [0.1.0] - Not published
 
 The first release: Android and TypeScript. iOS is planned for a later phase.
 

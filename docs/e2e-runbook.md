@@ -1577,8 +1577,9 @@ must start at 16 KB boundaries, and every native library must have ELF `LOAD` se
 5. **[auto]** Informational, not part of the pass criteria: build the plugin example with GMS and HMS
    (`cd example/android && ./gradlew assembleRelease -PlocationTracking.providers=gms,hms`) and run
    `python3 .github/scripts/check-16kb.py --report-only example/android/app/build/outputs/apk/release/app-release-unsigned.apk`.
-   Record which libraries fail. Expected: none. With `com.huawei.hms:location` 6.20.0.300 the APK has no native
-   libraries. Known in round 2, with 6.12.0.300: `lib/arm64-v8a/libTransform.so` (from
+   Record which libraries fail. Expected: none. With `com.huawei.hms:location` 6.16.0.302 the only native libraries
+   are `lib/*/libucs-credential.so` (from `ucs-credential-developers` 1.0.4.320), all at `p_align` 16384. Known in
+   round 2, with 6.12.0.300: `lib/arm64-v8a/libTransform.so` (from
    `com.huawei.hms.LocationLiteSdk:core` 2.12.0.300) and `lib/x86_64/libucs-credential.so` (from
    `com.huawei.hms:ucs-credential-developers` 1.0.4.312) had `p_align` 4096. See
    [DECISIONS.md](DECISIONS.md#bricksrep-adoption).

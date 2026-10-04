@@ -17,12 +17,11 @@ version follows the Capacitor major version (Capacitor 8), as `@bricks-soft/cap-
   publishing, no npm token); a maintainer approves it on npmjs.com. Steps: README, "Publishing to npm".
 - **License: MIT** (was `UNLICENSED`). `LICENSE` added.
 - `getDeviceInfo().pluginVersion` and the log file header report `8.0.0`.
-- **`com.huawei.hms:location` 6.20.0.300** (was 6.12.0.300). It has no native libraries, so a build that packages
-  HMS (`hms` or `gms,hms`) now meets Google Play's 16 KB page-size requirement; 6.12.0.300 brought `libTransform.so`
-  (`arm64-v8a`) and `libucs-credential.so` (`x86_64`) with 4 KB alignment. Its manifest declares
-  `android:allowBackup="false"`: an app with `allowBackup="true"` that packages HMS needs
-  `tools:replace="android:allowBackup"` (README, "Android setup"). The HMS backend no longer calls
-  `setCoordinateType(WGS84)`, which 6.20 removed; it was the default, and the plugin still builds against 6.12.0.300.
+- **`com.huawei.hms:location` 6.16.0.302** (was 6.12.0.300), the release Huawei lists with 16 KB page-size support.
+  A build that packages HMS (`hms` or `gms,hms`) now meets Google Play's 16 KB requirement; 6.12.0.300 brought
+  `libTransform.so` (`arm64-v8a`) and `libucs-credential.so` (`x86_64`) with 4 KB alignment. The HMS backend no
+  longer calls `LocationRequest.setCoordinateType(WGS84)`, which 6.16 removed; WGS84 was the default, and the plugin
+  still builds against 6.12.0.300.
 
 ### Added
 

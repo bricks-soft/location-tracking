@@ -650,7 +650,7 @@ questions on 2026-10-04.
 
 | Decision | Why | Where |
 |---|---|---|
-| This repository (`bricks-soft/location-tracking`) publishes the package. The public repository `bricks-soft/capacitor-location-tracking`, an older codebase with the same package name and its own `npm-publish.yml`, is not used for publishing. | Owner's choice. An npm trusted publisher names one repository and one workflow file. While this repository is private, npm attaches no provenance statement. | `.github/workflows/npm-publish.yml` |
+| This repository (`bricks-soft/location-tracking`) publishes the package. The public repository `bricks-soft/capacitor-location-tracking`, an older codebase with the same package name and its own `npm-publish.yml`, is not used for publishing. | Owner's choice. An npm trusted publisher names one repository and one workflow file. The owner made this repository public on 2026-10-04, so versions published by the workflow carry an npm provenance statement. | `.github/workflows/npm-publish.yml` |
 | License MIT (was `UNLICENSED`). | Owner's choice; same as `cap-downloader`. | `LICENSE`, `package.json`, README "License" |
 | Public access (`publishConfig.access` `public`). | Owner's choice; same as `cap-downloader`. A scoped package is restricted by default. | `package.json` |
 | First npm version 8.0.0 (was 0.1.0, never published). `PLUGIN_VERSION` in `src/web/device.ts` and `android/build.gradle` follows it. | Owner's choice: the major version follows Capacitor's, as `cap-downloader` (8.0.2) does. | `package.json`, `src/web/device.ts`, `android/build.gradle` |

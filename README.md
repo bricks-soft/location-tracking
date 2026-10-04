@@ -1083,8 +1083,8 @@ Each later release:
 3. In the package's **Staged Packages** tab on npmjs.com, approve the staged version (or run
    `npm stage approve <stage-id>`) with 2FA. Only then can apps install it.
 
-The repository is private, so npm attaches no provenance statement and the package page's repository link works only
-for members of the `bricks-soft` GitHub organization.
+Versions published by the workflow carry an npm provenance statement (the repository is public), which links each
+version to the commit and workflow run that built it. The first version, published by hand, has none.
 
 ## API
 

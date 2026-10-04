@@ -1,8 +1,8 @@
 # Stages the package on the npm registry when a GitHub release is created (same setup as
 # bricks-soft/cap-downloader). Authentication uses npm trusted publishing (OpenID Connect), configured on npmjs.com
 # against this repository and this workflow file name. There is no npm token: the `id-token: write` permission below
-# lets the runner exchange a short-lived OIDC token with the registry. npm attaches a provenance statement only when
-# the repository is public, so none is attached while this repository is private.
+# lets the runner exchange a short-lived OIDC token with the registry, and npm attaches a provenance statement
+# automatically (this repository is public).
 #
 # That trusted publisher grants `npm stage publish` only, so this job does not make the version installable. It
 # uploads the tarball to the Staged Packages tab, where a maintainer runs `npm stage approve <stage-id>` (or clicks

@@ -395,6 +395,51 @@ The update removes Transistor's service and receivers, and this plugin has never
   `tracking_start` record.
 - Add your geofences again (`addGeofences()`), and call `setOdometer()` if you need the odometer to continue.
 
+### Delete Transistor's data
+
+Nothing of Transistor's is carried over, but nothing is deleted either: its files stay in the app's private storage
+after the update. One of them holds the last `authorization.accessToken`, and another the access and refresh tokens
+of its JWT refresh. Transistor `tslocationmanager` 3.7.0 (v8) uses these, all under `/data/data/<app id>/`:
+
+| Kind | Name |
+|---|---|
+| SharedPreferences (`shared_prefs/<name>.xml`) | `TSLocationManager:TSConfig` (the config, with the access token) |
+| | `TSLocationManager:AuthorizationToken` (access and refresh tokens) |
+| | `TSLocationManager` |
+| | `TSProviderManager` |
+| | `TSLocationManagerDeviceSettings` |
+| | `com.transistorsoft.locationmanager.geofence.TSGeofenceManager` |
+| SQLite database (`databases/`) | `transistor_location_manager` (the record queue) |
+| | `transistor_logback.db` (the log) |
+| Cache file (`cache/`) | `background-geolocation.log.gz` (left by `emailLog`/`uploadLog`) |
+
+This plugin does not delete them. Your app can, for example in `MainActivity` (deleting a missing file does nothing,
+so the code can stay):
+
+```java
+// android/app/src/main/java/<your package>/MainActivity.java
+@Override
+public void onCreate(Bundle savedInstanceState) {
+    super.onCreate(savedInstanceState);
+    new Thread(this::deleteTransistorData).start();
+}
+
+private void deleteTransistorData() {
+    for (String name : new String[] {
+        "TSLocationManager:TSConfig", "TSLocationManager:AuthorizationToken", "TSLocationManager",
+        "TSProviderManager", "TSLocationManagerDeviceSettings",
+        "com.transistorsoft.locationmanager.geofence.TSGeofenceManager",
+    }) {
+        deleteSharedPreferences(name);
+    }
+    deleteDatabase("transistor_location_manager");
+    deleteDatabase("transistor_logback.db");
+    new java.io.File(getCacheDir(), "background-geolocation.log.gz").delete();
+}
+```
+
+`deleteDatabase` also removes the `-journal`, `-wal` and `-shm` files.
+
 ## 3. Update the server endpoint
 
 Reference for everything below: [wire-format.md](wire-format.md).

@@ -22,6 +22,10 @@ version follows the Capacitor major version (Capacitor 8), as `@bricks-soft/cap-
   `libTransform.so` (`arm64-v8a`) and `libucs-credential.so` (`x86_64`) with 4 KB alignment. The HMS backend no
   longer calls `LocationRequest.setCoordinateType(WGS84)`, which 6.16 removed; WGS84 was the default, and the plugin
   still builds against 6.12.0.300.
+- **`provider` on every record** (was `providerchange` only): the location provider state (`enabled`, `gps`,
+  `network`, `permission`, `accuracy`, `backend`) read when the record is created, so a server sees it on every
+  heartbeat and right after a restart. `providerchange` records and their detection are unchanged
+  ([wire-format.md, Record fields](docs/wire-format.md#record-fields)).
 
 ### Added
 

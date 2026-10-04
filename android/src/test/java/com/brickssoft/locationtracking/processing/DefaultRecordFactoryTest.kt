@@ -88,18 +88,19 @@ class DefaultRecordFactoryTest {
         assertEquals(ProviderKind.GMS, record.backend)
         assertNull(record.extras)
         assertNull(record.geofence)
-        assertNull(record.provider)
+        assertEquals(device.providerStateValue, record.provider)
         assertNull(record.reason)
     }
 
     @Test
-    fun `create reads clock, runtime, battery and backend at call time`() {
+    fun `create reads clock, runtime, battery, provider state and backend at call time`() {
         factory.create(RecordEvent.LOCATION, null)
         clock.advance(5_000)
         clock.bootCountValue = 43
         configStore.updateRuntime { it.copy(isMoving = false, odometer = 2_000.0, activity = ActivitySample.UNKNOWN) }
         device.batteryValue = BatterySnapshot(0.2f, true)
         providers.kind = ProviderKind.HMS
+        device.providerStateValue = Fixtures.providerState(gps = false)
 
         val record = factory.create(RecordEvent.HEARTBEAT, null)
 
@@ -111,6 +112,7 @@ class DefaultRecordFactoryTest {
         assertEquals(ActivitySample.UNKNOWN, record.activity)
         assertEquals(BatterySnapshot(0.2f, true), record.battery)
         assertEquals(ProviderKind.HMS, record.backend)
+        assertEquals(Fixtures.providerState(gps = false), record.provider)
     }
 
     @Test
@@ -361,7 +363,7 @@ class DefaultRecordFactoryTest {
         assertEquals(
             setOf(
                 "uuid", "event", "timestamp", "recorded_at", "elapsed_realtime_ms", "boot_count", "is_moving",
-                "odometer", "mock", "coords", "activity", "battery", "backend", "extras",
+                "odometer", "mock", "coords", "activity", "battery", "backend", "extras", "provider",
             ),
             json.keys().asSequence().toSet(),
         )
@@ -394,7 +396,9 @@ class DefaultRecordFactoryTest {
               "activity": { "type": "in_vehicle", "confidence": 92 },
               "battery": { "level": 0.81, "is_charging": false },
               "backend": "gms",
-              "extras": { "driver_id": 7 }
+              "extras": { "driver_id": 7 },
+              "provider": { "enabled": true, "gps": true, "network": true, "permission": "always",
+                            "accuracy": "precise", "backend": "gms" }
             }
             """,
             json,

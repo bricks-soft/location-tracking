@@ -429,7 +429,7 @@ it is. If the URL can't change, tell the bodies apart per record: only this plug
 | `timestampMeta` | With `enableTimestampMeta` | Removed | Use `elapsed_realtime_ms` and `boot_count`. |
 | `mock` | Optional | Always present | – |
 | `battery.level` | 0–1 | 0–1, or `-1` when unknown | Treat `-1` as unknown. |
-| `provider` (on `providerchange`) | `{ enabled, status, network, gps, accuracyAuthorization }` | `{ enabled, gps, network, permission, accuracy, backend }`, where `permission` is `always` / `when_in_use` / `denied` and `accuracy` is `precise` / `approximate` / `none` | Map the new keys. |
+| `provider` | On `providerchange`: `{ enabled, status, network, gps, accuracyAuthorization }` | On every record: `{ enabled, gps, network, permission, accuracy, backend }`, where `permission` is `always` / `when_in_use` / `denied` and `accuracy` is `precise` / `approximate` / `none` | Map the new keys. |
 | New keys on every record | – | `recorded_at` (created on the phone), `sent_at` (request built; only in HTTP bodies), `elapsed_realtime_ms`, `boot_count`, `backend` (`gms` / `hms` / `android`) | Store them: they are what an audit needs ([Time fields](wire-format.md#time-fields)). |
 | `reason` | – | On `tracking_start` and `tracking_stop` | See the reason tables in [wire-format.md](wire-format.md#tracking_start). |
 | `heartbeat` | – | Optional scheduling metadata on `heartbeat` records | Tells you the next expected gap ([heartbeat.md](heartbeat.md#heartbeat-metadata)). |

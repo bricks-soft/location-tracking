@@ -61,8 +61,10 @@ Timestamps are ISO-8601 in UTC with milliseconds, for example `2026-09-26T10:15:
 
 ## Record fields
 
-Every record has all of these keys; values that are unknown are `null`. The only exceptions are the optional `extras`
-and the event-specific keys `geofence`, `provider`, `reason` and `heartbeat`, which appear only when they apply.
+Every record has all of these keys; values that are unknown are `null`. The exceptions are the optional `extras`,
+`provider` (missing only when the plugin could not read the provider state, and on records queued by a plugin version
+before 8.0.0), and the event-specific keys `geofence`, `reason` and `heartbeat`, which appear only when they apply. The
+examples below show `provider` only on `providerchange`.
 
 | Key | Type | Meaning |
 |---|---|---|
@@ -82,7 +84,7 @@ and the event-specific keys `geofence`, `provider`, `reason` and `heartbeat`, wh
 | `backend` | string \| null | Location backend in use: `gms`, `hms` or `android`. |
 | `extras` | object | Optional. `persistence.extras`, merged with the extras passed to the call that created the record (for example `getCurrentPosition({ extras })`); the call's keys win. Absent when both are empty. |
 | `geofence` | object | Only for `geofence`: `{ "identifier", "action": "ENTER" \| "EXIT" \| "DWELL", "extras"? }`. |
-| `provider` | object | Only for `providerchange`: the new provider state (see below). |
+| `provider` | object | The location provider state when the record was created, read at that moment ([keys](#providerchange)). On `providerchange` it is the new state. A server can keep the newest by `recorded_at`. |
 | `reason` | string | Only for `tracking_start` and `tracking_stop` (see the reason tables below). |
 | `heartbeat` | object | Only for `heartbeat`, and optional: how heartbeats are scheduled (see [`heartbeat`](#heartbeat)). |
 

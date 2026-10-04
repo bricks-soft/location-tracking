@@ -243,7 +243,7 @@ export interface Location {
   backend: LocationBackend | null;
   extras?: Record<string, unknown>;
   /** event 'geofence' only */ geofence?: { identifier: string; action: GeofenceAction; extras?: Record<string, unknown> };
-  /** event 'providerchange' only */ provider?: ProviderState;
+  /** provider state when the record was created; the new state for event 'providerchange' */ provider?: ProviderState;
   /** tracking_start: start|start_geofences|boot|restore|package_replaced; tracking_stop: stop|stop_on_stationary|stop_after_elapsed|terminate|permission_denied|service_start_failed|reboot|package_replaced */
   reason?: string;
 }

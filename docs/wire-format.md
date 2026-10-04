@@ -558,6 +558,10 @@ Substitution rules:
   too, so the result is JSON `null`, not the string `"null"`. This happens with `timestamp`, `backend`, `reason`,
   `geofence.*`, `provider.*` and the coordinates on records where they don't apply. Inside a longer string (for
   example `"<%= uuid %>/<%= reason %>"`) a `null` value becomes the text `null`.
+- A template can't render a `null` object, only `null` values. On a record without a fix (a `heartbeat`,
+  `tracking_start`, `tracking_stop` or `providerchange` record before the phone's first fix),
+  `"coords":{"latitude":<%= latitude %>,...}` renders as `"coords":{"latitude":null,...}`, and `"<%= timestamp %>"`
+  as `null`. The server must accept that shape, or the template can nest `<%= record %>`, whose `coords` is `null`.
 - An unknown placeholder is replaced by nothing (so `"<%= nope %>"` becomes `""`), and a warning is logged.
 - The rendered text must be a valid JSON **object or array** (it is checked strictly). Otherwise the plugin sends the
   **default shape** for that record instead and logs an error. Test your template with `getLog()`.

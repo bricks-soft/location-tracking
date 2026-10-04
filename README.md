@@ -320,6 +320,15 @@ every method rejects with `NOT_READY`, except `ready`, `getState`, `checkPermiss
 `getDeviceInfo`, `getSensors`, `log`, `getLog`, `getProviderState` and the `open*Settings` methods
 (`openBatteryOptimizationSettings`, `openPowerManagerSettings`, `openLocationSettings`, `openAppSettings`).
 
+An app that calls `getCurrentPosition()` (or `watchPosition()`) for users who never configure tracking calls
+`ready({ reset: false })` without a config first; that is the intended pattern. It loads the persisted config (the
+defaults on the first run) and changes nothing, and calling `ready()` again later in the process is fine. Two side
+effects:
+- If tracking is enabled but not running in this process, this `ready()` resumes it (reason `restore`), with the
+  persisted config.
+- It counts as the first `ready()` after install, so a later `ready({ config, reset: false })` keeps the persisted
+  config and ignores the one passed. Use `reset: true` or `setConfig()` to apply a config after that.
+
 **`ready({ reset })`.** With `reset: true` (the default), the config is the defaults plus the config you pass, on every
 launch. With `reset: false`, the config you pass is applied only on the very first `ready()` after install, and
 afterwards the persisted config wins (change it with `setConfig()`). Note that with `reset: true`, JWT tokens the

@@ -38,7 +38,7 @@ android {
         minSdkVersion project.hasProperty('minSdkVersion') ? rootProject.ext.minSdkVersion : 24
         targetSdkVersion project.hasProperty('targetSdkVersion') ? rootProject.ext.targetSdkVersion : 36
         consumerProguardFiles 'consumer-rules.pro'
-        buildConfigField 'String', 'PLUGIN_VERSION', '"0.1.0"'
+        buildConfigField 'String', 'PLUGIN_VERSION', '"8.0.0"'
         buildConfigField 'String', 'PACKAGED_PROVIDERS', "\"${ltProviders.join(',')}\""
     }
     buildFeatures {

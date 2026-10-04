@@ -32,6 +32,7 @@ whether the user really kept tracking on.
 - [Example app](#example-app)
 - [Field-force example](#field-force-example)
 - [End-to-end tests](#end-to-end-tests)
+- [Publishing to npm](#publishing-to-npm)
 - [API](#api)
 
 ## Features
@@ -1048,6 +1049,42 @@ field-force app supports 16 KB memory pages (`.github/scripts/check-16kb.py`).
 The field-force suite, together with the field-force app and the kit, is written so that it can move into the Bricks
 app as its integration test. The contract behind the tests (scenario ids, debug commands, mock back office) is
 [docs/e2e/architecture.md](docs/e2e/architecture.md).
+
+## Publishing to npm
+
+The package is published as
+[`@bricks-soft/capacitor-location-tracking`](https://www.npmjs.com/package/@bricks-soft/capacitor-location-tracking),
+with public access, by the workflow [`.github/workflows/npm-publish.yml`](.github/workflows/npm-publish.yml). The
+setup is the same as in `bricks-soft/cap-downloader`: npm trusted publishing (OpenID Connect, no npm token) and npm
+staged publishing.
+
+One-time setup on npmjs.com (by an owner of the `@bricks-soft` npm scope), after the first version exists on npm
+(trusted publishers are configured per package):
+
+1. Open the package's **Settings** → **Trusted publishing** → **GitHub Actions**.
+2. Enter organization `bricks-soft`, repository `location-tracking`, workflow file `npm-publish.yml`, no environment.
+3. Give it the same permission as the `cap-downloader` publisher: stage only (`npm stage publish`).
+
+The first version cannot use the trusted publisher, because the package does not exist yet. Publish it once by hand
+from a clean checkout, logged in with `npm login` as a member of the `@bricks-soft` scope:
+
+```bash
+npm ci && npm run build && npm test
+npm publish               # prepublishOnly builds again; publishConfig.access makes it public
+```
+
+Each later release:
+
+1. Set the same version in `package.json` (then `npm install --package-lock-only`), `PLUGIN_VERSION` in
+   `src/web/device.ts` and `PLUGIN_VERSION` in `android/build.gradle` (`npm test` checks the first two), and give the
+   `CHANGELOG.md` section that version and the date.
+2. Merge to `master` and create a GitHub release with a tag such as `v8.0.1`. The release starts the workflow (it can
+   also be started by hand from the Actions tab). The workflow builds, runs `npm test` and runs `npm stage publish`.
+3. In the package's **Staged Packages** tab on npmjs.com, approve the staged version (or run
+   `npm stage approve <stage-id>`) with 2FA. Only then can apps install it.
+
+Versions published by the workflow carry an npm provenance statement (the repository is public), which links each
+version to the commit and workflow run that built it. The first version, published by hand, has none.
 
 ## API
 
@@ -2540,4 +2577,4 @@ Make all properties in T optional
 
 ## License
 
-UNLICENSED: proprietary, © Bricks Soft. See `package.json`.
+MIT, © 2026 Bricks Soft. See [LICENSE](LICENSE).

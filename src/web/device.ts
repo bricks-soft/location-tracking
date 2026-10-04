@@ -2,7 +2,7 @@
 import type { DeviceInfo } from '../definitions';
 
 /** Keep in sync with `package.json` (a test checks this) and `PLUGIN_VERSION` in `android/build.gradle`. */
-export const PLUGIN_VERSION = '0.1.0';
+export const PLUGIN_VERSION = '8.0.0';
 
 /** Tokens after `Android x` that do not name a device ('K' is Chrome's reduced user agent). */
 const NOT_A_MODEL = ['K', 'U', 'wv', 'Mobile', 'Tablet', 'HarmonyOS'];

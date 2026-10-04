@@ -983,7 +983,7 @@ Use fully qualified class names. Use a `FileProvider` subclass, because the Capa
 
 **Repo root:**
 - `package.json`:
-  - name `@bricks-soft/capacitor-location-tracking`, `"private": true`, `"license": "UNLICENSED"`;
+  - name `@bricks-soft/capacitor-location-tracking`, `"private": true`, `"license": "UNLICENSED"` (changed in 8.0.0: no `private`, `"license": "MIT"`, `publishConfig.access` `public`; see DECISIONS.md, "npm publishing");
   - `main`/`module`/`types`/`unpkg` as in the Capacitor plugin template;
   - `files: ["android/src/main/","android/build.gradle","android/consumer-rules.pro","dist/"]`;
   - `"capacitor": {"android": {"src": "android"}}` with no ios key;

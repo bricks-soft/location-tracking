@@ -6,6 +6,7 @@ import com.brickssoft.locationtracking.core.Logger
 import com.brickssoft.locationtracking.model.JsonUtil
 import com.brickssoft.locationtracking.model.Record
 import com.brickssoft.locationtracking.model.RecordEvent
+import com.brickssoft.locationtracking.model.RecordJson
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
@@ -15,7 +16,8 @@ import org.json.JSONTokener
  *
  * Each `<%= name %>` placeholder (surrounding whitespace allowed) is replaced by a raw JSON literal: numbers and
  * booleans bare, null as `null`, strings JSON-escaped but without quotes (templates write `"<%= uuid %>"`), and
- * `extras` as JSON object text (`{}` when the record has none). A null value in a placeholder that is exactly wrapped
+ * `extras` as JSON object text (`{}` when the record has none), and `record` as the default record object (with
+ * `sent_at`), so `"raw": <%= record %>` keeps every field. A null value in a placeholder that is exactly wrapped
  * in quotes (`"<%= timestamp %>"`) replaces the quotes too, so it becomes JSON `null` rather than the string "null".
  * An unknown placeholder becomes "" and logs a warning.
  */
@@ -60,6 +62,7 @@ internal object TemplateRenderer {
         "provider.network" to { r, _ -> r.provider?.network?.toString() },
         "provider.permission" to { r, _ -> r.provider?.let { string(it.permission.wire) } },
         "extras" to { r, _ -> JsonUtil.parseObject(r.extras)?.toString() ?: "{}" },
+        "record" to { r, sentAt -> RecordJson.toJson(r, sentAt).toString() },
     )
 
     /** Every supported placeholder name. */

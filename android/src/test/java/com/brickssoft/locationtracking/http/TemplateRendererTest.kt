@@ -6,8 +6,11 @@ import com.brickssoft.locationtracking.core.LogLevel
 import com.brickssoft.locationtracking.core.Logger
 import com.brickssoft.locationtracking.model.GeofenceAction
 import com.brickssoft.locationtracking.model.GeofenceHit
+import com.brickssoft.locationtracking.model.HeartbeatMeta
+import com.brickssoft.locationtracking.model.HeartbeatStrategy
 import com.brickssoft.locationtracking.model.Record
 import com.brickssoft.locationtracking.model.RecordEvent
+import com.brickssoft.locationtracking.model.RecordJson
 import com.brickssoft.locationtracking.testing.FakeLogStore
 import com.brickssoft.locationtracking.testing.Fixtures
 import com.brickssoft.locationtracking.testing.JsonAssert.assertJsonEquals
@@ -173,7 +176,22 @@ class TemplateRendererTest {
         for (name in TemplateRenderer.PLACEHOLDERS) {
             assertNotNull("placeholder $name", TemplateRenderer.literal(name, record, sentAt))
         }
-        assertEquals(32, TemplateRenderer.PLACEHOLDERS.size)
+        assertEquals(33, TemplateRenderer.PLACEHOLDERS.size)
+    }
+
+    @Test
+    fun `record is the default record object, with sent_at`() {
+        val heartbeat = Fixtures.record(
+            event = RecordEvent.HEARTBEAT,
+            location = null,
+            provider = Fixtures.providerState(),
+            heartbeat = HeartbeatMeta(HeartbeatStrategy.EXACT, 180, 300, null, true, false),
+        )
+        val json = render("""{"id":"<%= uuid %>","raw":<%= record %>}""", heartbeat) as JSONObject
+
+        assertJsonEquals(RecordJson.toJson(heartbeat, sentAt).toString(), json.getJSONObject("raw"))
+        assertTrue(json.getJSONObject("raw").isNull("coords"))
+        assertEquals("precise", json.getJSONObject("raw").getJSONObject("provider").getString("accuracy"))
     }
 
     @Test

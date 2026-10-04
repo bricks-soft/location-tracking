@@ -489,7 +489,7 @@ General rules:
   - numbers and booleans are inserted bare (non-finite numbers as `null`);
   - null is inserted as `null`; a null placeholder wrapped exactly in quotes (`"<%= reason %>"`) replaces the quotes too, giving JSON `null`;
   - strings are JSON-escaped but inserted without quotes, so users write `"<%= timestamp %>"`.
-- Placeholders: `uuid, event, timestamp, recorded_at, sent_at, latitude, longitude, accuracy, altitude, altitude_accuracy, speed, speed_accuracy, heading, heading_accuracy, is_moving, odometer, mock, activity.type, activity.confidence, battery.level, battery.is_charging, elapsed_realtime_ms, boot_count, backend, reason, geofence.identifier, geofence.action, provider.enabled, provider.gps, provider.network, provider.permission, extras`. `extras` is substituted as JSON object text (`{}` when the record has none).
+- Placeholders: `uuid, event, timestamp, recorded_at, sent_at, latitude, longitude, accuracy, altitude, altitude_accuracy, speed, speed_accuracy, heading, heading_accuracy, is_moving, odometer, mock, activity.type, activity.confidence, battery.level, battery.is_charging, elapsed_realtime_ms, boot_count, backend, reason, geofence.identifier, geofence.action, provider.enabled, provider.gps, provider.network, provider.permission, extras, record`. `extras` is substituted as JSON object text (`{}` when the record has none), `record` as the default record object (`RecordJson.toJson`, with `sent_at`).
 - An unknown placeholder becomes an empty string and logs a warning.
 - The rendered text must be a JSON object or array, validated by a strict parser (org.json is too lenient); otherwise the default shape is used and an error is logged.
 

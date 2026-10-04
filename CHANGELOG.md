@@ -18,6 +18,12 @@ version follows the Capacitor major version (Capacitor 8), as `@bricks-soft/cap-
 - **License: MIT** (was `UNLICENSED`). `LICENSE` added.
 - `getDeviceInfo().pluginVersion` and the log file header report `8.0.0`.
 
+### Added
+
+- **`<%= record %>` template placeholder**: the whole default record object (`sent_at` included), so a template can
+  nest every field without listing them, e.g. `"raw_event": <%= record %>`
+  ([wire-format.md, Templates](docs/wire-format.md#templates)).
+
 Round 2: the field-force audit setup, a native API for companion plugins, and end-to-end tests on an Android
 emulator. Decisions: [docs/DECISIONS.md](docs/DECISIONS.md#round-2-field-force-audit-companion-api-and-avd-tests).
 

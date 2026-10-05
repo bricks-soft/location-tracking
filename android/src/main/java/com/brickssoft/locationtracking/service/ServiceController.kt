@@ -11,4 +11,12 @@ interface ServiceController {
 
     /** Rebuilds the notification from the current config. */
     fun refreshNotification()
+
+    /**
+     * Posts the resume notification (`notification.resume`), dismissed at [deadline] (epoch ms) if not null. Only logs
+     * when notifications are not allowed (`POST_NOTIFICATIONS`).
+     */
+    fun showResumeNotification(deadline: Long?) = Unit
+
+    fun cancelResumeNotification() = Unit
 }

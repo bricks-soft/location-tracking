@@ -30,6 +30,10 @@ object Constants {
 
     const val NOTIFICATION_ID = 7301
 
+    /** The resume notification (`notification.resume`) and its channel. */
+    const val RESUME_NOTIFICATION_ID = 7302
+    const val RESUME_CHANNEL_ID = "location_tracking_resume"
+
     // PendingIntent request codes
     const val RC_HEARTBEAT = 7310
     const val RC_GMS_ACTIVITY = 7320
@@ -37,6 +41,7 @@ object Constants {
     const val RC_HMS_ACTIVITY = 7330
     const val RC_HMS_GEOFENCE = 7331
     const val RC_NOTIFICATION_CONTENT = 7349
+    const val RC_RESUME_NOTIFICATION = 7348
 
     /** Notification action `i` uses `RC_NOTIFICATION_ACTION_BASE + i`. */
     const val RC_NOTIFICATION_ACTION_BASE = 7350

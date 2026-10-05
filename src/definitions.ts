@@ -270,6 +270,24 @@ export interface NotificationConfig {
   channelName?: string;
   /** max 3; tap => 'notificationaction' event */
   actions?: NotificationActionButton[];
+  /** notification that resumes tracking when Android refuses to restore it from the background (Android 14+) */
+  resume?: ResumeNotificationConfig;
+}
+
+/**
+ * Posted when Android refuses to restore tracking from the background (after a reboot, an app update or a process
+ * restart), typically on Android 14+ without "Allow all the time". A tap resumes the session
+ * (`tracking_start` reason `resume_notification`). Uses the tracking notification's small icon and color.
+ */
+export interface ResumeNotificationConfig {
+  /** @default false */
+  enabled?: boolean;
+  /** @default app label */
+  title?: string;
+  /** @default 'Location tracking is paused. Tap to resume.' */
+  text?: string;
+  /** @default 'Paused location tracking' */
+  channelName?: string;
 }
 
 export interface GeofenceConfig {
@@ -380,7 +398,7 @@ export interface Location {
   /** provider state when the record was created; the new state for event 'providerchange' */
   provider?: ProviderState;
   /**
-   * tracking_start: start|start_geofences|boot|restore|package_replaced;
+   * tracking_start: start|start_geofences|boot|restore|package_replaced|resume_notification;
    * tracking_stop: stop|stop_on_stationary|stop_after_elapsed|terminate|permission_denied|service_start_failed|reboot|package_replaced
    */
   reason?: string;

@@ -52,6 +52,22 @@ class NotificationFactoryTest {
     }
 
     @Test
+    fun `the resume notification has its own channel and starts the service when tapped`() {
+        val n = factory.buildResume(NotificationConfig(), timeoutMs = 60_000L)
+
+        assertEquals(Constants.RESUME_CHANNEL_ID, n.channelId)
+        val channel = notificationManager.getNotificationChannel(Constants.RESUME_CHANNEL_ID)
+        assertEquals(NotificationManager.IMPORTANCE_DEFAULT, channel.importance)
+        assertEquals(app.getString(R.string.lt_resume_channel_name), channel.name.toString())
+        assertEquals(app.getString(R.string.lt_resume_notification_text), n.extras.getString(Notification.EXTRA_TEXT))
+        assertTrue(n.flags and Notification.FLAG_AUTO_CANCEL != 0)
+        assertEquals(60_000L, n.timeoutAfter)
+        val tap = shadowOf(n.contentIntent)
+        assertTrue(tap.isForegroundService)
+        assertEquals(LocationTrackingService.ACTION_RESUME, tap.savedIntent.action)
+    }
+
+    @Test
     fun `default config builds the plugin notification`() {
         val n = factory.build(NotificationConfig())
 

@@ -366,6 +366,7 @@ without a `tracking_stop` in between.
 | `boot` | Tracking resumed after the phone rebooted (`app.startOnBoot: true`). Expect a gap before it, covering the time the phone was off. The plugin handles one boot broadcast per boot: it ignores a boot broadcast when the phone's boot counter (`Settings.Global.BOOT_COUNT`) is the same as for the last boot broadcast it handled, or the same as when it last started the tracking service. So a repeated or fake `QUICKBOOT_POWERON` broadcast without a real reboot creates no second `tracking_start`. |
 | `restore` | Tracking was still on, but not running in the app's process, and the plugin resumed it: Android restarted the killed service, a heartbeat alarm or an activity update woke the app, or the app called `ready()` after it was reopened (for example after a force-stop). Expect a gap before it. |
 | `package_replaced` | Tracking resumed after the app was updated (`app.startOnBoot: true`). |
+| `resume_notification` | The user tapped the resume notification (`notification.resume`) after Android had refused to restore tracking from the background; the `tracking_stop` with reason `service_start_failed` comes before it. The session continues with its original `stopAfterElapsedMinutes` deadline. |
 
 When Android doesn't let the plugin resume, the server gets a `tracking_stop` with reason `service_start_failed` or
 `permission_denied` instead of the `boot`, `restore` or `package_replaced` start, or right after it (see below).

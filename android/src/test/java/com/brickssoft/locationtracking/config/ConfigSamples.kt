@@ -86,6 +86,7 @@ object ConfigSamples {
             channelId = "ch",
             channelName = "Channel",
             actions = listOf(NotificationActionButton("pause", "Pause"), NotificationActionButton("stop", "Stop")),
+            resume = ResumeNotificationConfig(enabled = true, title = "Paused", text = "Tap", channelName = "Resume"),
         ),
         geofence = GeofenceConfig(initialTriggerEntry = false),
         logger = LoggerConfig(logLevel = LogLevel.DEBUG, logMaxDays = 10),
@@ -134,7 +135,8 @@ object ConfigSamples {
           "notification": {
             "title": "Tracking", "text": "On duty", "smallIcon": "mipmap/ic_launcher", "largeIcon": "drawable/big",
             "color": "#FF0000", "priority": "high", "channelId": "ch", "channelName": "Channel",
-            "actions": [ { "id": "pause", "label": "Pause" }, { "id": "stop", "label": "Stop" } ]
+            "actions": [ { "id": "pause", "label": "Pause" }, { "id": "stop", "label": "Stop" } ],
+            "resume": { "enabled": true, "title": "Paused", "text": "Tap", "channelName": "Resume" }
           },
           "geofence": { "initialTriggerEntry": false },
           "logger": { "logLevel": "debug", "logMaxDays": 10 },
@@ -169,7 +171,11 @@ object ConfigSamples {
           "notification": {
             "title": null, "text": "Location tracking is active", "smallIcon": "drawable/lt_ic_notification",
             "largeIcon": null, "color": null, "priority": "default", "channelId": "location_tracking",
-            "channelName": "Location tracking", "actions": []
+            "channelName": "Location tracking", "actions": [],
+            "resume": {
+              "enabled": false, "title": null, "text": "Location tracking is paused. Tap to resume.",
+              "channelName": "Paused location tracking"
+            }
           },
           "geofence": { "initialTriggerEntry": true },
           "logger": { "logLevel": "info", "logMaxDays": 3 },

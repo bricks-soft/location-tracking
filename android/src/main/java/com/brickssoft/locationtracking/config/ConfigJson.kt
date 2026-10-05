@@ -277,6 +277,17 @@ object ConfigJson {
             channelId = r.string("channelId", c.channelId, d.channelId),
             channelName = r.string("channelName", c.channelName, d.channelName),
             actions = r.array("actions", c.actions, d.actions, ::parseAction),
+            resume = r.group("resume", c.resume, d.resume, ::parseResume),
+        )
+    }
+
+    private fun parseResume(r: JsonReader, c: ResumeNotificationConfig): ResumeNotificationConfig {
+        val d = ResumeNotificationConfig()
+        return ResumeNotificationConfig(
+            enabled = r.boolean("enabled", c.enabled, d.enabled),
+            title = r.nullableString("title", c.title, d.title),
+            text = r.string("text", c.text, d.text),
+            channelName = r.string("channelName", c.channelName, d.channelName),
         )
     }
 
@@ -406,6 +417,14 @@ object ConfigJson {
             .put("channelId", n.channelId)
             .put("channelName", n.channelName)
             .put("actions", actions)
+            .put(
+                "resume",
+                JSONObject()
+                    .put("enabled", n.resume.enabled)
+                    .put("title", JsonUtil.orNull(n.resume.title))
+                    .put("text", n.resume.text)
+                    .put("channelName", n.resume.channelName),
+            )
     }
 
     private fun rationaleToJson(b: BackgroundPermissionRationale): JSONObject = JSONObject()

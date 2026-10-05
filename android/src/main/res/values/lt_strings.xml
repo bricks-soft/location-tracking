@@ -2,6 +2,8 @@
 <resources>
     <string name="lt_notification_text">Location tracking is active</string>
     <string name="lt_notification_channel_name">Location tracking</string>
+    <string name="lt_resume_notification_text">Location tracking is paused. Tap to resume.</string>
+    <string name="lt_resume_channel_name">Paused location tracking</string>
     <string name="lt_bg_rationale_title">Allow background location</string>
     <string name="lt_bg_rationale_message">To keep tracking your location while the app is closed or not in use, select \"Allow all the time\" on the next screen.</string>
     <string name="lt_bg_rationale_positive">Change to \"Allow all the time\"</string>

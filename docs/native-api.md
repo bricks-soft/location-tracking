@@ -111,7 +111,7 @@ Every record the plugin queues for upload, one call per record:
 
 | `record.event` | Created by |
 |---|---|
-| `tracking_start` | `start()`, `startGeofences()`, and the restore of a session in a new process (`reason`: `start`, `start_geofences`, `restore`, `boot`, `package_replaced`). |
+| `tracking_start` | `start()`, `startGeofences()`, and the restore of a session in a new process (`reason`: `start`, `start_geofences`, `restore`, `boot`, `package_replaced`, `resume_notification`). |
 | `tracking_stop` | `stop()` and every automatic stop (`reason`: `stop`, `stop_on_stationary`, `stop_after_elapsed`, `terminate`, `permission_denied`, `service_start_failed`, `reboot`, `package_replaced`). |
 | `motionchange` | A change between moving and stationary, and the first fix after `start()`. |
 | `location` | A recorded fix while moving. |

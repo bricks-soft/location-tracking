@@ -3,7 +3,7 @@ ext {
     androidxAppCompatVersion = project.hasProperty('androidxAppCompatVersion') ? rootProject.ext.androidxAppCompatVersion : '1.7.1'
     androidxCoreKTXVersion = project.hasProperty('androidxCoreKTXVersion') ? rootProject.ext.androidxCoreKTXVersion : '1.17.0'
     playServicesLocationVersion = project.hasProperty('playServicesLocationVersion') ? rootProject.ext.playServicesLocationVersion : '21.3.0'
-    hmsLocationVersion = project.hasProperty('hmsLocationVersion') ? rootProject.ext.hmsLocationVersion : '6.12.0.300'
+    hmsLocationVersion = project.hasProperty('hmsLocationVersion') ? rootProject.ext.hmsLocationVersion : '6.16.0.302'
     kotlinxCoroutinesVersion = project.hasProperty('kotlinxCoroutinesVersion') ? rootProject.ext.kotlinxCoroutinesVersion : '1.10.2'
     okhttpVersion = '4.12.0'
 }

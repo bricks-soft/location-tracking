@@ -377,7 +377,7 @@ export interface Location {
   extras?: Record<string, unknown>;
   /** event 'geofence' only */
   geofence?: { identifier: string; action: GeofenceAction; extras?: Record<string, unknown> };
-  /** event 'providerchange' only */
+  /** provider state when the record was created; the new state for event 'providerchange' */
   provider?: ProviderState;
   /**
    * tracking_start: start|start_geofences|boot|restore|package_replaced;

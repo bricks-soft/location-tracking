@@ -11,11 +11,30 @@ version follows the Capacitor major version (Capacitor 8), as `@bricks-soft/cap-
 ### Changed
 
 - **Published to npm** as `@bricks-soft/capacitor-location-tracking` with public access: `package.json` no longer has
-  `"private": true`, and has `repository`, `bugs`, `homepage`, `publishConfig` and a `prepublishOnly` build. The
+  `"private": true`, and has `repository`, `bugs`, `homepage`, `publishConfig` and a `prepare` build (it also builds
+  `dist/` when an app installs the package from git, since `dist/` is not committed). The
   workflow `.github/workflows/npm-publish.yml` stages a version on npm when a GitHub release is created (trusted
   publishing, no npm token); a maintainer approves it on npmjs.com. Steps: README, "Publishing to npm".
 - **License: MIT** (was `UNLICENSED`). `LICENSE` added.
 - `getDeviceInfo().pluginVersion` and the log file header report `8.0.0`.
+- **`com.huawei.hms:location` 6.16.0.302** (was 6.12.0.300), the release Huawei lists with 16 KB page-size support.
+  A build that packages HMS (`hms` or `gms,hms`) now meets Google Play's 16 KB requirement; 6.12.0.300 brought
+  `libTransform.so` (`arm64-v8a`) and `libucs-credential.so` (`x86_64`) with 4 KB alignment. The HMS backend no
+  longer calls `LocationRequest.setCoordinateType(WGS84)`, which 6.16 removed; WGS84 was the default, and the plugin
+  still builds against 6.12.0.300.
+- **`provider` on every record** (was `providerchange` only): the location provider state (`enabled`, `gps`,
+  `network`, `permission`, `accuracy`, `backend`) read when the record is created, so a server sees it on every
+  heartbeat and right after a restart. `providerchange` records and their detection are unchanged
+  ([wire-format.md, Record fields](docs/wire-format.md#record-fields)).
+
+### Added
+
+- **`<%= record %>` template placeholder**: the whole default record object (`sent_at` included), so a template can
+  nest every field without listing them, e.g. `"raw_event": <%= record %>`
+  ([wire-format.md, Templates](docs/wire-format.md#templates)).
+- **`<%= provider %>` template placeholder**: the record's `provider` object, or `null`, e.g.
+  `"provider": <%= provider %>`.
+
 
 Round 2: the field-force audit setup, a native API for companion plugins, and end-to-end tests on an Android
 emulator. Decisions: [docs/DECISIONS.md](docs/DECISIONS.md#round-2-field-force-audit-companion-api-and-avd-tests).
@@ -132,8 +151,6 @@ emulator. Decisions: [docs/DECISIONS.md](docs/DECISIONS.md#round-2-field-force-a
 
 ### Known limitations
 
-- A build that packages HMS (`hms` or `gms,hms`) is not 16 KB page-size compatible: `com.huawei.hms:location`
-  6.12.0.300 brings `libTransform.so` (`arm64-v8a`) and `libucs-credential.so` (`x86_64`) with 4 KB alignment.
 - The 02:00 stop (`stopAfterElapsedMinutes`) happens at the first check after the stop time. While stationary that is
   the first heartbeat: at most `maxInterval` (300 s) late for an exempt app, about 9–11 minutes late in Doze without
   the exemption.

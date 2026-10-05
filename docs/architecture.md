@@ -53,7 +53,7 @@ This document is the contract between the scaffold and all work units. The scaff
 | androidx.core:core-ktx | 1.17.0 |
 | appcompat | 1.7.1 |
 | play-services-location | 21.3.0 |
-| com.huawei.hms:location | 6.12.0.300 |
+| com.huawei.hms:location | 6.16.0.302 (was 6.12.0.300; see DECISIONS.md, "BricksRep adoption") |
 
 ## 0. Global rules for every unit
 
@@ -243,7 +243,7 @@ export interface Location {
   backend: LocationBackend | null;
   extras?: Record<string, unknown>;
   /** event 'geofence' only */ geofence?: { identifier: string; action: GeofenceAction; extras?: Record<string, unknown> };
-  /** event 'providerchange' only */ provider?: ProviderState;
+  /** provider state when the record was created; the new state for event 'providerchange' */ provider?: ProviderState;
   /** tracking_start: start|start_geofences|boot|restore|package_replaced; tracking_stop: stop|stop_on_stationary|stop_after_elapsed|terminate|permission_denied|service_start_failed|reboot|package_replaced */
   reason?: string;
 }
@@ -489,7 +489,7 @@ General rules:
   - numbers and booleans are inserted bare (non-finite numbers as `null`);
   - null is inserted as `null`; a null placeholder wrapped exactly in quotes (`"<%= reason %>"`) replaces the quotes too, giving JSON `null`;
   - strings are JSON-escaped but inserted without quotes, so users write `"<%= timestamp %>"`.
-- Placeholders: `uuid, event, timestamp, recorded_at, sent_at, latitude, longitude, accuracy, altitude, altitude_accuracy, speed, speed_accuracy, heading, heading_accuracy, is_moving, odometer, mock, activity.type, activity.confidence, battery.level, battery.is_charging, elapsed_realtime_ms, boot_count, backend, reason, geofence.identifier, geofence.action, provider.enabled, provider.gps, provider.network, provider.permission, extras`. `extras` is substituted as JSON object text (`{}` when the record has none).
+- Placeholders: `uuid, event, timestamp, recorded_at, sent_at, latitude, longitude, accuracy, altitude, altitude_accuracy, speed, speed_accuracy, heading, heading_accuracy, is_moving, odometer, mock, activity.type, activity.confidence, battery.level, battery.is_charging, elapsed_realtime_ms, boot_count, backend, reason, geofence.identifier, geofence.action, provider.enabled, provider.gps, provider.network, provider.permission, extras, record, provider`. `extras` is substituted as JSON object text (`{}` when the record has none), `record` as the default record object (`RecordJson.toJson`, with `sent_at`), `provider` as the provider object or `null`.
 - An unknown placeholder becomes an empty string and logs a warning.
 - The rendered text must be a JSON object or array, validated by a strict parser (org.json is too lenient); otherwise the default shape is used and an error is logged.
 

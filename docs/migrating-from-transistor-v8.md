@@ -82,7 +82,8 @@ Undo Transistor's Android setup:
 
 Also undo whatever the [background-fetch Android setup](https://github.com/transistorsoft/capacitor-background-fetch/blob/master/help/INSTALL-ANDROID.md)
 added. `playServicesLocationVersion` and `hmsLocationVersion` in `android/variables.gradle` can stay: this plugin reads
-the same names.
+the same names. If you package `hms`, remove `hmsLocationVersion` or set it to `6.16.0.302`: older versions bring
+native libraries that fail Google Play's 16 KB page-size requirement (README, "Android setup").
 
 Then follow [Android setup](../README.md#android-setup) in the README: choose the packaged location SDKs
 (`locationTracking.providers`, default `gms`), add Huawei's Maven repository if you package `hms`, and review the
@@ -394,6 +395,51 @@ The update removes Transistor's service and receivers, and this plugin has never
   `tracking_start` record.
 - Add your geofences again (`addGeofences()`), and call `setOdometer()` if you need the odometer to continue.
 
+### Delete Transistor's data
+
+Nothing of Transistor's is carried over, but nothing is deleted either: its files stay in the app's private storage
+after the update. One of them holds the last `authorization.accessToken`, and another the access and refresh tokens
+of its JWT refresh. Transistor `tslocationmanager` 3.7.0 (v8) uses these, all under `/data/data/<app id>/`:
+
+| Kind | Name |
+|---|---|
+| SharedPreferences (`shared_prefs/<name>.xml`) | `TSLocationManager:TSConfig` (the config, with the access token) |
+| | `TSLocationManager:AuthorizationToken` (access and refresh tokens) |
+| | `TSLocationManager` |
+| | `TSProviderManager` |
+| | `TSLocationManagerDeviceSettings` |
+| | `com.transistorsoft.locationmanager.geofence.TSGeofenceManager` |
+| SQLite database (`databases/`) | `transistor_location_manager` (the record queue) |
+| | `transistor_logback.db` (the log) |
+| Cache file (`cache/`) | `background-geolocation.log.gz` (left by `emailLog`/`uploadLog`) |
+
+This plugin does not delete them. Your app can, for example in `MainActivity` (deleting a missing file does nothing,
+so the code can stay):
+
+```java
+// android/app/src/main/java/<your package>/MainActivity.java
+@Override
+public void onCreate(Bundle savedInstanceState) {
+    super.onCreate(savedInstanceState);
+    new Thread(this::deleteTransistorData).start();
+}
+
+private void deleteTransistorData() {
+    for (String name : new String[] {
+        "TSLocationManager:TSConfig", "TSLocationManager:AuthorizationToken", "TSLocationManager",
+        "TSProviderManager", "TSLocationManagerDeviceSettings",
+        "com.transistorsoft.locationmanager.geofence.TSGeofenceManager",
+    }) {
+        deleteSharedPreferences(name);
+    }
+    deleteDatabase("transistor_location_manager");
+    deleteDatabase("transistor_logback.db");
+    new java.io.File(getCacheDir(), "background-geolocation.log.gz").delete();
+}
+```
+
+`deleteDatabase` also removes the `-journal`, `-wal` and `-shm` files.
+
 ## 3. Update the server endpoint
 
 Reference for everything below: [wire-format.md](wire-format.md).
@@ -428,7 +474,7 @@ it is. If the URL can't change, tell the bodies apart per record: only this plug
 | `timestampMeta` | With `enableTimestampMeta` | Removed | Use `elapsed_realtime_ms` and `boot_count`. |
 | `mock` | Optional | Always present | – |
 | `battery.level` | 0–1 | 0–1, or `-1` when unknown | Treat `-1` as unknown. |
-| `provider` (on `providerchange`) | `{ enabled, status, network, gps, accuracyAuthorization }` | `{ enabled, gps, network, permission, accuracy, backend }`, where `permission` is `always` / `when_in_use` / `denied` and `accuracy` is `precise` / `approximate` / `none` | Map the new keys. |
+| `provider` | On `providerchange`: `{ enabled, status, network, gps, accuracyAuthorization }` | On every record: `{ enabled, gps, network, permission, accuracy, backend }`, where `permission` is `always` / `when_in_use` / `denied` and `accuracy` is `precise` / `approximate` / `none` | Map the new keys. |
 | New keys on every record | – | `recorded_at` (created on the phone), `sent_at` (request built; only in HTTP bodies), `elapsed_realtime_ms`, `boot_count`, `backend` (`gms` / `hms` / `android`) | Store them: they are what an audit needs ([Time fields](wire-format.md#time-fields)). |
 | `reason` | – | On `tracking_start` and `tracking_stop` | See the reason tables in [wire-format.md](wire-format.md#tracking_start). |
 | `heartbeat` | – | Optional scheduling metadata on `heartbeat` records | Tells you the next expected gap ([heartbeat.md](heartbeat.md#heartbeat-metadata)). |
@@ -490,6 +536,8 @@ If your v8 app set `locationTemplate` or `geofenceTemplate`:
   the value is `null`.
 - Add `uuid`, `event`, `recorded_at` and `sent_at`, and `reason`, `elapsed_realtime_ms` and `boot_count` if you audit
   tracking. Every tag: [Templates](wire-format.md#templates).
+- To keep your v8 body shape and still send every new field, nest the whole default record:
+  `"raw_event": <%= record %>`.
 
 ### Server checklist
 

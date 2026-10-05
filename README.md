@@ -106,9 +106,12 @@ locationTracking.providers=gms,hms
 You can also pass the property on the command line (`./gradlew assembleRelease -PlocationTracking.providers=hms`),
 for example to build separate Play and AppGallery flavors from one project.
 
-The SDK versions default to `play-services-location` 21.3.0 and `com.huawei.hms:location` 6.12.0.300. To use other
+The SDK versions default to `play-services-location` 21.3.0 and `com.huawei.hms:location` 6.16.0.302. To use other
 versions, set `playServicesLocationVersion` or `hmsLocationVersion` in the `ext` block of your app's
-`android/variables.gradle`.
+`android/variables.gradle`. If you package `hms` for Google Play, keep 6.16.0.302: it is Huawei's first release with
+16 KB page-size support, and the latest one in Huawei's version history. Earlier versions bring native libraries with
+4 KB alignment, which fail Play's 16 KB page-size requirement; so do the undocumented 6.17–6.19 builds in Huawei's
+Maven repository.
 
 At runtime, the `locationProvider` config option picks the backend:
 
@@ -319,6 +322,15 @@ console.log(hb.strategy, hb.nextHeartbeatAt, hb.isIgnoringBatteryOptimizations);
 every method rejects with `NOT_READY`, except `ready`, `getState`, `checkPermissions`, `requestPermissions`,
 `getDeviceInfo`, `getSensors`, `log`, `getLog`, `getProviderState` and the `open*Settings` methods
 (`openBatteryOptimizationSettings`, `openPowerManagerSettings`, `openLocationSettings`, `openAppSettings`).
+
+An app that calls `getCurrentPosition()` (or `watchPosition()`) for users who never configure tracking calls
+`ready({ reset: false })` without a config first; that is the intended pattern. It loads the persisted config (the
+defaults on the first run) and changes nothing, and calling `ready()` again later in the process is fine. Two side
+effects:
+- If tracking is enabled but not running in this process, this `ready()` resumes it (reason `restore`), with the
+  persisted config.
+- It counts as the first `ready()` after install, so a later `ready({ config, reset: false })` keeps the persisted
+  config and ignores the one passed. Use `reset: true` or `setConfig()` to apply a config after that.
 
 **`ready({ reset })`.** With `reset: true` (the default), the config is the defaults plus the config you pass, on every
 launch. With `reset: false`, the config you pass is applied only on the very first `ready()` after install, and
@@ -1070,7 +1082,7 @@ from a clean checkout, logged in with `npm login` as a member of the `@bricks-so
 
 ```bash
 npm ci && npm run build && npm test
-npm publish               # prepublishOnly builds again; publishConfig.access makes it public
+npm publish               # prepare builds again; publishConfig.access makes it public
 ```
 
 Each later release:
@@ -2169,7 +2181,7 @@ removeAllListeners() => Promise<void>
 | **`backend`**             | <code><a href="#locationbackend">LocationBackend</a> \| null</code>                                                                                      |                                                                                                                                                                                                                    |
 | **`extras`**              | <code><a href="#record">Record</a>&lt;string, unknown&gt;</code>                                                                                         |                                                                                                                                                                                                                    |
 | **`geofence`**            | <code>{ identifier: string; action: <a href="#geofenceaction">GeofenceAction</a>; extras?: <a href="#record">Record</a>&lt;string, unknown&gt;; }</code> | event 'geofence' only                                                                                                                                                                                              |
-| **`provider`**            | <code><a href="#providerstate">ProviderState</a></code>                                                                                                  | event 'providerchange' only                                                                                                                                                                                        |
+| **`provider`**            | <code><a href="#providerstate">ProviderState</a></code>                                                                                                  | provider state when the record was created; the new state for event 'providerchange'                                                                                                                               |
 | **`reason`**              | <code>string</code>                                                                                                                                      | tracking_start: start\|start_geofences\|boot\|restore\|package_replaced; tracking_stop: stop\|stop_on_stationary\|stop_after_elapsed\|terminate\|permission_denied\|service_start_failed\|reboot\|package_replaced |
 | **`heartbeat`**           | <code><a href="#heartbeatmeta">HeartbeatMeta</a></code>                                                                                                  | event 'heartbeat' only, optional: how the heartbeat is scheduled                                                                                                                                                   |
 

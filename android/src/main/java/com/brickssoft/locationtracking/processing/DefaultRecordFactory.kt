@@ -20,9 +20,10 @@ import org.json.JSONObject
 import java.util.UUID
 
 /**
- * Builds records: uuid v4, clock and boot metadata, runtime state (isMoving, odometer, activity), battery
- * from [device], backend from [providers], and `extras` = `persistence.extras` merged with the per-call
- * extras (per-call keys win; null when both are empty).
+ * Builds records: uuid v4, clock and boot metadata, runtime state (isMoving, odometer, activity), battery and
+ * the current provider state (unless the caller passes one, as `providerchange` does) from [device], backend from
+ * [providers], and `extras` = `persistence.extras` merged with the per-call extras (per-call keys win; null when
+ * both are empty).
  */
 class DefaultRecordFactory(
     private val configStore: ConfigStore,
@@ -53,7 +54,7 @@ class DefaultRecordFactory(
             backend = backend(),
             extras = mergeExtras(configStore.config.value.persistence.extras, extras),
             geofence = geofence,
-            provider = provider,
+            provider = provider ?: providerState(),
             reason = reason,
         )
     }
@@ -119,6 +120,14 @@ class DefaultRecordFactory(
     } catch (e: Exception) {
         Logger.w(TAG, "battery unavailable", e)
         BatterySnapshot.UNKNOWN
+    }
+
+    // Read live, not the persisted runtime.providerState, which lags until the next provider check.
+    private fun providerState(): ProviderState? = try {
+        device.providerState()
+    } catch (e: Exception) {
+        Logger.w(TAG, "provider state unavailable", e)
+        null
     }
 
     private fun backend(): ProviderKind? = try {

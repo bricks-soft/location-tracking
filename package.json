@@ -37,7 +37,7 @@
     "test": "node --test \"test/**/*.mjs\"",
     "docgen": "docgen --api LocationTrackingPlugin --project tsconfig.docgen.json --output-readme README.md --output-json dist/docs.json",
     "watch": "tsc --watch",
-    "prepublishOnly": "npm run build"
+    "prepare": "npm run build"
   },
   "devDependencies": {
     "@capacitor/android": "8.5.2",

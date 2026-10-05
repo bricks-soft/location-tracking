@@ -61,8 +61,10 @@ Timestamps are ISO-8601 in UTC with milliseconds, for example `2026-09-26T10:15:
 
 ## Record fields
 
-Every record has all of these keys; values that are unknown are `null`. The only exceptions are the optional `extras`
-and the event-specific keys `geofence`, `provider`, `reason` and `heartbeat`, which appear only when they apply.
+Every record has all of these keys; values that are unknown are `null`. The exceptions are the optional `extras`,
+`provider` (missing only when the plugin could not read the provider state, and on records queued by a plugin version
+before 8.0.0), and the event-specific keys `geofence`, `reason` and `heartbeat`, which appear only when they apply. The
+examples below show `provider` only on `providerchange`.
 
 | Key | Type | Meaning |
 |---|---|---|
@@ -82,7 +84,7 @@ and the event-specific keys `geofence`, `provider`, `reason` and `heartbeat`, wh
 | `backend` | string \| null | Location backend in use: `gms`, `hms` or `android`. |
 | `extras` | object | Optional. `persistence.extras`, merged with the extras passed to the call that created the record (for example `getCurrentPosition({ extras })`); the call's keys win. Absent when both are empty. |
 | `geofence` | object | Only for `geofence`: `{ "identifier", "action": "ENTER" \| "EXIT" \| "DWELL", "extras"? }`. |
-| `provider` | object | Only for `providerchange`: the new provider state (see below). |
+| `provider` | object | The location provider state when the record was created, read at that moment ([keys](#providerchange)). On `providerchange` it is the new state. A server can keep the newest by `recorded_at`. |
 | `reason` | string | Only for `tracking_start` and `tracking_stop` (see the reason tables below). |
 | `heartbeat` | object | Only for `heartbeat`, and optional: how heartbeats are scheduled (see [`heartbeat`](#heartbeat)). |
 
@@ -320,7 +322,9 @@ geofence was added.
 
 ### `tracking_start`
 
-An audit record, created when tracking starts or resumes. It carries the last known coords, or `null`. Calling
+An audit record, created when tracking starts or resumes. It carries the last known coords, or `null`: right after
+install it often has no coords, even on an emulator with a default location, because the first fix arrives a few
+seconds after the start. Calling
 `start()` while `startGeofences()` runs (or the reverse) switches the mode and creates another `tracking_start`,
 without a `tracking_stop` in between.
 
@@ -550,10 +554,21 @@ Substitution rules:
     you write the quotes yourself: `"<%= timestamp %>"`;
   - `extras` is inserted as JSON object text (`{}` when the record has no extras), so write it bare:
     `"extras": <%= extras %>`.
+  - `record` is inserted as the whole [default record object](#record-fields), `sent_at` included, so write it bare:
+    `"raw_event": <%= record %>`. It carries every field, including the ones without a placeholder of their own
+    (`provider.accuracy`, `provider.backend`, `heartbeat`) and any added later, and `coords` and `timestamp` stay
+    `null` when the record has no fix.
+  - `provider` is inserted as the record's [`provider` object](#providerchange) (`enabled`, `gps`, `network`,
+    `permission`, `accuracy`, `backend`), or `null` when the record has none, so write it bare:
+    `"provider": <%= provider %>`.
 - A `null` value in a placeholder that is wrapped exactly in quotes, such as `"<%= reason %>"`, replaces the quotes
   too, so the result is JSON `null`, not the string `"null"`. This happens with `timestamp`, `backend`, `reason`,
   `geofence.*`, `provider.*` and the coordinates on records where they don't apply. Inside a longer string (for
   example `"<%= uuid %>/<%= reason %>"`) a `null` value becomes the text `null`.
+- A template can't render a `null` object, only `null` values. On a record without a fix (a `heartbeat`,
+  `tracking_start`, `tracking_stop` or `providerchange` record before the phone's first fix),
+  `"coords":{"latitude":<%= latitude %>,...}` renders as `"coords":{"latitude":null,...}`, and `"<%= timestamp %>"`
+  as `null`. The server must accept that shape, or the template can nest `<%= record %>`, whose `coords` is `null`.
 - An unknown placeholder is replaced by nothing (so `"<%= nope %>"` becomes `""`), and a warning is logged.
 - The rendered text must be a valid JSON **object or array** (it is checked strictly). Otherwise the plugin sends the
   **default shape** for that record instead and logs an error. Test your template with `getLog()`.
@@ -577,8 +592,8 @@ Available placeholders:
 | `heading` | number \| null | `provider.network` | boolean \| null |
 | `heading_accuracy` | number \| null | `provider.permission` | string \| null |
 | `is_moving` | boolean | `extras` | object (`{}` if none) |
-| `odometer` | number | | |
-| `mock` | boolean | | |
+| `odometer` | number | `record` | object (the default record) |
+| `mock` | boolean | `provider` | object \| null |
 
 Example:
 

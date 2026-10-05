@@ -786,6 +786,105 @@ class DefaultTrackingEngineTest {
         assertEquals("tracking_start:restore", records().first())
     }
 
+    private fun enableResume(stopAfterElapsedMinutes: Int = 0) = configStore.update {
+        it.copy(
+            notification = it.notification.copy(resume = it.notification.resume.copy(enabled = true)),
+            geolocation = it.geolocation.copy(stopAfterElapsedMinutes = stopAfterElapsedMinutes),
+        )
+    }
+
+    @Test
+    fun `a refused restore offers the resume notification until the elapsed stop`() = runTest {
+        val engine = newEngine()
+        enableResume(stopAfterElapsedMinutes = 60)
+        val startedAt = clock.now() - 10 * 60_000L
+        configStore.runtimeFlow.value = RuntimeState(enabled = true, trackingStartedAt = startedAt)
+        service.startResult = false
+
+        engine.restore("boot")
+        runCurrent()
+
+        assertEquals(listOf("tracking_stop:service_start_failed"), records())
+        assertEquals(listOf<Long?>(startedAt + 60 * 60_000L), service.resumeNotifications)
+    }
+
+    @Test
+    fun `no resume notification when it is disabled`() = runTest {
+        val engine = newEngine()
+        configStore.runtimeFlow.value = RuntimeState(enabled = true, trackingStartedAt = clock.now())
+        service.startResult = false
+
+        engine.restore("boot")
+        runCurrent()
+
+        assertEquals(listOf("tracking_stop:service_start_failed"), records())
+        assertTrue(service.resumeNotifications.isEmpty())
+    }
+
+    @Test
+    fun `no resume notification once the elapsed stop has passed`() = runTest {
+        val engine = newEngine()
+        enableResume(stopAfterElapsedMinutes = 60)
+        configStore.runtimeFlow.value = RuntimeState(enabled = true, trackingStartedAt = clock.now() - 61 * 60_000L)
+        service.startResult = false
+
+        engine.restore("package_replaced")
+        runCurrent()
+
+        assertTrue(service.resumeNotifications.isEmpty())
+    }
+
+    @Test
+    fun `tapping the resume notification resumes the session with reason resume_notification`() = runTest {
+        val engine = newEngine()
+        enableResume()
+        val startedAt = clock.now()
+        configStore.runtimeFlow.value =
+            RuntimeState(enabled = true, trackingStartedAt = startedAt, lastLocation = origin)
+        service.startResult = false
+        engine.restore("boot")
+        runCurrent()
+        service.isRunning = true // the tap started the service in the foreground
+        events.clear()
+
+        engine.resumeFromNotification()
+        runCurrent()
+
+        assertEquals(listOf("tracking_stop:service_start_failed", "tracking_start:resume_notification"), records().take(2))
+        assertTrue(configStore.runtime.value.enabled)
+        assertEquals(startedAt, configStore.runtime.value.trackingStartedAt)
+        assertTrue(locationBackend.isRequesting)
+        assertEquals(1, service.startCalls) // only the refused one: the tap itself started the service
+        assertTrue(TrackingEvent.EnabledChange(true) in events.events)
+        assertTrue(service.cancelResumeCalls > 0)
+    }
+
+    @Test
+    fun `a tap after the elapsed stop only stops the service`() = runTest {
+        val engine = newEngine()
+        enableResume(stopAfterElapsedMinutes = 60)
+        configStore.runtimeFlow.value = RuntimeState(enabled = false, trackingStartedAt = clock.now() - 61 * 60_000L)
+        service.isRunning = true
+
+        engine.resumeFromNotification()
+        runCurrent()
+
+        assertTrue(recordSink.records.isEmpty())
+        assertEquals(1, service.stopCalls)
+        assertFalse(configStore.runtime.value.enabled)
+    }
+
+    @Test
+    fun `stop and a new start cancel the resume notification`() = runTest {
+        val engine = newEngine()
+        engine.stop()
+        runCurrent()
+        assertEquals(1, service.cancelResumeCalls)
+
+        started(engine)
+        assertEquals(2, service.cancelResumeCalls)
+    }
+
     @Test
     fun `endWithoutRestore records tracking_stop with the reason and disables tracking`() = runTest {
         configStore.runtimeFlow.value = RuntimeState(enabled = true, lastLocation = origin)

@@ -238,6 +238,21 @@ class LocationTrackingServiceTest {
     }
 
     @Test
+    fun `a resume command enters the foreground, then asks the engine to resume`() {
+        env.configStore.runtimeFlow.value = RuntimeState(enabled = false)
+        val service = create().get()
+        val resume = Intent(app, LocationTrackingService::class.java).setAction(LocationTrackingService.ACTION_RESUME)
+
+        val result = service.onStartCommand(resume, 0, 1)
+
+        assertEquals(Service.START_STICKY, result)
+        assertNotNull("foreground first", shadowOf(service).lastForegroundNotification)
+        env.runPending()
+        assertEquals(listOf("resumeFromNotification"), env.engine.calls)
+        assertFalse(shadowOf(service).isStoppedBySelf)
+    }
+
+    @Test
     fun `a start command from an earlier process stops the service when tracking is disabled`() {
         env.configStore.runtimeFlow.value = RuntimeState(enabled = false)
         val service = create().get()

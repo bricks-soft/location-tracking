@@ -32,6 +32,10 @@ version follows the Capacitor major version (Capacitor 8), as `@bricks-soft/cap-
 - **`<%= record %>` template placeholder**: the whole default record object (`sent_at` included), so a template can
   nest every field without listing them, e.g. `"record": <%= record %>`
   ([wire-format.md, Templates](docs/wire-format.md#templates)).
+- **Resume notification** (`notification.resume`, off by default): when Android refuses to restore tracking from
+  the background (typically after a reboot or an app update on Android 14+ with only "while in use" location), the
+  plugin posts a notification whose tap resumes the session (`tracking_start` reason `resume_notification`)
+  ([README, `config.notification.resume`](README.md#confignotificationresume)).
 - **`<%= provider %>` template placeholder**: the record's `provider` object, or `null`, e.g.
   `"provider": <%= provider %>`.
 

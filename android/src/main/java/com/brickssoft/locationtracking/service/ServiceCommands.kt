@@ -177,20 +177,27 @@ internal data class ServiceCommand(
         RESTART,
         START,
         STOP,
+
+        /** The resume notification was tapped ([LocationTrackingService.ACTION_RESUME]). */
+        RESUME,
     }
 
     companion object {
         fun parse(intent: Intent?): ServiceCommand {
             if (intent == null) return ServiceCommand(Kind.RESTART, 0L, fromThisProcess = false, foregroundRequired = false)
-            val kind = if (intent.action == LocationTrackingService.ACTION_STOP) Kind.STOP else Kind.START
+            val kind = when (intent.action) {
+                LocationTrackingService.ACTION_STOP -> Kind.STOP
+                LocationTrackingService.ACTION_RESUME -> Kind.RESUME
+                else -> Kind.START
+            }
             val origin = intent.getStringExtra(ServiceCommands.EXTRA_ORIGIN)
             return ServiceCommand(
                 kind = kind,
                 seq = intent.getLongExtra(ServiceCommands.EXTRA_SEQ, 0L),
                 fromThisProcess = origin == ServiceCommands.processToken,
                 // A start without the marker still came through startForegroundService(): the controller sends no other.
-                foregroundRequired = intent.getBooleanExtra(ServiceCommands.EXTRA_FOREGROUND_REQUIRED, kind == Kind.START),
-                notification = if (kind == Kind.START) ServiceCommands.notificationOf(intent) else null,
+                foregroundRequired = intent.getBooleanExtra(ServiceCommands.EXTRA_FOREGROUND_REQUIRED, kind != Kind.STOP),
+                notification = if (kind != Kind.STOP) ServiceCommands.notificationOf(intent) else null,
             )
         }
     }

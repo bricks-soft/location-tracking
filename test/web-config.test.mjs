@@ -65,6 +65,11 @@ function expectedDefaults() {
       channelId: 'location_tracking',
       channelName: 'Location tracking',
       actions: [],
+      resume: {
+        enabled: false,
+        text: 'Location tracking is paused. Tap to resume.',
+        channelName: 'Paused location tracking',
+      },
     },
     geofence: { initialTriggerEntry: true },
     logger: { logLevel: 'info', logMaxDays: 3 },

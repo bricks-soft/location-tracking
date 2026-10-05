@@ -467,7 +467,7 @@ The upload rules (priority records, retries, templates, body shapes) are describ
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `stopOnTerminate` | boolean | `true` | Stops tracking when the user swipes the app away (`tracking_stop`, reason `terminate`). With `false`, tracking continues. |
-| `startOnBoot` | boolean | `false` | Resumes tracking after a reboot or an app update, if it was on (`tracking_start`, reason `boot` or `package_replaced`). Needs "Allow all the time" location on Android 14+. With `false`, tracking is off after a reboot or an update, and a `tracking_stop` with reason `reboot` or `package_replaced` is recorded. |
+| `startOnBoot` | boolean | `false` | Resumes tracking after a reboot or an app update, if it was on (`tracking_start`, reason `boot` or `package_replaced`). Needs "Allow all the time" location on Android 14+. With `false`, tracking is off after a reboot or an update, and a `tracking_stop` with reason `reboot` or `package_replaced` is recorded. On Android 14+ with only "while in use" location, Android refuses it (`tracking_stop` reason `service_start_failed`); [`notification.resume`](#confignotificationresume) lets the user resume with a tap. |
 
 ### `config.notification`
 
@@ -482,6 +482,31 @@ The upload rules (priority records, retries, templates, body shapes) are describ
 | `channelId` | string | `'location_tracking'` | Notification channel id. |
 | `channelName` | string | `'Location tracking'` | Channel name shown in the system settings. |
 | `actions` | `{ id, label }[]` | none | Up to 3 buttons (extra ones are dropped). A tap emits `notificationaction` with the button's `id`. |
+| `resume` | object | see below | The notification that resumes tracking after Android refused to restore it. |
+
+### `config.notification.resume`
+
+When tracking was on and Android refuses to restore it from the background, the plugin records a `tracking_stop` with
+reason `service_start_failed`, and tracking stays off until the app starts it again. This is the normal case after a
+reboot, an app update or a killed process on Android 14+ when the app has only "while in use" location (no "Allow all
+the time"). With `resume.enabled`, the plugin then posts a notification. Tapping it starts the tracking service
+directly: Android lets a location foreground service started from a notification use "while in use" location. The
+session resumes with the persisted config and its original `stopAfterElapsedMinutes` deadline, and records a
+`tracking_start` with reason `resume_notification`.
+
+- The notification has its own channel (`location_tracking_resume`, default importance), so it shows even when the
+  tracking notification's `priority` is `min`. It uses the tracking notification's small icon and color.
+- It is not posted when the session's `stopAfterElapsedMinutes` deadline has passed, and it disappears at that
+  deadline.
+- It is removed when tracking starts by any path, when the app calls `stop()`, and when `resume.enabled` is turned off.
+- Without notification permission (`POST_NOTIFICATIONS`, Android 13+) it is not posted; the log says so.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Post the resume notification when Android refuses to restore tracking. |
+| `title` | string | app label | Notification title. |
+| `text` | string | `'Location tracking is paused. Tap to resume.'` | Notification text. The default comes from the string resource `lt_resume_notification_text`, so an app can translate it. |
+| `channelName` | string | `'Paused location tracking'` | Channel name shown in the system settings (string resource `lt_resume_channel_name`). |
 
 ### `config.geofence`
 
@@ -539,7 +564,9 @@ The dialog shown before the Android 11+ "Allow all the time" settings page.
   permission is no longer granted, and `service_start_failed` otherwise.
 - Tracking resumes by itself after the process was killed (reason `restore`), after a reboot (`boot`) and after an
   app update (`package_replaced`, both only with `app.startOnBoot`), and when `ready()` finds it enabled but not
-  running. See [docs/heartbeat.md](docs/heartbeat.md#android-reliability) for what Android allows.
+  running. See [docs/heartbeat.md](docs/heartbeat.md#android-reliability) for what Android allows. When Android
+  refuses such a restore, [`notification.resume`](#confignotificationresume) can offer a tap that resumes it
+  (`resume_notification`).
 - A boot broadcast restores tracking once per boot. The plugin reads the phone's boot counter
   (`Settings.Global.BOOT_COUNT`) and ignores a boot broadcast when the counter is the same as for the last boot
   broadcast it handled, or the same as when it last started the tracking service. So a repeated or fake
@@ -2107,17 +2134,18 @@ removeAllListeners() => Promise<void>
 
 #### NotificationConfig
 
-| Prop              | Type                                                                  | Description                                 | Default                                                |
-| ----------------- | --------------------------------------------------------------------- | ------------------------------------------- | ------------------------------------------------------ |
-| **`title`**       | <code>string</code>                                                   |                                             | <code>app label</code>                                 |
-| **`text`**        | <code>string</code>                                                   |                                             | <code>'Location tracking is active'</code>             |
-| **`smallIcon`**   | <code>string</code>                                                   | 'drawable/name' \| 'mipmap/name'            | <code>plugin icon 'drawable/lt_ic_notification'</code> |
-| **`largeIcon`**   | <code>string</code>                                                   |                                             |                                                        |
-| **`color`**       | <code>string</code>                                                   | '#RRGGBB'                                   |                                                        |
-| **`priority`**    | <code><a href="#notificationpriority">NotificationPriority</a></code> |                                             | <code>'default'</code>                                 |
-| **`channelId`**   | <code>string</code>                                                   |                                             | <code>'location_tracking'</code>                       |
-| **`channelName`** | <code>string</code>                                                   |                                             | <code>'Location tracking'</code>                       |
-| **`actions`**     | <code>NotificationActionButton[]</code>                               | max 3; tap =&gt; 'notificationaction' event |                                                        |
+| Prop              | Type                                                                          | Description                                                                                             | Default                                                |
+| ----------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| **`title`**       | <code>string</code>                                                           |                                                                                                         | <code>app label</code>                                 |
+| **`text`**        | <code>string</code>                                                           |                                                                                                         | <code>'Location tracking is active'</code>             |
+| **`smallIcon`**   | <code>string</code>                                                           | 'drawable/name' \| 'mipmap/name'                                                                        | <code>plugin icon 'drawable/lt_ic_notification'</code> |
+| **`largeIcon`**   | <code>string</code>                                                           |                                                                                                         |                                                        |
+| **`color`**       | <code>string</code>                                                           | '#RRGGBB'                                                                                               |                                                        |
+| **`priority`**    | <code><a href="#notificationpriority">NotificationPriority</a></code>         |                                                                                                         | <code>'default'</code>                                 |
+| **`channelId`**   | <code>string</code>                                                           |                                                                                                         | <code>'location_tracking'</code>                       |
+| **`channelName`** | <code>string</code>                                                           |                                                                                                         | <code>'Location tracking'</code>                       |
+| **`actions`**     | <code>NotificationActionButton[]</code>                                       | max 3; tap =&gt; 'notificationaction' event                                                             |                                                        |
+| **`resume`**      | <code><a href="#resumenotificationconfig">ResumeNotificationConfig</a></code> | notification that resumes tracking when Android refuses to restore it from the background (Android 14+) |                                                        |
 
 
 #### NotificationActionButton
@@ -2126,6 +2154,20 @@ removeAllListeners() => Promise<void>
 | ----------- | ------------------- |
 | **`id`**    | <code>string</code> |
 | **`label`** | <code>string</code> |
+
+
+#### ResumeNotificationConfig
+
+Posted when Android refuses to restore tracking from the background (after a reboot, an app update or a process
+restart), typically on Android 14+ without "Allow all the time". A tap resumes the session
+(`tracking_start` reason `resume_notification`). Uses the tracking notification's small icon and color.
+
+| Prop              | Type                 | Default                                                    |
+| ----------------- | -------------------- | ---------------------------------------------------------- |
+| **`enabled`**     | <code>boolean</code> | <code>false</code>                                         |
+| **`title`**       | <code>string</code>  | <code>app label</code>                                     |
+| **`text`**        | <code>string</code>  | <code>'Location tracking is paused. Tap to resume.'</code> |
+| **`channelName`** | <code>string</code>  | <code>'Paused location tracking'</code>                    |
 
 
 #### GeofenceConfig
@@ -2163,27 +2205,27 @@ removeAllListeners() => Promise<void>
 
 #### Location
 
-| Prop                      | Type                                                                                                                                                     | Description                                                                                                                                                                                                        |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **`uuid`**                | <code>string</code>                                                                                                                                      |                                                                                                                                                                                                                    |
-| **`event`**               | <code><a href="#recordevent">RecordEvent</a></code>                                                                                                      |                                                                                                                                                                                                                    |
-| **`timestamp`**           | <code>string \| null</code>                                                                                                                              | fix time (ISO-8601 UTC ms); null if no location ever known                                                                                                                                                         |
-| **`recorded_at`**         | <code>string</code>                                                                                                                                      | record creation time                                                                                                                                                                                               |
-| **`sent_at`**             | <code>string</code>                                                                                                                                      | only present in HTTP bodies                                                                                                                                                                                        |
-| **`elapsed_realtime_ms`** | <code>number</code>                                                                                                                                      |                                                                                                                                                                                                                    |
-| **`boot_count`**          | <code>number</code>                                                                                                                                      | -1 if unavailable                                                                                                                                                                                                  |
-| **`is_moving`**           | <code>boolean</code>                                                                                                                                     |                                                                                                                                                                                                                    |
-| **`odometer`**            | <code>number</code>                                                                                                                                      |                                                                                                                                                                                                                    |
-| **`mock`**                | <code>boolean</code>                                                                                                                                     |                                                                                                                                                                                                                    |
-| **`coords`**              | <code><a href="#coords">Coords</a> \| null</code>                                                                                                        |                                                                                                                                                                                                                    |
-| **`activity`**            | <code>{ type: <a href="#activitytype">ActivityType</a>; confidence: number; }</code>                                                                     |                                                                                                                                                                                                                    |
-| **`battery`**             | <code>{ level: number; is_charging: boolean; }</code>                                                                                                    | level 0..1, -1 unknown                                                                                                                                                                                             |
-| **`backend`**             | <code><a href="#locationbackend">LocationBackend</a> \| null</code>                                                                                      |                                                                                                                                                                                                                    |
-| **`extras`**              | <code><a href="#record">Record</a>&lt;string, unknown&gt;</code>                                                                                         |                                                                                                                                                                                                                    |
-| **`geofence`**            | <code>{ identifier: string; action: <a href="#geofenceaction">GeofenceAction</a>; extras?: <a href="#record">Record</a>&lt;string, unknown&gt;; }</code> | event 'geofence' only                                                                                                                                                                                              |
-| **`provider`**            | <code><a href="#providerstate">ProviderState</a></code>                                                                                                  | provider state when the record was created; the new state for event 'providerchange'                                                                                                                               |
-| **`reason`**              | <code>string</code>                                                                                                                                      | tracking_start: start\|start_geofences\|boot\|restore\|package_replaced; tracking_stop: stop\|stop_on_stationary\|stop_after_elapsed\|terminate\|permission_denied\|service_start_failed\|reboot\|package_replaced |
-| **`heartbeat`**           | <code><a href="#heartbeatmeta">HeartbeatMeta</a></code>                                                                                                  | event 'heartbeat' only, optional: how the heartbeat is scheduled                                                                                                                                                   |
+| Prop                      | Type                                                                                                                                                     | Description                                                                                                                                                                                                                             |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`uuid`**                | <code>string</code>                                                                                                                                      |                                                                                                                                                                                                                                         |
+| **`event`**               | <code><a href="#recordevent">RecordEvent</a></code>                                                                                                      |                                                                                                                                                                                                                                         |
+| **`timestamp`**           | <code>string \| null</code>                                                                                                                              | fix time (ISO-8601 UTC ms); null if no location ever known                                                                                                                                                                              |
+| **`recorded_at`**         | <code>string</code>                                                                                                                                      | record creation time                                                                                                                                                                                                                    |
+| **`sent_at`**             | <code>string</code>                                                                                                                                      | only present in HTTP bodies                                                                                                                                                                                                             |
+| **`elapsed_realtime_ms`** | <code>number</code>                                                                                                                                      |                                                                                                                                                                                                                                         |
+| **`boot_count`**          | <code>number</code>                                                                                                                                      | -1 if unavailable                                                                                                                                                                                                                       |
+| **`is_moving`**           | <code>boolean</code>                                                                                                                                     |                                                                                                                                                                                                                                         |
+| **`odometer`**            | <code>number</code>                                                                                                                                      |                                                                                                                                                                                                                                         |
+| **`mock`**                | <code>boolean</code>                                                                                                                                     |                                                                                                                                                                                                                                         |
+| **`coords`**              | <code><a href="#coords">Coords</a> \| null</code>                                                                                                        |                                                                                                                                                                                                                                         |
+| **`activity`**            | <code>{ type: <a href="#activitytype">ActivityType</a>; confidence: number; }</code>                                                                     |                                                                                                                                                                                                                                         |
+| **`battery`**             | <code>{ level: number; is_charging: boolean; }</code>                                                                                                    | level 0..1, -1 unknown                                                                                                                                                                                                                  |
+| **`backend`**             | <code><a href="#locationbackend">LocationBackend</a> \| null</code>                                                                                      |                                                                                                                                                                                                                                         |
+| **`extras`**              | <code><a href="#record">Record</a>&lt;string, unknown&gt;</code>                                                                                         |                                                                                                                                                                                                                                         |
+| **`geofence`**            | <code>{ identifier: string; action: <a href="#geofenceaction">GeofenceAction</a>; extras?: <a href="#record">Record</a>&lt;string, unknown&gt;; }</code> | event 'geofence' only                                                                                                                                                                                                                   |
+| **`provider`**            | <code><a href="#providerstate">ProviderState</a></code>                                                                                                  | provider state when the record was created; the new state for event 'providerchange'                                                                                                                                                    |
+| **`reason`**              | <code>string</code>                                                                                                                                      | tracking_start: start\|start_geofences\|boot\|restore\|package_replaced\|resume_notification; tracking_stop: stop\|stop_on_stationary\|stop_after_elapsed\|terminate\|permission_denied\|service_start_failed\|reboot\|package_replaced |
+| **`heartbeat`**           | <code><a href="#heartbeatmeta">HeartbeatMeta</a></code>                                                                                                  | event 'heartbeat' only, optional: how the heartbeat is scheduled                                                                                                                                                                        |
 
 
 #### Coords

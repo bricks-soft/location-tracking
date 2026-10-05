@@ -22,6 +22,7 @@ import androidx.core.graphics.drawable.toBitmap
 import com.brickssoft.locationtracking.R
 import com.brickssoft.locationtracking.config.NotificationConfig
 import com.brickssoft.locationtracking.config.NotificationPriority
+import com.brickssoft.locationtracking.config.ResumeNotificationConfig
 import com.brickssoft.locationtracking.core.Constants
 import com.brickssoft.locationtracking.core.Logger
 
@@ -122,6 +123,32 @@ internal class NotificationFactory(context: Context) {
         return builder.build()
     }
 
+    /**
+     * The resume notification (`notification.resume`): its own channel at default importance (the tracking channel is
+     * often `min`, which would hide it), the tracking notification's small icon and color, dismissed by a tap or after
+     * [timeoutMs]. The tap starts [LocationTrackingService] directly with [LocationTrackingService.ACTION_RESUME]:
+     * a service started from a notification gets while-in-use location access on Android 14+.
+     */
+    fun buildResume(config: NotificationConfig, timeoutMs: Long?): Notification {
+        val resume = config.resume
+        val channel = NotificationChannelCompat.Builder(Constants.RESUME_CHANNEL_ID, NotificationManagerCompat.IMPORTANCE_DEFAULT)
+            .setName(resumeChannelName(resume))
+            .setShowBadge(false)
+            .build()
+        NotificationManagerCompat.from(context).createNotificationChannel(channel)
+        val builder = NotificationCompat.Builder(context, Constants.RESUME_CHANNEL_ID)
+            .setContentTitle(resume.title?.takeIf { it.isNotBlank() } ?: appLabel())
+            .setContentText(resumeText(resume))
+            .setSmallIcon(resolveSmallIcon(config.smallIcon))
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+            .setAutoCancel(true)
+            .setContentIntent(resumeIntent(config))
+        parseColor(config.color)?.let { builder.setColor(it) }
+        timeoutMs?.let { builder.setTimeoutAfter(it) }
+        return builder.build()
+    }
+
     /** [build], falling back to the default config if the configured notification cannot be built. */
     fun buildSafely(config: NotificationConfig): Notification = try {
         build(config)
@@ -207,6 +234,20 @@ internal class NotificationFactory(context: Context) {
             config.text
         }
 
+    private fun resumeText(resume: ResumeNotificationConfig): CharSequence =
+        if (resume.text.isBlank() || resume.text == ResumeNotificationConfig.DEFAULT_TEXT) {
+            context.getString(R.string.lt_resume_notification_text)
+        } else {
+            resume.text
+        }
+
+    private fun resumeChannelName(resume: ResumeNotificationConfig): CharSequence =
+        if (resume.channelName.isBlank() || resume.channelName == ResumeNotificationConfig.DEFAULT_CHANNEL_NAME) {
+            context.getString(R.string.lt_resume_channel_name)
+        } else {
+            resume.channelName
+        }
+
     private fun channelId(config: NotificationConfig): String =
         config.channelId.ifBlank { NotificationConfig.DEFAULT_CHANNEL_ID }
 
@@ -230,6 +271,17 @@ internal class NotificationFactory(context: Context) {
         launch.setPackage(null)
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
         return PendingIntent.getActivity(context, Constants.RC_NOTIFICATION_CONTENT, launch, Constants.piImmutable())
+    }
+
+    /** Starts the service with [LocationTrackingService.ACTION_RESUME]; carries [config] for its first notification. */
+    private fun resumeIntent(config: NotificationConfig): PendingIntent {
+        val intent = Intent(context, LocationTrackingService::class.java).setAction(LocationTrackingService.ACTION_RESUME)
+        ServiceCommands.putNotification(intent, config)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            PendingIntent.getForegroundService(context, Constants.RC_RESUME_NOTIFICATION, intent, Constants.piImmutable())
+        } else {
+            PendingIntent.getService(context, Constants.RC_RESUME_NOTIFICATION, intent, Constants.piImmutable())
+        }
     }
 
     private fun actionIntent(index: Int, id: String): PendingIntent {

@@ -47,6 +47,12 @@ interface TrackingEngine : ActivitySink, StationaryRegionSink {
     suspend fun endWithoutRestore(reason: String) = Unit
 
     /**
+     * The resume notification was tapped and the service is in the foreground: resumes the session that Android refused
+     * to restore (`tracking_start` reason `resume_notification`), or stops the service if there is nothing to resume.
+     */
+    suspend fun resumeFromNotification() = Unit
+
+    /**
      * A transition of the engine's stationary region (`Constants.STATIONARY_REGION_ID`), routed by the
      * GeofenceManager. Round 2, unit 2 implements it (EXIT = the device left the stationary anchor). Default: ignored.
      */

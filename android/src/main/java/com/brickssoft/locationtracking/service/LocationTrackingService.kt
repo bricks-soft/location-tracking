@@ -50,6 +50,9 @@ import kotlin.coroutines.cancellation.CancellationException
  *   is enabled (the engine does nothing when a session already runs), or `stopSelf(startId)` if it is not.
  * - A null intent (`START_STICKY` restart after the process died): enter the foreground, then `engine.restore("restore")`
  *   if tracking is enabled, or `stopSelf(startId)` if it is not.
+ * - A resume ([ACTION_RESUME], from a tap on the resume notification, sent with `startForegroundService`): enter the
+ *   foreground (a start from a notification gets while-in-use location access on Android 14+), then
+ *   `engine.resumeFromNotification()`.
  * - A stop ([ACTION_STOP], sent with `startService`, so it arrives after every start sent before it): ignored if a
  *   start was sent after it; otherwise `stopSelf(startId)` (Android ignores that when a newer command was sent). A stop
  *   marked as sent with `startForegroundService` first enters the foreground if the service is not in it yet.
@@ -123,7 +126,11 @@ class LocationTrackingService : Service() {
 
     /** Runs off the main thread after `startForeground` succeeded for a start command. */
     private fun afterForeground(deps: ServiceDeps, command: ServiceCommand, startId: Int) {
-        if (!command.fromThisProcess) {
+        if (command.kind == ServiceCommand.Kind.RESUME) {
+            Logger.i(TAG, "resume notification tapped")
+            // The engine stops the service again if it does not resume.
+            deps.launchEngine(TAG, "resumeFromNotification") { resumeFromNotification() }
+        } else if (!command.fromThisProcess) {
             val origin = if (command.kind == ServiceCommand.Kind.RESTART) {
                 "restarted by the system"
             } else {
@@ -255,6 +262,7 @@ class LocationTrackingService : Service() {
 
         /** Command that stops the service after any start queued before it. */
         internal const val ACTION_STOP = "com.brickssoft.locationtracking.service.STOP"
+        internal const val ACTION_RESUME = "com.brickssoft.locationtracking.service.RESUME"
 
         private val lock = Any()
 

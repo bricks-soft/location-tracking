@@ -369,7 +369,8 @@ The heartbeat lets the server decide, for any period, whether the device was ver
 Replay each device's records ordered by `recorded_at`. When a device's clock may be wrong, order by `boot_count`,
 then `elapsed_realtime_ms`.
 
-- `tracking_start` (reasons `start`, `start_geofences`, `boot`, `restore`, `package_replaced`) sets the state to **ON**.
+- `tracking_start` (reasons `start`, `start_geofences`, `boot`, `restore`, `package_replaced`, `resume_notification`)
+  sets the state to **ON**.
   A `tracking_start` while already ON is a mode switch between `start()` and `startGeofences()`.
 - `tracking_stop` (reasons `stop`, `stop_on_stationary`, `stop_after_elapsed`, `terminate`, `permission_denied`,
   `service_start_failed`, `reboot`, `package_replaced`) sets it to **OFF**. The reason says who stopped it: your app
@@ -407,10 +408,11 @@ Choosing `grace`:
 | What you see | Likely cause |
 |---|---|
 | A `tracking_stop` before the gap | Not a gap: tracking was stopped. Use `reason`. `terminate` means the user swiped the app away. |
-| A `tracking_stop` with reason `service_start_failed` | Android killed the app's process (often a phone maker's task killer), and then did not let the plugin restart its foreground service from the background: typically an app that is not exempt from battery optimization on Android 12+, or on Android 14+ without "Allow all the time". The same reason is recorded when the app called `start()` while it was not visible and Android refused the service. Tracking stays off until the app calls `start()` again. Treat it as "tracking lost", not as a user decision. |
+| A `tracking_stop` with reason `service_start_failed` | Android killed the app's process (often a phone maker's task killer), and then did not let the plugin restart its foreground service from the background: typically an app that is not exempt from battery optimization on Android 12+, or on Android 14+ without "Allow all the time". The same reason is recorded when the app called `start()` while it was not visible and Android refused the service. Tracking stays off until the app calls `start()` again, or the user taps the resume notification (`notification.resume`). Treat it as "tracking lost", not as a user decision. |
 | The gap ends with `tracking_start` reason `boot`, and `boot_count` increased | The phone was switched off or rebooted. A `battery.level` near 0 in the last record before the gap points to an empty battery. |
 | The gap ends with `tracking_start` reason `restore` | The app's process was killed and tracking resumed: by itself (Android restarted the service, or a heartbeat alarm woke the app) or when the user opened the app again (for example after a force-stop). |
 | The gap ends with `tracking_start` reason `package_replaced` | The app was updated. |
+| `tracking_stop` reason `service_start_failed`, then later `tracking_start` reason `resume_notification` | Android refused to restore tracking in the background (typically Android 14+ without "Allow all the time"), and the user tapped the resume notification. The gap between them is the time tracking was paused. |
 | A `providerchange` at the end of the gap, with `permission: "denied"` or `"when_in_use"` | The user revoked the location permission (followed by `tracking_stop` reason `permission_denied` when it is `denied`). |
 | No explanation, and records resume only when the user opens the app | Force-stop, battery "Restricted", or a phone maker's task killer. The device was not tracking. |
 | `providerchange` with `enabled: false` and no gap | The app was alive (heartbeats kept coming), but location services were off. Treat positions from that period as unknown. |

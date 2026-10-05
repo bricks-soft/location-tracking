@@ -1,12 +1,15 @@
 package com.brickssoft.locationtracking.service
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.brickssoft.locationtracking.config.ConfigStore
+import com.brickssoft.locationtracking.core.Constants
 import com.brickssoft.locationtracking.core.Clock
 import com.brickssoft.locationtracking.core.EventBus
 import com.brickssoft.locationtracking.core.Logger
@@ -38,6 +41,8 @@ import com.brickssoft.locationtracking.core.SystemClockImpl
  * - [isRunning] is true while the service is in the foreground: from a successful `startForeground` until the
  *   service is destroyed or `startForeground` fails.
  * - [refreshNotification] re-posts the notification from the current config while the service runs.
+ * - [showResumeNotification] / [cancelResumeNotification] post and remove the resume notification
+ *   (`notification.resume`), whose tap starts the service with [LocationTrackingService.ACTION_RESUME].
  */
 class DefaultServiceController(
     context: Context,
@@ -132,6 +137,31 @@ class DefaultServiceController(
             LocationTrackingService.refresh(context, configStore)
         } catch (e: Exception) {
             Logger.w(TAG, "could not refresh the notification", e)
+        }
+    }
+
+    @SuppressLint("MissingPermission") // areNotificationsEnabled() is false without POST_NOTIFICATIONS
+    override fun showResumeNotification(deadline: Long?) {
+        try {
+            val manager = NotificationManagerCompat.from(context)
+            if (!manager.areNotificationsEnabled()) {
+                Logger.w(TAG, "notifications are not allowed (POST_NOTIFICATIONS); no resume notification")
+                return
+            }
+            val timeout = deadline?.let { (it - clock.now()).coerceAtLeast(1L) }
+            val notification = NotificationFactory(context).buildResume(configStore.config.value.notification, timeout)
+            manager.notify(Constants.RESUME_NOTIFICATION_ID, notification)
+            Logger.i(TAG, "resume notification posted")
+        } catch (e: Exception) {
+            Logger.w(TAG, "could not post the resume notification", e)
+        }
+    }
+
+    override fun cancelResumeNotification() {
+        try {
+            NotificationManagerCompat.from(context).cancel(Constants.RESUME_NOTIFICATION_ID)
+        } catch (e: Exception) {
+            Logger.w(TAG, "could not cancel the resume notification", e)
         }
     }
 

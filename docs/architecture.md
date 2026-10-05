@@ -244,7 +244,7 @@ export interface Location {
   extras?: Record<string, unknown>;
   /** event 'geofence' only */ geofence?: { identifier: string; action: GeofenceAction; extras?: Record<string, unknown> };
   /** provider state when the record was created; the new state for event 'providerchange' */ provider?: ProviderState;
-  /** tracking_start: start|start_geofences|boot|restore|package_replaced; tracking_stop: stop|stop_on_stationary|stop_after_elapsed|terminate|permission_denied|service_start_failed|reboot|package_replaced */
+  /** tracking_start: start|start_geofences|boot|restore|package_replaced|resume_notification; tracking_stop: stop|stop_on_stationary|stop_after_elapsed|terminate|permission_denied|service_start_failed|reboot|package_replaced */
   reason?: string;
 }
 export type LocationRecord = Location;
@@ -457,7 +457,7 @@ General rules:
   - If no location was ever known, both are `null`.
   - `recorded_at` is when the heartbeat was created; `sent_at` is when it was uploaded, so the server can detect a late delivery.
 - **Audit records.** Both carry the last known coords, or null.
-  - `"event":"tracking_start"` with `"reason":"start"|"start_geofences"|"boot"|"restore"|"package_replaced"`.
+  - `"event":"tracking_start"` with `"reason":"start"|"start_geofences"|"boot"|"restore"|"package_replaced"|"resume_notification"`.
   - `"event":"tracking_stop"` with `"reason":"stop"|"stop_on_stationary"|"stop_after_elapsed"|"terminate"|"permission_denied"|"service_start_failed"|"reboot"|"package_replaced"`. `reboot` / `package_replaced`: tracking was enabled before a reboot or an app update and is not resumed because `app.startOnBoot` is false (`TrackingEngine.endWithoutRestore`). `permission_denied`: location permission missing on restore, or `start()`/`startGeofences()` could not start the service (the call rejects with `PERMISSION_DENIED`). `service_start_failed`: the foreground service was refused on restore, or failed to enter the foreground after `ServiceController.start()` returned true.
 - **Providerchange:** `"event":"providerchange","provider":{"enabled":false,"gps":false,"network":true,"permission":"always","accuracy":"precise","backend":"gms"}`.
 - **Geofence:** `"event":"geofence","geofence":{"identifier":"home","action":"ENTER","extras":{...}}`, with the coords of the fix that triggered it.
@@ -787,6 +787,7 @@ interface TrackingEngine : ActivitySink {
   suspend fun restore(reason: String)      // "restore" | "boot" | "package_replaced": cold process while enabled
   suspend fun onTerminate()                // task removed
   suspend fun onServiceStartFailed(error: String) = Unit   // startForeground failed after ServiceController.start() returned true
+  suspend fun resumeFromNotification() = Unit              // the resume notification was tapped (notification.resume)
 }
 data class LogQuery(val start: Long? = null, val end: Long? = null, val level: LogLevel? = null, val limit: Int? = null, val ascending: Boolean = true)
 interface LogStore : LogSink { fun configure(level: LogLevel, maxDays: Int); suspend fun read(q: LogQuery): String; suspend fun destroy()

@@ -170,12 +170,30 @@ data class NotificationConfig(
     val channelName: String = DEFAULT_CHANNEL_NAME,
     /** Max 3; tap => 'notificationaction' event. */
     val actions: List<NotificationActionButton> = emptyList(),
+    val resume: ResumeNotificationConfig = ResumeNotificationConfig(),
 ) {
     companion object {
         const val DEFAULT_TEXT = "Location tracking is active"
         const val DEFAULT_SMALL_ICON = "drawable/lt_ic_notification"
         const val DEFAULT_CHANNEL_ID = "location_tracking"
         const val DEFAULT_CHANNEL_NAME = "Location tracking"
+    }
+}
+
+/**
+ * The notification posted when Android refuses to restore tracking from the background (after a reboot, an app update
+ * or a process restart); tapping it resumes the session. Uses the tracking notification's small icon and color.
+ */
+data class ResumeNotificationConfig(
+    val enabled: Boolean = false,
+    /** null = app label. */
+    val title: String? = null,
+    val text: String = DEFAULT_TEXT,
+    val channelName: String = DEFAULT_CHANNEL_NAME,
+) {
+    companion object {
+        const val DEFAULT_TEXT = "Location tracking is paused. Tap to resume."
+        const val DEFAULT_CHANNEL_NAME = "Paused location tracking"
     }
 }
 

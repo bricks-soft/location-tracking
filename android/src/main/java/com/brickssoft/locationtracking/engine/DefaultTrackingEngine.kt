@@ -151,6 +151,8 @@ class DefaultTrackingEngine(
     }
 
     override suspend fun stop(): State = serialized {
+        // A paused session must not be resumed after the app stopped tracking (for example on logout).
+        guarded("serviceController.cancelResumeNotification") { serviceController.cancelResumeNotification() }
         stopLocked(REASON_STOP)
         state()
     }
@@ -188,6 +190,51 @@ class DefaultTrackingEngine(
         val reason = if (permissions.hasForegroundLocation()) REASON_SERVICE_START_FAILED else REASON_PERMISSION_DENIED
         Logger.w(TAG, "the foreground service failed to start ($error); stopping tracking with reason $reason")
         stopLocked(reason)
+        if (reason == REASON_SERVICE_START_FAILED) offerResume()
+    }
+
+    override suspend fun resumeFromNotification() = serialized {
+        guarded("serviceController.cancelResumeNotification") { serviceController.cancelResumeNotification() }
+        val deadline = elapsedStopAt()
+        when {
+            session != null -> Logger.i(TAG, "resume notification: tracking already runs")
+            runtime.enabled -> restoreLocked(REASON_RESUME_NOTIFICATION)
+            !config.notification.resume.enabled -> stopResumeService("notification.resume is disabled")
+            deadline != null && deadline <= clock.now() -> stopResumeService("stopAfterElapsedMinutes has passed")
+            !permissions.hasForegroundLocation() -> stopResumeService("location permission is not granted")
+            else -> {
+                Logger.i(TAG, "resume notification: resuming ${runtime.trackingMode.wire} tracking")
+                configStore.updateRuntime { it.copy(enabled = true) }
+                restoreLocked(REASON_RESUME_NOTIFICATION)
+                if (session != null) events.emit(TrackingEvent.EnabledChange(true))
+            }
+        }
+    }
+
+    private fun stopResumeService(why: String) {
+        Logger.i(TAG, "resume notification: not resuming ($why)")
+        guarded("serviceController.stop") { serviceController.stop() }
+    }
+
+    /**
+     * After Android refused to restore tracking from the background: posts the resume notification if
+     * `notification.resume.enabled`, unless the session's `stopAfterElapsedMinutes` has already passed.
+     */
+    private fun offerResume() {
+        if (!config.notification.resume.enabled) return
+        val deadline = elapsedStopAt()
+        if (deadline != null && deadline <= clock.now()) {
+            Logger.i(TAG, "no resume notification: stopAfterElapsedMinutes has passed")
+            return
+        }
+        guarded("serviceController.showResumeNotification") { serviceController.showResumeNotification(deadline) }
+    }
+
+    /** When `stopAfterElapsedMinutes` ends the session started at `trackingStartedAt`; null without a limit. */
+    private fun elapsedStopAt(): Long? {
+        val minutes = config.geolocation.stopAfterElapsedMinutes
+        val startedAt = runtime.trackingStartedAt ?: return null
+        return if (minutes > 0) startedAt + minutes * MINUTE_MS else null
     }
 
     override suspend fun onTerminate() = serialized {
@@ -268,6 +315,7 @@ class DefaultTrackingEngine(
                 if (!startService()) {
                     Logger.w(TAG, "restore($reason): the foreground service was refused; stopping tracking")
                     stopLocked(REASON_SERVICE_START_FAILED)
+                    offerResume()
                 }
             }
             return
@@ -289,6 +337,7 @@ class DefaultTrackingEngine(
             // keep retrying; end the session with an explicit audit record instead.
             Logger.w(TAG, "restore($reason): the foreground service was refused; stopping tracking")
             stopLocked(REASON_SERVICE_START_FAILED)
+            offerResume()
             return
         }
         // GMS and HMS keep geofences across a process death: the stationary region of the dead process may remain.
@@ -312,6 +361,7 @@ class DefaultTrackingEngine(
         configureMode(s)
         watchGeofenceDemand(s)
         s.eventSubscription = events.subscribe { event -> onEvent(s, event) }
+        guarded("serviceController.cancelResumeNotification") { serviceController.cancelResumeNotification() }
         submit(RecordEvent.TRACKING_START, bestKnownLocation(s), reason = reason)
         Logger.i(TAG, "tracking started: session=${s.id} mode=${mode.wire} reason=$reason backend=${providers.kind.wire}")
         return s
@@ -428,6 +478,9 @@ class DefaultTrackingEngine(
         val s = session
         val providerChanged = old.locationProvider != new.locationProvider
         if (providerChanged) switchProvider(s, old, new)
+        if (old.notification.resume.enabled && !new.notification.resume.enabled) {
+            guarded("serviceController.cancelResumeNotification") { serviceController.cancelResumeNotification() }
+        }
         if (s == null) return
         if (!providerChanged && activitySettingsChanged(old, new)) {
             stopActivityUpdates(s)
@@ -1190,6 +1243,7 @@ class DefaultTrackingEngine(
         const val REASON_TERMINATE = "terminate"
         const val REASON_PERMISSION_DENIED = "permission_denied"
         const val REASON_SERVICE_START_FAILED = "service_start_failed"
+        const val REASON_RESUME_NOTIFICATION = "resume_notification"
 
         /** `device.checkProviderState` reason after the backend changed. */
         const val PROVIDER_CHECK_REASON = "reselect"

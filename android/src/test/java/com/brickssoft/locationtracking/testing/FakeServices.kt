@@ -190,6 +190,20 @@ class FakeServiceController : ServiceController {
     override fun refreshNotification() {
         refreshCalls++
     }
+
+    /** The deadline of each [showResumeNotification] call. */
+    val resumeNotifications = java.util.concurrent.CopyOnWriteArrayList<Long?>()
+
+    @Volatile
+    var cancelResumeCalls = 0
+
+    override fun showResumeNotification(deadline: Long?) {
+        resumeNotifications += deadline
+    }
+
+    override fun cancelResumeNotification() {
+        cancelResumeCalls++
+    }
 }
 
 /**
@@ -299,6 +313,10 @@ class FakeTrackingEngine(
 
     override suspend fun onServiceStartFailed(error: String) {
         call("onServiceStartFailed") { serviceStartFailures += error }
+    }
+
+    override suspend fun resumeFromNotification() {
+        call("resumeFromNotification") {}
     }
 
     override suspend fun onActivitySamples(samples: List<ActivitySample>) {

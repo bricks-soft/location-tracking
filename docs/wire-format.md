@@ -555,7 +555,7 @@ Substitution rules:
   - `extras` is inserted as JSON object text (`{}` when the record has no extras), so write it bare:
     `"extras": <%= extras %>`.
   - `record` is inserted as the whole [default record object](#record-fields), `sent_at` included, so write it bare:
-    `"raw_event": <%= record %>`. It carries every field, including the ones without a placeholder of their own
+    `"record": <%= record %>`. It carries every field, including the ones without a placeholder of their own
     (`provider.accuracy`, `provider.backend`, `heartbeat`) and any added later, and `coords` and `timestamp` stay
     `null` when the record has no fix.
   - `provider` is inserted as the record's [`provider` object](#providerchange) (`enabled`, `gps`, `network`,

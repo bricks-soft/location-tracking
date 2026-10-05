@@ -537,7 +537,7 @@ If your v8 app set `locationTemplate` or `geofenceTemplate`:
 - Add `uuid`, `event`, `recorded_at` and `sent_at`, and `reason`, `elapsed_realtime_ms` and `boot_count` if you audit
   tracking. Every tag: [Templates](wire-format.md#templates).
 - To keep your v8 body shape and still send every new field, nest the whole default record:
-  `"raw_event": <%= record %>`.
+  `"record": <%= record %>`.
 
 ### Server checklist
 

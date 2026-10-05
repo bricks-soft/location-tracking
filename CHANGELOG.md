@@ -36,6 +36,10 @@ version follows the Capacitor major version (Capacitor 8), as `@bricks-soft/cap-
   the background (typically after a reboot or an app update on Android 14+ with only "while in use" location), the
   plugin posts a notification whose tap resumes the session (`tracking_start` reason `resume_notification`)
   ([README, `config.notification.resume`](README.md#confignotificationresume)).
+- **A restore after the `stopAfterElapsedMinutes` deadline** (after a reboot, an app update, a killed process or
+  `ready()`) now records `tracking_stop` with reason `stop_after_elapsed` and starts nothing. Before, it restored the
+  session and stopped it at once (`tracking_start` then `stop_after_elapsed`), or recorded `service_start_failed` when
+  Android refused the background start.
 - **`<%= provider %>` template placeholder**: the record's `provider` object, or `null`, e.g.
   `"provider": <%= provider %>`.
 

@@ -303,7 +303,10 @@ class DefaultTrackingEngine(
         if (mode == TrackingMode.LOCATION) launchInitialFix(s)
     }
 
-    /** Cold process with `runtime.enabled`: restarts everything in the persisted mode, without permission prompts. */
+    /**
+     * Cold process with `runtime.enabled`: restarts everything in the persisted mode, without permission prompts. If the
+     * session's `stopAfterElapsedMinutes` deadline has passed, it records that stop instead and starts nothing.
+     */
     private suspend fun restoreLocked(reason: String) {
         if (!runtime.enabled) {
             Logger.i(TAG, "restore($reason): tracking is not enabled; nothing to restore")
@@ -318,6 +321,13 @@ class DefaultTrackingEngine(
                     offerResume()
                 }
             }
+            return
+        }
+        // The session ended while no process ran its timer (the phone was off, or the app was killed or updated).
+        val deadline = elapsedStopAt()
+        if (deadline != null && deadline <= clock.now()) {
+            Logger.i(TAG, "restore($reason): stopAfterElapsedMinutes passed while tracking was not running; stopping")
+            stopLocked(REASON_STOP_AFTER_ELAPSED)
             return
         }
         if (!permissions.hasForegroundLocation()) {

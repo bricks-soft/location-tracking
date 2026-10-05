@@ -809,6 +809,24 @@ class DefaultTrackingEngineTest {
     }
 
     @Test
+    fun `a restore after the elapsed stop records stop_after_elapsed and starts nothing`() = runTest {
+        val engine = newEngine()
+        enableResume(stopAfterElapsedMinutes = 60)
+        configStore.runtimeFlow.value =
+            RuntimeState(enabled = true, trackingStartedAt = clock.now() - 61 * 60_000L, lastLocation = origin)
+
+        engine.restore("boot")
+        runCurrent()
+
+        assertEquals(listOf("tracking_stop:stop_after_elapsed"), records())
+        assertSame(origin, recordSink.records.single().location)
+        assertEquals(0, service.startCalls)
+        assertFalse(configStore.runtime.value.enabled)
+        assertTrue(service.resumeNotifications.isEmpty())
+        assertFalse(locationBackend.isRequesting)
+    }
+
+    @Test
     fun `no resume notification when it is disabled`() = runTest {
         val engine = newEngine()
         configStore.runtimeFlow.value = RuntimeState(enabled = true, trackingStartedAt = clock.now())

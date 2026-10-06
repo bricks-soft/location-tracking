@@ -690,3 +690,16 @@ service started by a notification tap use "while in use" location
 | Removed when tracking starts by any path, on `stop()`, and when `resume.enabled` is turned off. | A tap must not resume tracking after the app stopped it (for example on logout). | `engine/DefaultTrackingEngine.kt` |
 | Without notification permission it is only logged. | Nothing else can reach the user from the background. | `service/DefaultServiceController.kt` |
 
+
+## Store flavors (Play and AppGallery APKs)
+
+An app that publishes a Google Play APK with only GMS and an AppGallery APK with only HMS builds both from Android
+product flavors. `locationTracking.providers` applies to the whole Gradle run and the plugin module has one variant,
+so it cannot give each flavor a different SDK.
+
+| Decision | Why | Where |
+|---|---|---|
+| Flavored apps set `locationTracking.providers=none` and add the SDK per flavor (`gmsImplementation`, `hmsImplementation`); documented, no plugin flavors. | Runtime selection already checks which SDK classes are in the APK, and no code outside `provider/gms` and `provider/hms` imports an SDK, so the plugin needs no build change. | README "Separate Play and AppGallery APKs (product flavors)" |
+| Each flavor removes the other provider's receivers and Android 9 activity-recognition permission with `tools:node="remove"` in its own manifest; the plugin manifest still declares both. | Owner's decision: each store APK should contain only its own provider's entries. Removing them in the plugin would break `gms,hms` and single-SDK builds, which need them. | README, same section |
+| The `provider.gms` and `provider.hms` classes stay in both APKs. | Owner's decision. The R8 rules keep every provider bundle for the runtime check; the classes are in the plugin's package and contain no Google or Huawei code. Removing them would need separate Gradle modules per provider. | `consumer-rules.pro` |
+| `getDeviceInfo().packagedProviders` checks the SDK classes (`ProviderBundles.GMS_SDK_CLASS`, `HMS_SDK_CLASS`) at runtime; the `PACKAGED_PROVIDERS` build constant is removed. | Owner's decision: it must report what is in the APK. The build constant was `""` in a flavored app (`none`). For apps that use `locationTracking.providers` the result is unchanged. | `device/DefaultDeviceInfoProvider.kt`, `android/build.gradle` |

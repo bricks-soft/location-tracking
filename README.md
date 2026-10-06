@@ -103,8 +103,10 @@ locationTracking.providers=gms,hms
 | `hms` | `com.huawei.hms:location` | AppGallery-only builds |
 | `gms,hms` | both | One APK for phones with Google services and Huawei phones without them |
 
-You can also pass the property on the command line (`./gradlew assembleRelease -PlocationTracking.providers=hms`),
-for example to build separate Play and AppGallery flavors from one project.
+You can also pass the property on the command line (`./gradlew assembleRelease -PlocationTracking.providers=hms`).
+The property applies to the whole Gradle run, so every product flavor of the app gets the same SDKs. To build a Play
+APK and an AppGallery APK from product flavors, use `none` and add the SDKs per flavor, as described in
+[Separate Play and AppGallery APKs (product flavors)](#separate-play-and-appgallery-apks-product-flavors).
 
 The SDK versions default to `play-services-location` 21.3.0 and `com.huawei.hms:location` 6.16.0.302. To use other
 versions, set `playServicesLocationVersion` or `hmsLocationVersion` in the `ext` block of your app's
@@ -132,6 +134,102 @@ only, and **no native geofence dwell**, so the plugin synthesizes `DWELL` itself
 bundles and the GMS/HMS class names it probes by reflection, so a minified release app still detects Google Play
 services and HMS. They also include Huawei's recommended keep rules and silence warnings about the SDK that is not
 packaged.
+
+#### Separate Play and AppGallery APKs (product flavors)
+
+An app that publishes a Google Play APK with only GMS and an AppGallery APK with only HMS adds the SDKs per product
+flavor itself, instead of through `locationTracking.providers`. The plugin chooses the backend by checking at runtime
+which SDK classes are in the APK, so it needs no other setting.
+
+1. In `android/gradle.properties`, stop the plugin from packaging any SDK:
+
+   ```properties
+   locationTracking.providers=none
+   ```
+
+2. In `android/app/build.gradle`, declare the flavors and add one SDK to each:
+
+   ```groovy
+   android {
+       flavorDimensions = ['store']
+       productFlavors {
+           gms { dimension 'store' }
+           hms { dimension 'store' }
+       }
+   }
+
+   dependencies {
+       gmsImplementation 'com.google.android.gms:play-services-location:21.3.0'
+       hmsImplementation 'com.huawei.hms:location:6.16.0.302'
+   }
+   ```
+
+   The app now sets the SDK versions; `playServicesLocationVersion` and `hmsLocationVersion` no longer apply.
+
+3. Add the Huawei Maven repository ([step 2](#2-huawei-maven-repository-needed-for-hms-and-harmless-otherwise)).
+   For AppGallery Connect ([step 3](#3-appgallery-connect-only-for-hms)), put `agconnect-services.json` in
+   `android/app/src/hms/` instead of `android/app/`.
+
+4. Remove the other provider's entries from each flavor's manifest. The plugin's manifest declares the receivers and
+   the Android 9 activity-recognition permissions of both SDKs, and Android merges it into every flavor. These
+   entries do nothing in an APK without that SDK, but they show in the merged manifest and in the store listing's
+   permission list. Two flavor manifests remove them.
+
+   `android/app/src/gms/AndroidManifest.xml` (Google Play APK, removes the HMS entries):
+
+   ```xml
+   <?xml version="1.0" encoding="utf-8"?>
+   <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+       xmlns:tools="http://schemas.android.com/tools">
+     <uses-permission android:name="com.huawei.hms.permission.ACTIVITY_RECOGNITION" tools:node="remove"/>
+     <application>
+       <receiver android:name="com.brickssoft.locationtracking.provider.hms.HmsActivityReceiver" tools:node="remove"/>
+       <receiver android:name="com.brickssoft.locationtracking.provider.hms.HmsGeofenceReceiver" tools:node="remove"/>
+     </application>
+   </manifest>
+   ```
+
+   `android/app/src/hms/AndroidManifest.xml` (AppGallery APK, removes the GMS entries):
+
+   ```xml
+   <?xml version="1.0" encoding="utf-8"?>
+   <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+       xmlns:tools="http://schemas.android.com/tools">
+     <uses-permission android:name="com.google.android.gms.permission.ACTIVITY_RECOGNITION" tools:node="remove"/>
+     <application>
+       <receiver android:name="com.brickssoft.locationtracking.provider.gms.GmsActivityReceiver" tools:node="remove"/>
+       <receiver android:name="com.brickssoft.locationtracking.provider.gms.GmsGeofenceReceiver" tools:node="remove"/>
+     </application>
+   </manifest>
+   ```
+
+   Keep everything else from the plugin's manifest in both flavors. The `<queries>` entries such as
+   `com.huawei.systemmanager` are phone makers' battery settings apps, not HMS, and the plugin uses them on every
+   phone ([step 6](#6-battery-optimization-and-phone-makers)).
+
+5. Build both APKs: `./gradlew assembleGmsRelease assembleHmsRelease` (or `bundleGmsRelease` for Play).
+
+What each APK then contains:
+
+| | Google Play APK (`gms`) | AppGallery APK (`hms`) |
+|---|---|---|
+| Location SDK and its dependencies | `play-services-location` only | `com.huawei.hms:location` only |
+| Manifest entries that the SDK adds itself | Google's only | Huawei's only |
+| Plugin receivers and activity-recognition permission | GMS only (after step 4) | HMS only (after step 4) |
+| Plugin classes in `provider.gms` and `provider.hms` | both | both |
+| `getDeviceInfo().packagedProviders` | `["gms"]` | `["hms"]` |
+
+The plugin classes of both providers stay in both APKs, because the R8 rules keep every provider bundle for the
+runtime check. They are in the `com.brickssoft.locationtracking` package and contain no Google or Huawei code.
+
+Other libraries in the app can still bring an SDK into the wrong flavor; for example, Firebase depends on Google
+Play services. Check each flavor before publishing:
+
+- `./gradlew :app:dependencies --configuration hmsReleaseRuntimeClasspath` lists the libraries in the AppGallery APK
+  (`gmsReleaseRuntimeClasspath` for the Play APK).
+- `android/app/build/intermediates/merged_manifests/hmsRelease/` (or Android Studio's **Merged Manifest** tab) shows
+  the final manifest.
+- On a phone, `getDeviceInfo().packagedProviders` shows which SDKs the installed APK contains.
 
 ### 2. Huawei Maven repository (needed for `hms`, and harmless otherwise)
 

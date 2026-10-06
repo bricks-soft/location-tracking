@@ -16,7 +16,7 @@ This document is the contract between the scaffold and all work units. The scaff
 - iOS is deferred to a later phase. Web is a development stub: `getCurrentPosition`, `watchPosition` and `clearWatch` (using `navigator.geolocation`), an in-memory `ready`/`setConfig`/`reset`/`getState`, `checkPermissions`, `requestPermissions` and `getDeviceInfo` (see §1).
 - **GMS/HMS selection.** There are three location backends: GMS (Google Play services), HMS (Huawei Location Kit) and the plain Android `LocationManager`.
   - The plugin compiles against both SDKs with `compileOnly`.
-  - The app chooses which SDKs are packaged with the Gradle property `locationTracking.providers=gms,hms` (default `gms`).
+  - The app chooses which SDKs are packaged with the Gradle property `locationTracking.providers=gms,hms` (default `gms`). An app with Play and AppGallery product flavors sets `none` and adds one SDK per flavor itself (README, "Separate Play and AppGallery APKs").
   - Config `locationProvider: 'auto'|'gms'|'hms'|'android'` selects one at runtime. `auto` means: GMS if its class is present and `GoogleApiAvailability` reports SUCCESS; otherwise HMS if its class is present and `HuaweiApiAvailability` reports SUCCESS; otherwise Android. An explicit `gms`/`hms` that is not packaged or not available falls back to Android (logged).
   - Backend bundles are created only through reflection.
 - **Heartbeat (audit):**
@@ -1007,7 +1007,7 @@ project(':capacitor-android').projectDir = new File('../node_modules/@capacitor/
 **`android/build.gradle`:**
 - Kotlin/AGP buildscript as in the Capacitor plugin template.
 - `resourcePrefix 'lt_'`.
-- `buildConfigField`s `PLUGIN_VERSION` and `PACKAGED_PROVIDERS`.
+- `buildConfigField` `PLUGIN_VERSION`. `getDeviceInfo().packagedProviders` is not a build value: it checks at runtime which SDK classes are in the APK.
 - GMS and HMS as `compileOnly` and `testImplementation`, plus `implementation` driven by the property:
 
 ```groovy

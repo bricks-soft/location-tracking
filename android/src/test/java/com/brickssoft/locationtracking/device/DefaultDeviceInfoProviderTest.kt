@@ -9,6 +9,7 @@ import com.brickssoft.locationtracking.core.Logger
 import com.brickssoft.locationtracking.model.DeviceInfo
 import com.brickssoft.locationtracking.model.ProviderKind
 import com.brickssoft.locationtracking.model.Sensors
+import com.brickssoft.locationtracking.provider.ProviderBundles
 import com.brickssoft.locationtracking.provider.ProviderFactory
 import com.brickssoft.locationtracking.testing.FakeProviderFactory
 import org.junit.After
@@ -43,7 +44,7 @@ class DefaultDeviceInfoProviderTest {
         setBuild()
         val providers = FakeProviderFactory(ProviderKind.HMS)
 
-        val info = DefaultDeviceInfoProvider(app, lazy { providers }, packagedProviders = "gms,hms").deviceInfo()
+        val info = DefaultDeviceInfoProvider(app, lazy { providers }, classPresent = { true }).deviceInfo()
 
         assertEquals(
             DeviceInfo(
@@ -78,21 +79,33 @@ class DefaultDeviceInfoProviderTest {
     }
 
     @Test
-    fun `packaged providers default to the build config value`() {
+    fun `packaged providers default to the SDK classes on the classpath`() {
+        // The unit-test classpath has both SDKs (testImplementation).
         val info = DefaultDeviceInfoProvider(app, lazy { FakeProviderFactory(ProviderKind.ANDROID) }).deviceInfo()
 
-        assertEquals(
-            DefaultDeviceInfoProvider.parsePackagedProviders(BuildConfig.PACKAGED_PROVIDERS),
-            info.packagedProviders,
-        )
+        assertEquals(listOf("gms", "hms"), info.packagedProviders)
     }
 
     @Test
-    fun `parsePackagedProviders trims and drops empty entries`() {
-        assertEquals(listOf("gms", "hms"), DefaultDeviceInfoProvider.parsePackagedProviders(" gms , ,hms "))
-        assertEquals(listOf("gms"), DefaultDeviceInfoProvider.parsePackagedProviders("gms"))
-        assertEquals(emptyList<String>(), DefaultDeviceInfoProvider.parsePackagedProviders(""))
-        assertEquals(emptyList<String>(), DefaultDeviceInfoProvider.parsePackagedProviders(" , "))
+    fun `packaged providers list only the SDK classes that are present`() {
+        fun packaged(present: Set<String>) =
+            DefaultDeviceInfoProvider(app, lazy { FakeProviderFactory() }, classPresent = { it in present })
+                .deviceInfo().packagedProviders
+
+        assertEquals(listOf("gms"), packaged(setOf(ProviderBundles.GMS_SDK_CLASS)))
+        assertEquals(listOf("hms"), packaged(setOf(ProviderBundles.HMS_SDK_CLASS)))
+        assertEquals(emptyList<String>(), packaged(emptySet()))
+    }
+
+    @Test
+    fun `a throwing class probe reads as not packaged`() {
+        val info = DefaultDeviceInfoProvider(
+            app,
+            lazy { FakeProviderFactory() },
+            classPresent = { if (it == ProviderBundles.GMS_SDK_CLASS) error("boom") else true },
+        ).deviceInfo()
+
+        assertEquals(listOf("hms"), info.packagedProviders)
     }
 
     @Test

@@ -27,6 +27,7 @@ if (project.extensions.findByName('kotlin') == null) {
 
 // Which location SDKs are packaged into the app: -PlocationTracking.providers=gms,hms (default: gms).
 // The plugin always compiles against both (compileOnly) and selects one at runtime via reflection.
+// An app with Play and AppGallery product flavors sets `none` and adds the SDKs per flavor itself (README).
 def ltProviders = (project.findProperty('locationTracking.providers') ?: 'gms').toString()
     .split(',').collect { it.trim().toLowerCase() }.findAll { it && it != 'none' }.toSet()
 
@@ -39,7 +40,6 @@ android {
         targetSdkVersion project.hasProperty('targetSdkVersion') ? rootProject.ext.targetSdkVersion : 36
         consumerProguardFiles 'consumer-rules.pro'
         buildConfigField 'String', 'PLUGIN_VERSION', '"8.0.0"'
-        buildConfigField 'String', 'PACKAGED_PROVIDERS', "\"${ltProviders.join(',')}\""
     }
     buildFeatures {
         buildConfig = true

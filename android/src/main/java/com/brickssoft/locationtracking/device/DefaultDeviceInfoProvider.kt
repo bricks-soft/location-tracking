@@ -10,11 +10,13 @@ import com.brickssoft.locationtracking.core.Logger
 import com.brickssoft.locationtracking.model.DeviceInfo
 import com.brickssoft.locationtracking.model.ProviderKind
 import com.brickssoft.locationtracking.model.Sensors
+import com.brickssoft.locationtracking.provider.DefaultProviderFactory
+import com.brickssoft.locationtracking.provider.ProviderBundles
 import com.brickssoft.locationtracking.provider.ProviderFactory
 
 /**
  * Default [DeviceInfoProvider]: build properties, plugin version, GMS/HMS availability and the active backend
- * (from [providers]), the location SDKs packaged at build time, and which motion sensors the device has.
+ * (from [providers]), the location SDKs packaged in the APK, and which motion sensors the device has.
  * If the provider factory fails, both SDKs read as unavailable and the backend as `android` (the fallback).
  *
  * The constructor does not touch [providers].
@@ -22,7 +24,7 @@ import com.brickssoft.locationtracking.provider.ProviderFactory
 class DefaultDeviceInfoProvider(
     private val context: Context,
     private val providers: Lazy<ProviderFactory>,
-    private val packagedProviders: String = BuildConfig.PACKAGED_PROVIDERS,
+    private val classPresent: (String) -> Boolean = DefaultProviderFactory.reflectiveClassPresent(context.classLoader),
 ) : DeviceInfoProvider {
     override fun deviceInfo(): DeviceInfo {
         // DeviceInfo is diagnostic: a broken provider factory must not hide the build properties.
@@ -49,7 +51,7 @@ class DefaultDeviceInfoProvider(
             gmsAvailable = factory != null && isAvailable(factory, ProviderKind.GMS),
             hmsAvailable = factory != null && isAvailable(factory, ProviderKind.HMS),
             backend = backend ?: ProviderKind.ANDROID,
-            packagedProviders = parsePackagedProviders(packagedProviders),
+            packagedProviders = packagedProviders(),
         )
     }
 
@@ -84,11 +86,24 @@ class DefaultDeviceInfoProvider(
         false
     }
 
+    /**
+     * The location SDKs whose classes are in the APK, in the order `gms`, `hms`. Read at runtime rather than from the
+     * Gradle property, so an app that adds the SDKs itself (for example per product flavor) reports what it ships.
+     */
+    private fun packagedProviders(): List<String> = buildList {
+        if (sdkPresent(ProviderBundles.GMS_SDK_CLASS)) add(ProviderKind.GMS.wire)
+        if (sdkPresent(ProviderBundles.HMS_SDK_CLASS)) add(ProviderKind.HMS.wire)
+    }
+
+    private fun sdkPresent(className: String): Boolean =
+        try {
+            classPresent(className)
+        } catch (e: Exception) {
+            Logger.w(TAG, "probe $className failed", e)
+            false
+        }
+
     internal companion object {
         private const val TAG = "LT.DeviceInfo"
-
-        /** Splits the build-time `PACKAGED_PROVIDERS` value ("gms,hms") into trimmed, non-empty entries. */
-        fun parsePackagedProviders(raw: String): List<String> =
-            raw.split(',').map { it.trim() }.filter { it.isNotEmpty() }
     }
 }

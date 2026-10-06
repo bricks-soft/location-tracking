@@ -26,6 +26,9 @@ version follows the Capacitor major version (Capacitor 8), as `@bricks-soft/cap-
   `network`, `permission`, `accuracy`, `backend`) read when the record is created, so a server sees it on every
   heartbeat and right after a restart. `providerchange` records and their detection are unchanged
   ([wire-format.md, Record fields](docs/wire-format.md#record-fields)).
+- **`getDeviceInfo().packagedProviders` reports the SDKs in the APK** (checked at runtime), not the
+  `locationTracking.providers` value the plugin was built with, so a flavored app with `none` reports `["gms"]` or
+  `["hms"]`. The `PACKAGED_PROVIDERS` build constant is removed.
 
 ### Added
 
@@ -42,6 +45,9 @@ version follows the Capacitor major version (Capacitor 8), as `@bricks-soft/cap-
   Android refused the background start.
 - **`<%= provider %>` template placeholder**: the record's `provider` object, or `null`, e.g.
   `"provider": <%= provider %>`.
+- **Store flavors**: README section "Separate Play and AppGallery APKs (product flavors)" for apps that build a
+  Google Play APK with only GMS and an AppGallery APK with only HMS: `locationTracking.providers=none`, the SDK added
+  per flavor, and per-flavor manifests that remove the other provider's receivers and permission.
 
 
 Round 2: the field-force audit setup, a native API for companion plugins, and end-to-end tests on an Android

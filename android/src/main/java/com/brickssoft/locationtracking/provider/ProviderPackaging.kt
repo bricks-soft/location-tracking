@@ -93,14 +93,21 @@ class ProviderPackaging(
          */
         const val PROVIDERS_META_DATA = "com.brickssoft.locationtracking.PROVIDERS"
 
-        /** `PackageManager.getReceiverInfo` for a receiver of this app: true if the merged manifest declares it. */
+        /** Flags of the receiver lookup: disabled receivers and both direct-boot states count as declared. */
+        const val RECEIVER_LOOKUP_FLAGS = PackageManager.MATCH_DISABLED_COMPONENTS or
+            PackageManager.MATCH_DIRECT_BOOT_AWARE or
+            PackageManager.MATCH_DIRECT_BOOT_UNAWARE
+
+        /**
+         * `PackageManager.getReceiverInfo` for a receiver of this app: true if the merged manifest declares it.
+         * [RECEIVER_LOOKUP_FLAGS] make the answer independent of whether the receiver is enabled and of whether the
+         * user has unlocked the phone since boot (before that, Android hides components that are not direct-boot
+         * aware, which the plugin's receivers are not).
+         */
         fun receiverDeclaredIn(context: Context): (String) -> Boolean = { name ->
             try {
                 @Suppress("DEPRECATION") // the ComponentInfoFlags overload needs API 33
-                context.packageManager.getReceiverInfo(
-                    ComponentName(context.packageName, name),
-                    PackageManager.MATCH_DISABLED_COMPONENTS,
-                )
+                context.packageManager.getReceiverInfo(ComponentName(context.packageName, name), RECEIVER_LOOKUP_FLAGS)
                 true
             } catch (e: PackageManager.NameNotFoundException) {
                 false

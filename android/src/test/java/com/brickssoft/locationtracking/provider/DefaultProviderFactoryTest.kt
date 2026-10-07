@@ -1,6 +1,9 @@
 package com.brickssoft.locationtracking.provider
 
 import android.app.Application
+import android.content.ContextWrapper
+import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
 import androidx.test.core.app.ApplicationProvider
 import com.brickssoft.locationtracking.api.setMetaData
 import com.brickssoft.locationtracking.config.Config
@@ -15,6 +18,8 @@ import com.brickssoft.locationtracking.testing.FakeActivityBackend
 import com.brickssoft.locationtracking.testing.FakeConfigStore
 import com.brickssoft.locationtracking.testing.FakeGeofenceBackend
 import com.brickssoft.locationtracking.testing.FakeLocationBackend
+import io.mockk.every
+import io.mockk.mockk
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -319,6 +324,26 @@ class DefaultProviderFactoryTest {
 
         assertEquals(ProviderKind.ANDROID, factory().kind)
         assertTrue(warnings.any { "gms is listed in ${ProviderPackaging.PROVIDERS_META_DATA}" in it })
+    }
+
+    @Test
+    fun `receiver lookup matches disabled receivers and both direct-boot states`() {
+        val flags = CopyOnWriteArrayList<Int>()
+        val pm = mockk<PackageManager>()
+        every { pm.getReceiverInfo(any(), any<Int>()) } answers {
+            flags += secondArg<Int>()
+            ActivityInfo()
+        }
+        val context = object : ContextWrapper(app) {
+            override fun getPackageManager(): PackageManager = pm
+        }
+
+        assertTrue(ProviderPackaging.receiverDeclaredIn(context)(ProviderBundles.GMS_RECEIVERS.first()))
+
+        val expected = PackageManager.MATCH_DISABLED_COMPONENTS or
+            PackageManager.MATCH_DIRECT_BOOT_AWARE or
+            PackageManager.MATCH_DIRECT_BOOT_UNAWARE
+        assertEquals(listOf(expected), flags.toList())
     }
 
     @Test

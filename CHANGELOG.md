@@ -29,6 +29,12 @@ version follows the Capacitor major version (Capacitor 8), as `@bricks-soft/cap-
 - **`getDeviceInfo().packagedProviders` reports the SDKs in the APK** (checked at runtime), not the
   `locationTracking.providers` value the plugin was built with, so a flavored app with `none` reports `["gms"]` or
   `["hms"]`. The `PACKAGED_PROVIDERS` build constant is removed.
+- **A provider whose receivers the app removed is not used.** GMS or HMS counts as packaged only when its SDK
+  classes are in the APK and the merged manifest declares its activity and geofence receivers. `auto` skips it, an
+  explicit `gms`/`hms` falls back to `android` with a warning, and `packagedProviders`, `gmsAvailable` and
+  `hmsAvailable` leave it out. An AppGallery flavor that removes the GMS receivers now uses HMS even when another
+  library brings Google's location classes and the phone has Google Play services; before, `auto` selected GMS and
+  its activity and geofence events (including the stationary geofence exit) never arrived.
 
 ### Added
 

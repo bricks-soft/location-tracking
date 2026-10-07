@@ -65,6 +65,11 @@ class DefaultProviderFactoryTest {
         add(ProviderBundles.GMS_SDK_CLASS)
         add(ProviderBundles.HMS_SDK_CLASS)
     }
+    /** Receivers the fake manifest lookup reports as declared (all four by default). */
+    private val declared: MutableSet<String> = ConcurrentHashMap.newKeySet<String>().apply {
+        addAll(ProviderBundles.GMS_RECEIVERS)
+        addAll(ProviderBundles.HMS_RECEIVERS)
+    }
     private val lookups = CopyOnWriteArrayList<String>()
     private val created = CopyOnWriteArrayList<String>()
     private val creationErrors = ConcurrentHashMap<String, Throwable>()
@@ -89,6 +94,7 @@ class DefaultProviderFactoryTest {
                     else -> throw ClassNotFoundException(name)
                 }
             },
+            receiverDeclared = { name -> name in declared },
         )
     }
 
@@ -178,6 +184,48 @@ class DefaultProviderFactoryTest {
         assertFalse(throwingLookup.isAvailable(ProviderKind.HMS))
     }
 
+    @Test
+    fun `auto skips gms when the app removed its receivers`() {
+        declared -= ProviderBundles.GMS_RECEIVERS.first()
+
+        val f = factory()
+
+        assertEquals(ProviderKind.HMS, f.kind)
+        assertFalse(f.isAvailable(ProviderKind.GMS))
+        assertFalse(ProviderBundles.GMS_BUNDLE in created)
+    }
+
+    @Test
+    fun `auto skips hms when the app removed its receivers`() {
+        gms.available = false
+        declared -= ProviderBundles.HMS_RECEIVERS.last()
+
+        assertEquals(ProviderKind.ANDROID, factory().kind)
+        assertFalse(ProviderBundles.HMS_BUNDLE in created)
+    }
+
+    @Test
+    fun `a throwing receiver lookup means not packaged`() {
+        val f = DefaultProviderFactory(
+            app,
+            configStore,
+            classPresent = { true },
+            createBundle = { name ->
+                when (name) {
+                    ProviderBundles.GMS_BUNDLE -> gms
+                    ProviderBundles.HMS_BUNDLE -> hms
+                    else -> android
+                }
+            },
+            receiverDeclared = { name ->
+                if (name in ProviderBundles.GMS_RECEIVERS) throw SecurityException("boom") else true
+            },
+        )
+
+        assertEquals(ProviderKind.HMS, f.kind)
+        assertFalse(f.isAvailable(ProviderKind.GMS))
+    }
+
     // ---- explicit settings
 
     @Test
@@ -207,6 +255,18 @@ class DefaultProviderFactoryTest {
 
         assertEquals(ProviderKind.ANDROID, f.kind)
         assertFalse(ProviderBundles.HMS_BUNDLE in created)
+    }
+
+    @Test
+    fun `explicit gms falls back to android with a warning when its receivers were removed`() {
+        captureWarnings()
+        declared.removeAll(ProviderBundles.GMS_RECEIVERS.toSet())
+
+        val f = factory(LocationProviderSetting.GMS)
+
+        assertEquals(ProviderKind.ANDROID, f.kind)
+        assertFalse(ProviderBundles.GMS_BUNDLE in created)
+        assertTrue(warnings.any { "locationProvider=gms" in it })
     }
 
     @Test
@@ -348,6 +408,27 @@ class DefaultProviderFactoryTest {
 
         assertTrue(present(ProviderBundles.ANDROID_BUNDLE))
         assertFalse(present("com.brickssoft.locationtracking.provider.DoesNotExist"))
+    }
+
+    @Test
+    fun `default receiver lookup reads the merged manifest`() {
+        val declaredIn = ProviderPackaging.receiverDeclaredIn(app)
+
+        (ProviderBundles.GMS_RECEIVERS + ProviderBundles.HMS_RECEIVERS).forEach { assertTrue(it, declaredIn(it)) }
+        assertFalse(declaredIn("com.brickssoft.locationtracking.provider.gms.DoesNotExist"))
+    }
+
+    @Test
+    fun `default lookups report both sdks as packaged in the plugin's own manifest`() {
+        // The unit-test classpath has both SDKs, and the plugin manifest declares every receiver.
+        val packaging = ProviderPackaging(
+            DefaultProviderFactory.reflectiveClassPresent(app.classLoader),
+            ProviderPackaging.receiverDeclaredIn(app),
+        )
+
+        assertEquals(ProviderPackaging.Status.PACKAGED, packaging.status(ProviderKind.GMS))
+        assertEquals(ProviderPackaging.Status.PACKAGED, packaging.status(ProviderKind.HMS))
+        assertEquals(ProviderPackaging.Status.PACKAGED, packaging.status(ProviderKind.ANDROID))
     }
 
     @Test

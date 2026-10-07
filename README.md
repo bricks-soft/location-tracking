@@ -115,7 +115,11 @@ versions, set `playServicesLocationVersion` or `hmsLocationVersion` in the `ext`
 4 KB alignment, which fail Play's 16 KB page-size requirement; so do the undocumented 6.17–6.19 builds in Huawei's
 Maven repository.
 
-At runtime, the `locationProvider` config option picks the backend:
+At runtime, the `locationProvider` config option picks the backend. GMS or HMS counts as *packaged* when its SDK
+classes are in the APK **and** the app's merged manifest declares the plugin's two receivers for it
+(`provider.gms.GmsActivityReceiver` and `GmsGeofenceReceiver`, or `provider.hms.HmsActivityReceiver` and
+`HmsGeofenceReceiver`). Activity and geofence results arrive through those receivers, so a backend without them cannot
+work.
 
 - `'auto'` (default): GMS if it is packaged and Google Play services are available; otherwise HMS if it is packaged and
   HMS Core is available; otherwise the Android `LocationManager`.
@@ -139,7 +143,7 @@ packaged.
 
 An app that publishes a Google Play APK with only GMS and an AppGallery APK with only HMS adds the SDKs per product
 flavor itself, instead of through `locationTracking.providers`. The plugin chooses the backend by checking at runtime
-which SDK classes are in the APK, so it needs no other setting.
+which SDK classes are in the APK and which of its receivers the manifest declares, so it needs no other setting.
 
 1. In `android/gradle.properties`, stop the plugin from packaging any SDK:
 
@@ -174,6 +178,12 @@ which SDK classes are in the APK, so it needs no other setting.
    the Android 9 activity-recognition permissions of both SDKs, and Android merges it into every flavor. These
    entries do nothing in an APK without that SDK, but they show in the merged manifest and in the store listing's
    permission list. Two flavor manifests remove them.
+
+   This step also decides which provider each APK can use. The plugin never selects a provider whose receivers were
+   removed, also not with `locationProvider: 'gms'` or `'hms'` (it falls back to `android` with a warning). So the
+   AppGallery APK uses HMS even when another library brings Google's location classes into it (for example another
+   location plugin, or the app's own Google Play services availability check) and the phone has Google Play services
+   installed. The app does not need to set `locationProvider`.
 
    `android/app/src/gms/AndroidManifest.xml` (Google Play APK, removes the HMS entries):
 
@@ -229,7 +239,7 @@ Play services. Check each flavor before publishing:
   (`gmsReleaseRuntimeClasspath` for the Play APK).
 - `android/app/build/intermediates/merged_manifests/hmsRelease/` (or Android Studio's **Merged Manifest** tab) shows
   the final manifest.
-- On a phone, `getDeviceInfo().packagedProviders` shows which SDKs the installed APK contains.
+- On a phone, `getDeviceInfo().packagedProviders` shows which providers the installed APK can use.
 
 ### 2. Huawei Maven repository (needed for `hms`, and harmless otherwise)
 

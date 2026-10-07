@@ -153,6 +153,32 @@ object ProviderBundles {
     /** Present only when com.huawei.hms:location is packaged. */
     const val HMS_SDK_CLASS = "com.huawei.hms.location.LocationServices"
 
+    /** The receivers the GMS backend's activity and geofence results are delivered to. */
+    val GMS_RECEIVERS = listOf(
+        "com.brickssoft.locationtracking.provider.gms.GmsActivityReceiver",
+        "com.brickssoft.locationtracking.provider.gms.GmsGeofenceReceiver",
+    )
+
+    /** The receivers the HMS backend's activity and geofence results are delivered to. */
+    val HMS_RECEIVERS = listOf(
+        "com.brickssoft.locationtracking.provider.hms.HmsActivityReceiver",
+        "com.brickssoft.locationtracking.provider.hms.HmsGeofenceReceiver",
+    )
+
+    /** The SDK class whose presence means [kind]'s SDK is in the APK; null for ANDROID (part of the platform). */
+    fun sdkClassName(kind: ProviderKind): String? = when (kind) {
+        ProviderKind.GMS -> GMS_SDK_CLASS
+        ProviderKind.HMS -> HMS_SDK_CLASS
+        ProviderKind.ANDROID -> null
+    }
+
+    /** The receivers [kind]'s backend needs in the merged manifest; none for ANDROID. */
+    fun receiverClassNames(kind: ProviderKind): List<String> = when (kind) {
+        ProviderKind.GMS -> GMS_RECEIVERS
+        ProviderKind.HMS -> HMS_RECEIVERS
+        ProviderKind.ANDROID -> emptyList()
+    }
+
     fun bundleClassName(kind: ProviderKind): String = when (kind) {
         ProviderKind.GMS -> GMS_BUNDLE
         ProviderKind.HMS -> HMS_BUNDLE

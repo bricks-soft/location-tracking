@@ -17,7 +17,7 @@ This document is the contract between the scaffold and all work units. The scaff
 - **GMS/HMS selection.** There are three location backends: GMS (Google Play services), HMS (Huawei Location Kit) and the plain Android `LocationManager`.
   - The plugin compiles against both SDKs with `compileOnly`.
   - The app chooses which SDKs are packaged with the Gradle property `locationTracking.providers=gms,hms` (default `gms`). An app with Play and AppGallery product flavors sets `none` and adds one SDK per flavor itself (README, "Separate Play and AppGallery APKs").
-  - Config `locationProvider: 'auto'|'gms'|'hms'|'android'` selects one at runtime. `auto` means: GMS if its class is present and `GoogleApiAvailability` reports SUCCESS; otherwise HMS if its class is present and `HuaweiApiAvailability` reports SUCCESS; otherwise Android. An explicit `gms`/`hms` that is not packaged or not available falls back to Android (logged).
+  - Config `locationProvider: 'auto'|'gms'|'hms'|'android'` selects one at runtime. `auto` means: GMS if its class is present and `GoogleApiAvailability` reports SUCCESS; otherwise HMS if its class is present and `HuaweiApiAvailability` reports SUCCESS; otherwise Android. An explicit `gms`/`hms` that is not packaged or not available falls back to Android (logged). "Packaged" (`provider/ProviderPackaging.kt`) means the SDK class is present and the merged manifest declares that provider's activity and geofence receivers; an app with store flavors removes the other provider's receivers.
   - Backend bundles are created only through reflection.
 - **Heartbeat (audit):**
   - **Trigger.** While tracking is enabled, if no record has been created for `heartbeat.minInterval` (default 180 s), the plugin creates a `heartbeat` record with the last known location.
@@ -1007,7 +1007,7 @@ project(':capacitor-android').projectDir = new File('../node_modules/@capacitor/
 **`android/build.gradle`:**
 - Kotlin/AGP buildscript as in the Capacitor plugin template.
 - `resourcePrefix 'lt_'`.
-- `buildConfigField` `PLUGIN_VERSION`. `getDeviceInfo().packagedProviders` is not a build value: it checks at runtime which SDK classes are in the APK.
+- `buildConfigField` `PLUGIN_VERSION`. `getDeviceInfo().packagedProviders` is not a build value: it lists the providers that `ProviderPackaging` reports as packaged at runtime (SDK class present, receivers declared).
 - GMS and HMS as `compileOnly` and `testImplementation`, plus `implementation` driven by the property:
 
 ```groovy

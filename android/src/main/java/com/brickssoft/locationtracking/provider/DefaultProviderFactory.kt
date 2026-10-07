@@ -9,7 +9,8 @@ import com.brickssoft.locationtracking.provider.android.AndroidProviderBundle
 
 /**
  * Selects GMS, HMS or the platform `LocationManager` from config `locationProvider`:
- * - `auto`: GMS if its SDK class is packaged and its bundle is available; else HMS likewise; else ANDROID.
+ * - `auto`: GMS if it is packaged ([ProviderPackaging]: SDK class present and receivers declared) and its bundle is
+ *   available; else HMS likewise; else ANDROID.
  * - `gms` / `hms`: that backend, or ANDROID (with a warning) if it is not packaged or not available.
  * - `android`: always ANDROID.
  *
@@ -19,14 +20,18 @@ import com.brickssoft.locationtracking.provider.android.AndroidProviderBundle
  *
  * @param classPresent whether a class can be loaded; defaults to `Class.forName(name, false, loader)`.
  * @param createBundle instantiates a bundle class by name; defaults to its public (Context) constructor.
+ * @param receiverDeclared whether a receiver is declared in the merged manifest; defaults to `getReceiverInfo`.
  */
 class DefaultProviderFactory(
     context: Context,
     private val configStore: ConfigStore,
-    private val classPresent: (String) -> Boolean = reflectiveClassPresent(context.classLoader),
+    classPresent: (String) -> Boolean = reflectiveClassPresent(context.classLoader),
     private val createBundle: (String) -> ProviderBundle = reflectiveBundleCreator(context),
+    receiverDeclared: (String) -> Boolean = ProviderPackaging.receiverDeclaredIn(context.applicationContext ?: context),
 ) : ProviderFactory {
     private val appContext: Context = context.applicationContext ?: context
+
+    private val packaging = ProviderPackaging(classPresent, receiverDeclared)
 
     private val lock = Any()
 
@@ -93,15 +98,16 @@ class DefaultProviderFactory(
     }
 
     private fun loadBundle(kind: ProviderKind): ProviderBundle? {
-        val sdkClass = when (kind) {
-            ProviderKind.GMS -> ProviderBundles.GMS_SDK_CLASS
-            ProviderKind.HMS -> ProviderBundles.HMS_SDK_CLASS
-            ProviderKind.ANDROID -> null
-        }
-        val sdkPresent = sdkClass == null || guard("probe $sdkClass") { classPresent(sdkClass) } == true
-        if (!sdkPresent) {
-            Logger.d(TAG, "${kind.wire} SDK is not packaged")
-            return null
+        when (packaging.status(kind)) {
+            ProviderPackaging.Status.PACKAGED -> Unit
+            ProviderPackaging.Status.SDK_MISSING -> {
+                Logger.d(TAG, "${kind.wire} SDK is not packaged")
+                return null
+            }
+            ProviderPackaging.Status.RECEIVERS_REMOVED -> {
+                Logger.i(TAG, "${kind.wire} SDK is present but its receivers are not in the manifest; not used")
+                return null
+            }
         }
         val name = ProviderBundles.bundleClassName(kind)
         val bundle = guard("create $name") { createBundle(name) }

@@ -2,6 +2,7 @@ package com.brickssoft.locationtracking.provider
 
 import android.app.Application
 import androidx.test.core.app.ApplicationProvider
+import com.brickssoft.locationtracking.api.setMetaData
 import com.brickssoft.locationtracking.config.Config
 import com.brickssoft.locationtracking.core.LogLevel
 import com.brickssoft.locationtracking.core.LogSink
@@ -74,6 +75,11 @@ class DefaultProviderFactoryTest {
     private val created = CopyOnWriteArrayList<String>()
     private val creationErrors = ConcurrentHashMap<String, Throwable>()
     private val warnings = CopyOnWriteArrayList<String>()
+    private val errors = CopyOnWriteArrayList<String>()
+
+    /** The app's PROVIDERS meta-data value the fake reports; null means the app declares none. */
+    @Volatile
+    private var providersMetaData: String? = null
 
     private fun factory(setting: LocationProviderSetting = LocationProviderSetting.AUTO): DefaultProviderFactory {
         configStore.configFlow.value = Config(locationProvider = setting)
@@ -95,6 +101,7 @@ class DefaultProviderFactoryTest {
                 }
             },
             receiverDeclared = { name -> name in declared },
+            providersMetaData = { providersMetaData },
         )
     }
 
@@ -106,6 +113,7 @@ class DefaultProviderFactoryTest {
         Logger.sink = object : LogSink {
             override fun write(level: LogLevel, tag: String, message: String, error: Throwable?) {
                 if (level == LogLevel.WARN) warnings += message
+                if (level == LogLevel.ERROR) errors += message
             }
         }
     }
@@ -224,6 +232,103 @@ class DefaultProviderFactoryTest {
 
         assertEquals(ProviderKind.HMS, f.kind)
         assertFalse(f.isAvailable(ProviderKind.GMS))
+    }
+
+    // ---- PROVIDERS meta-data
+
+    @Test
+    fun `meta-data hms makes auto use hms although gms is packaged and available`() {
+        providersMetaData = "hms"
+
+        val f = factory()
+
+        assertEquals(ProviderKind.HMS, f.kind)
+        assertFalse(f.isAvailable(ProviderKind.GMS))
+        assertFalse(ProviderBundles.GMS_BUNDLE in created)
+        assertFalse(ProviderBundles.GMS_SDK_CLASS in lookups)
+    }
+
+    @Test
+    fun `meta-data gms makes explicit hms fall back to android with a warning`() {
+        captureWarnings()
+        providersMetaData = "gms"
+
+        val f = factory(LocationProviderSetting.HMS)
+
+        assertEquals(ProviderKind.ANDROID, f.kind)
+        assertFalse(ProviderBundles.HMS_BUNDLE in created)
+        assertTrue(warnings.any { "locationProvider=hms" in it })
+    }
+
+    @Test
+    fun `meta-data android allows neither gms nor hms`() {
+        providersMetaData = "android"
+
+        val f = factory()
+
+        assertEquals(ProviderKind.ANDROID, f.kind)
+        assertFalse(f.isAvailable(ProviderKind.GMS))
+        assertFalse(f.isAvailable(ProviderKind.HMS))
+    }
+
+    @Test
+    fun `meta-data listing both providers behaves like no entry`() {
+        providersMetaData = "gms,hms"
+
+        assertEquals(ProviderKind.GMS, factory().kind)
+    }
+
+    @Test
+    fun `meta-data ignores case, spaces and unknown names`() {
+        captureWarnings()
+        providersMetaData = " HMS , huawei ,"
+
+        val f = factory()
+
+        assertEquals(ProviderKind.HMS, f.kind)
+        assertFalse(f.isAvailable(ProviderKind.GMS))
+        assertTrue(warnings.any { "'huawei'" in it })
+    }
+
+    @Test
+    fun `meta-data that names no known provider is ignored with an error`() {
+        captureWarnings()
+        providersMetaData = "huawei"
+
+        assertEquals(ProviderKind.GMS, factory().kind)
+        assertTrue(errors.any { ProviderPackaging.PROVIDERS_META_DATA in it })
+    }
+
+    @Test
+    fun `a listed provider whose receivers were removed is not used and warns`() {
+        captureWarnings()
+        providersMetaData = "hms"
+        declared.removeAll(ProviderBundles.HMS_RECEIVERS.toSet())
+
+        val f = factory()
+
+        assertEquals(ProviderKind.ANDROID, f.kind)
+        assertTrue(warnings.any { "hms is listed in ${ProviderPackaging.PROVIDERS_META_DATA}" in it })
+    }
+
+    @Test
+    fun `a listed provider whose sdk is missing is not used and warns`() {
+        captureWarnings()
+        providersMetaData = "gms"
+        present -= ProviderBundles.GMS_SDK_CLASS
+
+        assertEquals(ProviderKind.ANDROID, factory().kind)
+        assertTrue(warnings.any { "gms is listed in ${ProviderPackaging.PROVIDERS_META_DATA}" in it })
+    }
+
+    @Test
+    fun `default meta-data lookup reads the application meta-data`() {
+        val read = ProviderPackaging.providersMetaDataIn(app)
+        assertEquals(null, read())
+
+        setMetaData(app, mapOf(ProviderPackaging.PROVIDERS_META_DATA to "hms"))
+
+        assertEquals("hms", read())
     }
 
     // ---- explicit settings

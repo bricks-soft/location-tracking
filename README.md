@@ -115,11 +115,26 @@ versions, set `playServicesLocationVersion` or `hmsLocationVersion` in the `ext`
 4 KB alignment, which fail Play's 16 KB page-size requirement; so do the undocumented 6.17–6.19 builds in Huawei's
 Maven repository.
 
-At runtime, the `locationProvider` config option picks the backend. GMS or HMS counts as *packaged* when its SDK
-classes are in the APK **and** the app's merged manifest declares the plugin's two receivers for it
-(`provider.gms.GmsActivityReceiver` and `GmsGeofenceReceiver`, or `provider.hms.HmsActivityReceiver` and
-`HmsGeofenceReceiver`). Activity and geofence results arrive through those receivers, so a backend without them cannot
-work.
+At runtime, the `locationProvider` config option picks the backend. GMS or HMS counts as *packaged* when all three
+of these are true:
+
+1. The app allows it. By default both are allowed. An app restricts them with a `<meta-data>` entry in its
+   `<application>`, for example per product flavor:
+
+   ```xml
+   <meta-data android:name="com.brickssoft.locationtracking.PROVIDERS" android:value="hms"/>
+   ```
+
+   The value is a comma-separated list of `gms`, `hms` and `android` (case and spaces don't matter). `android` alone
+   means the plugin uses neither GMS nor HMS. Unknown names are ignored with a warning in the plugin log; a value with
+   no known name is ignored with an error, and both providers stay allowed.
+2. Its SDK classes are in the APK.
+3. The app's merged manifest declares the plugin's two receivers for it (`provider.gms.GmsActivityReceiver` and
+   `GmsGeofenceReceiver`, or `provider.hms.HmsActivityReceiver` and `HmsGeofenceReceiver`). Activity and geofence
+   results arrive through those receivers, so a backend without them cannot work.
+
+A provider that the `<meta-data>` entry lists but that fails 2 or 3 is a setup error: the plugin logs a warning and
+does not use it. The `locationProvider` values:
 
 - `'auto'` (default): GMS if it is packaged and Google Play services are available; otherwise HMS if it is packaged and
   HMS Core is available; otherwise the Android `LocationManager`.
@@ -174,18 +189,19 @@ which SDK classes are in the APK and which of its receivers the manifest declare
    For AppGallery Connect ([step 3](#3-appgallery-connect-only-for-hms)), put `agconnect-services.json` in
    `android/app/src/hms/` instead of `android/app/`.
 
-4. Remove the other provider's entries from each flavor's manifest. The plugin's manifest declares the receivers and
-   the Android 9 activity-recognition permissions of both SDKs, and Android merges it into every flavor. These
-   entries do nothing in an APK without that SDK, but they show in the merged manifest and in the store listing's
-   permission list. Two flavor manifests remove them.
+4. In each flavor's manifest, declare the provider and remove the other provider's entries. The plugin's manifest
+   declares the receivers and the Android 9 activity-recognition permissions of both SDKs, and Android merges it into
+   every flavor. These entries do nothing in an APK without that SDK, but they show in the merged manifest and in the
+   store listing's permission list. Two flavor manifests remove them.
 
-   This step also decides which provider each APK can use. The plugin never selects a provider whose receivers were
-   removed, also not with `locationProvider: 'gms'` or `'hms'` (it falls back to `android` with a warning). So the
+   Each flavor manifest also declares which provider the plugin may use, with the
+   `com.brickssoft.locationtracking.PROVIDERS` `<meta-data>` entry. The plugin never selects a provider that is not
+   listed, also not with `locationProvider: 'gms'` or `'hms'` (it falls back to `android` with a warning). So the
    AppGallery APK uses HMS even when another library brings Google's location classes into it (for example another
    location plugin, or the app's own Google Play services availability check) and the phone has Google Play services
    installed. The app does not need to set `locationProvider`.
 
-   `android/app/src/gms/AndroidManifest.xml` (Google Play APK, removes the HMS entries):
+   `android/app/src/gms/AndroidManifest.xml` (Google Play APK: allows GMS, removes the HMS entries):
 
    ```xml
    <?xml version="1.0" encoding="utf-8"?>
@@ -193,13 +209,14 @@ which SDK classes are in the APK and which of its receivers the manifest declare
        xmlns:tools="http://schemas.android.com/tools">
      <uses-permission android:name="com.huawei.hms.permission.ACTIVITY_RECOGNITION" tools:node="remove"/>
      <application>
+       <meta-data android:name="com.brickssoft.locationtracking.PROVIDERS" android:value="gms"/>
        <receiver android:name="com.brickssoft.locationtracking.provider.hms.HmsActivityReceiver" tools:node="remove"/>
        <receiver android:name="com.brickssoft.locationtracking.provider.hms.HmsGeofenceReceiver" tools:node="remove"/>
      </application>
    </manifest>
    ```
 
-   `android/app/src/hms/AndroidManifest.xml` (AppGallery APK, removes the GMS entries):
+   `android/app/src/hms/AndroidManifest.xml` (AppGallery APK: allows HMS, removes the GMS entries):
 
    ```xml
    <?xml version="1.0" encoding="utf-8"?>
@@ -207,6 +224,7 @@ which SDK classes are in the APK and which of its receivers the manifest declare
        xmlns:tools="http://schemas.android.com/tools">
      <uses-permission android:name="com.google.android.gms.permission.ACTIVITY_RECOGNITION" tools:node="remove"/>
      <application>
+       <meta-data android:name="com.brickssoft.locationtracking.PROVIDERS" android:value="hms"/>
        <receiver android:name="com.brickssoft.locationtracking.provider.gms.GmsActivityReceiver" tools:node="remove"/>
        <receiver android:name="com.brickssoft.locationtracking.provider.gms.GmsGeofenceReceiver" tools:node="remove"/>
      </application>

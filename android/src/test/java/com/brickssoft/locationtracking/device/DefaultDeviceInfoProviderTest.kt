@@ -113,6 +113,23 @@ class DefaultDeviceInfoProviderTest {
     }
 
     @Test
+    fun `packaged providers follow the PROVIDERS meta-data`() {
+        fun packaged(metaData: String?) =
+            DefaultDeviceInfoProvider(
+                app,
+                lazy { FakeProviderFactory() },
+                classPresent = { true },
+                receiverDeclared = { true },
+                providersMetaData = { metaData },
+            ).deviceInfo().packagedProviders
+
+        assertEquals(listOf("hms"), packaged("hms"))
+        assertEquals(listOf("gms"), packaged("gms"))
+        assertEquals(emptyList<String>(), packaged("android"))
+        assertEquals(listOf("gms", "hms"), packaged(null))
+    }
+
+    @Test
     fun `a throwing class probe reads as not packaged`() {
         val info = DefaultDeviceInfoProvider(
             app,

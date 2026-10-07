@@ -26,8 +26,9 @@ class DefaultDeviceInfoProvider(
     private val providers: Lazy<ProviderFactory>,
     classPresent: (String) -> Boolean = DefaultProviderFactory.reflectiveClassPresent(context.classLoader),
     receiverDeclared: (String) -> Boolean = ProviderPackaging.receiverDeclaredIn(context),
+    providersMetaData: () -> String? = ProviderPackaging.providersMetaDataIn(context),
 ) : DeviceInfoProvider {
-    private val packaging = ProviderPackaging(classPresent, receiverDeclared)
+    private val packaging = ProviderPackaging(classPresent, receiverDeclared, providersMetaData)
 
     override fun deviceInfo(): DeviceInfo {
         // DeviceInfo is diagnostic: a broken provider factory must not hide the build properties.
@@ -90,9 +91,9 @@ class DefaultDeviceInfoProvider(
     }
 
     /**
-     * The providers packaged in the APK ([ProviderPackaging]: SDK classes present and receivers declared), in the order
-     * `gms`, `hms`. Read at runtime, so a flavored app that adds one SDK and removes the other provider's receivers
-     * reports only that provider, even when another library brings the other SDK's classes.
+     * The providers packaged in the APK ([ProviderPackaging]: allowed by the app's `PROVIDERS` meta-data, SDK classes
+     * present, receivers declared), in the order `gms`, `hms`. Read at runtime, so a flavored app reports only the
+     * provider its flavor declares, even when another library brings the other SDK's classes.
      */
     private fun packagedProviders(): List<String> =
         listOf(ProviderKind.GMS, ProviderKind.HMS).filter(packaging::isPackaged).map { it.wire }

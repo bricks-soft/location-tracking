@@ -39,7 +39,8 @@ android {
         minSdkVersion project.hasProperty('minSdkVersion') ? rootProject.ext.minSdkVersion : 24
         targetSdkVersion project.hasProperty('targetSdkVersion') ? rootProject.ext.targetSdkVersion : 36
         consumerProguardFiles 'consumer-rules.pro'
-        buildConfigField 'String', 'PLUGIN_VERSION', '"8.0.0"'
+        // package.json ships next to android/ in the npm package, so it is the one place the version is set.
+        buildConfigField 'String', 'PLUGIN_VERSION', "\"${new groovy.json.JsonSlurper().parse(file('../package.json')).version}\""
     }
     buildFeatures {
         buildConfig = true

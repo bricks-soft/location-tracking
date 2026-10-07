@@ -51,7 +51,6 @@ jobs:
       - name: Build and test TypeScript
         run: |
           npm ci
-          npm run build
           npm test
 
       - name: e2e kit (typecheck and unit tests)

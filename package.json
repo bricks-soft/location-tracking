@@ -34,7 +34,8 @@
   "scripts": {
     "clean": "rimraf ./dist",
     "build": "npm run clean && tsc && rollup -c rollup.config.mjs",
-    "test": "node --test \"test/**/*.mjs\"",
+    "test": "npm run build && node --test \"test/**/*.mjs\"",
+    "version": "node scripts/sync-version.mjs && git add src/web/device.ts",
     "docgen": "docgen --api LocationTrackingPlugin --project tsconfig.docgen.json --output-readme README.md --output-json dist/docs.json",
     "watch": "tsc --watch",
     "prepare": "npm run build"

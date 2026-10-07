@@ -1240,9 +1240,9 @@ npm publish               # prepare builds again; publishConfig.access makes it 
 
 Each later release:
 
-1. Set the same version in `package.json` (then `npm install --package-lock-only`), `PLUGIN_VERSION` in
-   `src/web/device.ts` and `PLUGIN_VERSION` in `android/build.gradle` (`npm test` checks the first two), and give the
-   `CHANGELOG.md` section that version and the date.
+1. Run `npm version <patch|minor|major>`. It sets the version in `package.json` and `package-lock.json`, copies it to
+   `PLUGIN_VERSION` in `src/web/device.ts` (`npm test` checks this; `android/build.gradle` reads `package.json`
+   itself), and commits and tags. Give the `CHANGELOG.md` section that version and the date.
 2. Merge to `master` and create a GitHub release with a tag such as `v8.0.1`. The release starts the workflow (it can
    also be started by hand from the Actions tab). The workflow builds, runs `npm test` and runs `npm stage publish`.
 3. In the package's **Staged Packages** tab on npmjs.com, approve the staged version (or run

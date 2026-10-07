@@ -35,8 +35,7 @@ jobs:
       # Trusted publishing needs npm 11.5.1 or newer; `npm stage` needs npm 11.
       - run: npm install -g npm@latest
       - run: npm ci
-      # The TypeScript tests import dist/, so build first. The publish step builds again (prepublishOnly).
-      - run: npm run build
+      # npm test builds dist/ first; the TypeScript tests import it.
       - run: npm test
       # Parity with `npm publish`: this runs the prepublishOnly script, so the staged tarball contains a freshly built
       # dist/.

@@ -79,8 +79,8 @@ class DefaultDeviceInfoProviderTest {
     }
 
     @Test
-    fun `packaged providers default to the SDK classes on the classpath`() {
-        // The unit-test classpath has both SDKs (testImplementation).
+    fun `packaged providers default to the SDK classes on the classpath and the declared receivers`() {
+        // The unit-test classpath has both SDKs (testImplementation), and the plugin manifest declares all receivers.
         val info = DefaultDeviceInfoProvider(app, lazy { FakeProviderFactory(ProviderKind.ANDROID) }).deviceInfo()
 
         assertEquals(listOf("gms", "hms"), info.packagedProviders)
@@ -95,6 +95,38 @@ class DefaultDeviceInfoProviderTest {
         assertEquals(listOf("gms"), packaged(setOf(ProviderBundles.GMS_SDK_CLASS)))
         assertEquals(listOf("hms"), packaged(setOf(ProviderBundles.HMS_SDK_CLASS)))
         assertEquals(emptyList<String>(), packaged(emptySet()))
+    }
+
+    @Test
+    fun `a provider whose receivers were removed is not packaged`() {
+        fun packaged(removed: List<String>) =
+            DefaultDeviceInfoProvider(
+                app,
+                lazy { FakeProviderFactory() },
+                classPresent = { true },
+                receiverDeclared = { it !in removed },
+            ).deviceInfo().packagedProviders
+
+        assertEquals(listOf("hms"), packaged(ProviderBundles.GMS_RECEIVERS))
+        assertEquals(listOf("gms"), packaged(ProviderBundles.HMS_RECEIVERS.take(1)))
+        assertEquals(listOf("gms", "hms"), packaged(emptyList()))
+    }
+
+    @Test
+    fun `packaged providers follow the PROVIDERS meta-data`() {
+        fun packaged(metaData: String?) =
+            DefaultDeviceInfoProvider(
+                app,
+                lazy { FakeProviderFactory() },
+                classPresent = { true },
+                receiverDeclared = { true },
+                providersMetaData = { metaData },
+            ).deviceInfo().packagedProviders
+
+        assertEquals(listOf("hms"), packaged("hms"))
+        assertEquals(listOf("gms"), packaged("gms"))
+        assertEquals(emptyList<String>(), packaged("android"))
+        assertEquals(listOf("gms", "hms"), packaged(null))
     }
 
     @Test

@@ -1,7 +1,11 @@
 package com.brickssoft.locationtracking.provider
 
 import android.app.Application
+import android.content.ContextWrapper
+import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
 import androidx.test.core.app.ApplicationProvider
+import com.brickssoft.locationtracking.api.setMetaData
 import com.brickssoft.locationtracking.config.Config
 import com.brickssoft.locationtracking.core.LogLevel
 import com.brickssoft.locationtracking.core.LogSink
@@ -14,6 +18,8 @@ import com.brickssoft.locationtracking.testing.FakeActivityBackend
 import com.brickssoft.locationtracking.testing.FakeConfigStore
 import com.brickssoft.locationtracking.testing.FakeGeofenceBackend
 import com.brickssoft.locationtracking.testing.FakeLocationBackend
+import io.mockk.every
+import io.mockk.mockk
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -65,10 +71,20 @@ class DefaultProviderFactoryTest {
         add(ProviderBundles.GMS_SDK_CLASS)
         add(ProviderBundles.HMS_SDK_CLASS)
     }
+    /** Receivers the fake manifest lookup reports as declared (all four by default). */
+    private val declared: MutableSet<String> = ConcurrentHashMap.newKeySet<String>().apply {
+        addAll(ProviderBundles.GMS_RECEIVERS)
+        addAll(ProviderBundles.HMS_RECEIVERS)
+    }
     private val lookups = CopyOnWriteArrayList<String>()
     private val created = CopyOnWriteArrayList<String>()
     private val creationErrors = ConcurrentHashMap<String, Throwable>()
     private val warnings = CopyOnWriteArrayList<String>()
+    private val errors = CopyOnWriteArrayList<String>()
+
+    /** The app's PROVIDERS meta-data value the fake reports; null means the app declares none. */
+    @Volatile
+    private var providersMetaData: String? = null
 
     private fun factory(setting: LocationProviderSetting = LocationProviderSetting.AUTO): DefaultProviderFactory {
         configStore.configFlow.value = Config(locationProvider = setting)
@@ -89,6 +105,8 @@ class DefaultProviderFactoryTest {
                     else -> throw ClassNotFoundException(name)
                 }
             },
+            receiverDeclared = { name -> name in declared },
+            providersMetaData = { providersMetaData },
         )
     }
 
@@ -100,6 +118,7 @@ class DefaultProviderFactoryTest {
         Logger.sink = object : LogSink {
             override fun write(level: LogLevel, tag: String, message: String, error: Throwable?) {
                 if (level == LogLevel.WARN) warnings += message
+                if (level == LogLevel.ERROR) errors += message
             }
         }
     }
@@ -178,6 +197,165 @@ class DefaultProviderFactoryTest {
         assertFalse(throwingLookup.isAvailable(ProviderKind.HMS))
     }
 
+    @Test
+    fun `auto skips gms when the app removed its receivers`() {
+        declared -= ProviderBundles.GMS_RECEIVERS.first()
+
+        val f = factory()
+
+        assertEquals(ProviderKind.HMS, f.kind)
+        assertFalse(f.isAvailable(ProviderKind.GMS))
+        assertFalse(ProviderBundles.GMS_BUNDLE in created)
+    }
+
+    @Test
+    fun `auto skips hms when the app removed its receivers`() {
+        gms.available = false
+        declared -= ProviderBundles.HMS_RECEIVERS.last()
+
+        assertEquals(ProviderKind.ANDROID, factory().kind)
+        assertFalse(ProviderBundles.HMS_BUNDLE in created)
+    }
+
+    @Test
+    fun `a throwing receiver lookup means not packaged`() {
+        val f = DefaultProviderFactory(
+            app,
+            configStore,
+            classPresent = { true },
+            createBundle = { name ->
+                when (name) {
+                    ProviderBundles.GMS_BUNDLE -> gms
+                    ProviderBundles.HMS_BUNDLE -> hms
+                    else -> android
+                }
+            },
+            receiverDeclared = { name ->
+                if (name in ProviderBundles.GMS_RECEIVERS) throw SecurityException("boom") else true
+            },
+        )
+
+        assertEquals(ProviderKind.HMS, f.kind)
+        assertFalse(f.isAvailable(ProviderKind.GMS))
+    }
+
+    // ---- PROVIDERS meta-data
+
+    @Test
+    fun `meta-data hms makes auto use hms although gms is packaged and available`() {
+        providersMetaData = "hms"
+
+        val f = factory()
+
+        assertEquals(ProviderKind.HMS, f.kind)
+        assertFalse(f.isAvailable(ProviderKind.GMS))
+        assertFalse(ProviderBundles.GMS_BUNDLE in created)
+        assertFalse(ProviderBundles.GMS_SDK_CLASS in lookups)
+    }
+
+    @Test
+    fun `meta-data gms makes explicit hms fall back to android with a warning`() {
+        captureWarnings()
+        providersMetaData = "gms"
+
+        val f = factory(LocationProviderSetting.HMS)
+
+        assertEquals(ProviderKind.ANDROID, f.kind)
+        assertFalse(ProviderBundles.HMS_BUNDLE in created)
+        assertTrue(warnings.any { "locationProvider=hms" in it })
+    }
+
+    @Test
+    fun `meta-data android allows neither gms nor hms`() {
+        providersMetaData = "android"
+
+        val f = factory()
+
+        assertEquals(ProviderKind.ANDROID, f.kind)
+        assertFalse(f.isAvailable(ProviderKind.GMS))
+        assertFalse(f.isAvailable(ProviderKind.HMS))
+    }
+
+    @Test
+    fun `meta-data listing both providers behaves like no entry`() {
+        providersMetaData = "gms,hms"
+
+        assertEquals(ProviderKind.GMS, factory().kind)
+    }
+
+    @Test
+    fun `meta-data ignores case, spaces and unknown names`() {
+        captureWarnings()
+        providersMetaData = " HMS , huawei ,"
+
+        val f = factory()
+
+        assertEquals(ProviderKind.HMS, f.kind)
+        assertFalse(f.isAvailable(ProviderKind.GMS))
+        assertTrue(warnings.any { "'huawei'" in it })
+    }
+
+    @Test
+    fun `meta-data that names no known provider is ignored with an error`() {
+        captureWarnings()
+        providersMetaData = "huawei"
+
+        assertEquals(ProviderKind.GMS, factory().kind)
+        assertTrue(errors.any { ProviderPackaging.PROVIDERS_META_DATA in it })
+    }
+
+    @Test
+    fun `a listed provider whose receivers were removed is not used and warns`() {
+        captureWarnings()
+        providersMetaData = "hms"
+        declared.removeAll(ProviderBundles.HMS_RECEIVERS.toSet())
+
+        val f = factory()
+
+        assertEquals(ProviderKind.ANDROID, f.kind)
+        assertTrue(warnings.any { "hms is listed in ${ProviderPackaging.PROVIDERS_META_DATA}" in it })
+    }
+
+    @Test
+    fun `a listed provider whose sdk is missing is not used and warns`() {
+        captureWarnings()
+        providersMetaData = "gms"
+        present -= ProviderBundles.GMS_SDK_CLASS
+
+        assertEquals(ProviderKind.ANDROID, factory().kind)
+        assertTrue(warnings.any { "gms is listed in ${ProviderPackaging.PROVIDERS_META_DATA}" in it })
+    }
+
+    @Test
+    fun `receiver lookup matches disabled receivers and both direct-boot states`() {
+        val flags = CopyOnWriteArrayList<Int>()
+        val pm = mockk<PackageManager>()
+        every { pm.getReceiverInfo(any(), any<Int>()) } answers {
+            flags += secondArg<Int>()
+            ActivityInfo()
+        }
+        val context = object : ContextWrapper(app) {
+            override fun getPackageManager(): PackageManager = pm
+        }
+
+        assertTrue(ProviderPackaging.receiverDeclaredIn(context)(ProviderBundles.GMS_RECEIVERS.first()))
+
+        val expected = PackageManager.MATCH_DISABLED_COMPONENTS or
+            PackageManager.MATCH_DIRECT_BOOT_AWARE or
+            PackageManager.MATCH_DIRECT_BOOT_UNAWARE
+        assertEquals(listOf(expected), flags.toList())
+    }
+
+    @Test
+    fun `default meta-data lookup reads the application meta-data`() {
+        val read = ProviderPackaging.providersMetaDataIn(app)
+        assertEquals(null, read())
+
+        setMetaData(app, mapOf(ProviderPackaging.PROVIDERS_META_DATA to "hms"))
+
+        assertEquals("hms", read())
+    }
+
     // ---- explicit settings
 
     @Test
@@ -207,6 +385,18 @@ class DefaultProviderFactoryTest {
 
         assertEquals(ProviderKind.ANDROID, f.kind)
         assertFalse(ProviderBundles.HMS_BUNDLE in created)
+    }
+
+    @Test
+    fun `explicit gms falls back to android with a warning when its receivers were removed`() {
+        captureWarnings()
+        declared.removeAll(ProviderBundles.GMS_RECEIVERS.toSet())
+
+        val f = factory(LocationProviderSetting.GMS)
+
+        assertEquals(ProviderKind.ANDROID, f.kind)
+        assertFalse(ProviderBundles.GMS_BUNDLE in created)
+        assertTrue(warnings.any { "locationProvider=gms" in it })
     }
 
     @Test
@@ -348,6 +538,27 @@ class DefaultProviderFactoryTest {
 
         assertTrue(present(ProviderBundles.ANDROID_BUNDLE))
         assertFalse(present("com.brickssoft.locationtracking.provider.DoesNotExist"))
+    }
+
+    @Test
+    fun `default receiver lookup reads the merged manifest`() {
+        val declaredIn = ProviderPackaging.receiverDeclaredIn(app)
+
+        (ProviderBundles.GMS_RECEIVERS + ProviderBundles.HMS_RECEIVERS).forEach { assertTrue(it, declaredIn(it)) }
+        assertFalse(declaredIn("com.brickssoft.locationtracking.provider.gms.DoesNotExist"))
+    }
+
+    @Test
+    fun `default lookups report both sdks as packaged in the plugin's own manifest`() {
+        // The unit-test classpath has both SDKs, and the plugin manifest declares every receiver.
+        val packaging = ProviderPackaging(
+            DefaultProviderFactory.reflectiveClassPresent(app.classLoader),
+            ProviderPackaging.receiverDeclaredIn(app),
+        )
+
+        assertEquals(ProviderPackaging.Status.PACKAGED, packaging.status(ProviderKind.GMS))
+        assertEquals(ProviderPackaging.Status.PACKAGED, packaging.status(ProviderKind.HMS))
+        assertEquals(ProviderPackaging.Status.PACKAGED, packaging.status(ProviderKind.ANDROID))
     }
 
     @Test

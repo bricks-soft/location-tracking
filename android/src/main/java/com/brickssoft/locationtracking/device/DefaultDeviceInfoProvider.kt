@@ -11,12 +11,12 @@ import com.brickssoft.locationtracking.model.DeviceInfo
 import com.brickssoft.locationtracking.model.ProviderKind
 import com.brickssoft.locationtracking.model.Sensors
 import com.brickssoft.locationtracking.provider.DefaultProviderFactory
-import com.brickssoft.locationtracking.provider.ProviderBundles
 import com.brickssoft.locationtracking.provider.ProviderFactory
+import com.brickssoft.locationtracking.provider.ProviderPackaging
 
 /**
  * Default [DeviceInfoProvider]: build properties, plugin version, GMS/HMS availability and the active backend
- * (from [providers]), the location SDKs packaged in the APK, and which motion sensors the device has.
+ * (from [providers]), the providers packaged in the APK ([ProviderPackaging]), and which motion sensors the device has.
  * If the provider factory fails, both SDKs read as unavailable and the backend as `android` (the fallback).
  *
  * The constructor does not touch [providers].
@@ -24,8 +24,12 @@ import com.brickssoft.locationtracking.provider.ProviderFactory
 class DefaultDeviceInfoProvider(
     private val context: Context,
     private val providers: Lazy<ProviderFactory>,
-    private val classPresent: (String) -> Boolean = DefaultProviderFactory.reflectiveClassPresent(context.classLoader),
+    classPresent: (String) -> Boolean = DefaultProviderFactory.reflectiveClassPresent(context.classLoader),
+    receiverDeclared: (String) -> Boolean = ProviderPackaging.receiverDeclaredIn(context),
+    providersMetaData: () -> String? = ProviderPackaging.providersMetaDataIn(context),
 ) : DeviceInfoProvider {
+    private val packaging = ProviderPackaging(classPresent, receiverDeclared, providersMetaData)
+
     override fun deviceInfo(): DeviceInfo {
         // DeviceInfo is diagnostic: a broken provider factory must not hide the build properties.
         val factory = try {
@@ -87,21 +91,12 @@ class DefaultDeviceInfoProvider(
     }
 
     /**
-     * The location SDKs whose classes are in the APK, in the order `gms`, `hms`. Read at runtime rather than from the
-     * Gradle property, so an app that adds the SDKs itself (for example per product flavor) reports what it ships.
+     * The providers packaged in the APK ([ProviderPackaging]: allowed by the app's `PROVIDERS` meta-data, SDK classes
+     * present, receivers declared), in the order `gms`, `hms`. Read at runtime, so a flavored app reports only the
+     * provider its flavor declares, even when another library brings the other SDK's classes.
      */
-    private fun packagedProviders(): List<String> = buildList {
-        if (sdkPresent(ProviderBundles.GMS_SDK_CLASS)) add(ProviderKind.GMS.wire)
-        if (sdkPresent(ProviderBundles.HMS_SDK_CLASS)) add(ProviderKind.HMS.wire)
-    }
-
-    private fun sdkPresent(className: String): Boolean =
-        try {
-            classPresent(className)
-        } catch (e: Exception) {
-            Logger.w(TAG, "probe $className failed", e)
-            false
-        }
+    private fun packagedProviders(): List<String> =
+        listOf(ProviderKind.GMS, ProviderKind.HMS).filter(packaging::isPackaged).map { it.wire }
 
     internal companion object {
         private const val TAG = "LT.DeviceInfo"

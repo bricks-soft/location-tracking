@@ -9,7 +9,8 @@ import com.brickssoft.locationtracking.provider.android.AndroidProviderBundle
 
 /**
  * Selects GMS, HMS or the platform `LocationManager` from config `locationProvider`:
- * - `auto`: GMS if its SDK class is packaged and its bundle is available; else HMS likewise; else ANDROID.
+ * - `auto`: GMS if it is packaged ([ProviderPackaging]: allowed by the app's `PROVIDERS` meta-data, SDK class present,
+ *   receivers declared) and its bundle is available; else HMS likewise; else ANDROID.
  * - `gms` / `hms`: that backend, or ANDROID (with a warning) if it is not packaged or not available.
  * - `android`: always ANDROID.
  *
@@ -19,14 +20,20 @@ import com.brickssoft.locationtracking.provider.android.AndroidProviderBundle
  *
  * @param classPresent whether a class can be loaded; defaults to `Class.forName(name, false, loader)`.
  * @param createBundle instantiates a bundle class by name; defaults to its public (Context) constructor.
+ * @param receiverDeclared whether a receiver is declared in the merged manifest; defaults to `getReceiverInfo`.
+ * @param providersMetaData the app's `PROVIDERS` meta-data value, or null; defaults to the application's meta-data.
  */
 class DefaultProviderFactory(
     context: Context,
     private val configStore: ConfigStore,
-    private val classPresent: (String) -> Boolean = reflectiveClassPresent(context.classLoader),
+    classPresent: (String) -> Boolean = reflectiveClassPresent(context.classLoader),
     private val createBundle: (String) -> ProviderBundle = reflectiveBundleCreator(context),
+    receiverDeclared: (String) -> Boolean = ProviderPackaging.receiverDeclaredIn(context.applicationContext ?: context),
+    providersMetaData: () -> String? = ProviderPackaging.providersMetaDataIn(context.applicationContext ?: context),
 ) : ProviderFactory {
     private val appContext: Context = context.applicationContext ?: context
+
+    private val packaging = ProviderPackaging(classPresent, receiverDeclared, providersMetaData)
 
     private val lock = Any()
 
@@ -93,14 +100,19 @@ class DefaultProviderFactory(
     }
 
     private fun loadBundle(kind: ProviderKind): ProviderBundle? {
-        val sdkClass = when (kind) {
-            ProviderKind.GMS -> ProviderBundles.GMS_SDK_CLASS
-            ProviderKind.HMS -> ProviderBundles.HMS_SDK_CLASS
-            ProviderKind.ANDROID -> null
+        val reason = when (packaging.status(kind)) {
+            ProviderPackaging.Status.PACKAGED -> null
+            ProviderPackaging.Status.NOT_LISTED -> "not listed in ${ProviderPackaging.PROVIDERS_META_DATA}"
+            ProviderPackaging.Status.SDK_MISSING -> "SDK is not packaged"
+            ProviderPackaging.Status.RECEIVERS_REMOVED -> "SDK is present but its receivers are not in the manifest"
         }
-        val sdkPresent = sdkClass == null || guard("probe $sdkClass") { classPresent(sdkClass) } == true
-        if (!sdkPresent) {
-            Logger.d(TAG, "${kind.wire} SDK is not packaged")
+        if (reason != null) {
+            // Listed in the app's PROVIDERS meta-data but unusable is a setup error; otherwise it is expected.
+            if (packaging.listedExplicitly(kind)) {
+                Logger.w(TAG, "${kind.wire} is listed in ${ProviderPackaging.PROVIDERS_META_DATA} but not used: $reason")
+            } else {
+                Logger.i(TAG, "${kind.wire} is not used: $reason")
+            }
             return null
         }
         val name = ProviderBundles.bundleClassName(kind)

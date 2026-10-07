@@ -1,6 +1,6 @@
 {
   "name": "@bricks-soft/capacitor-location-tracking",
-  "version": "8.0.0",
+  "version": "8.0.1",
   "description": "Background location tracking for Capacitor with GMS/HMS fused location, geofencing, HTTP sync and heartbeat audit records.",
   "main": "dist/plugin.cjs.js",
   "module": "dist/esm/index.js",

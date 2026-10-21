@@ -67,6 +67,10 @@ export interface WireRecord {
   provider?: WireProviderState;
   reason?: string;
   heartbeat?: WireHeartbeatMeta;
+  stopped_at?: string;
+  network?: 'wifi' | 'cellular' | 'ethernet' | 'other' | 'none';
+  /** `device_id` on every record; more readings on heartbeat and tracking_start records */
+  device?: { device_id?: string } & Record<string, unknown>;
 }
 
 /** The JS/native `State` shape (config is the full plugin config JSON). */

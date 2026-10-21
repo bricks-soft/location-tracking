@@ -1624,11 +1624,12 @@ scenario(
       `the tracking_start must be answered 500 three times, then accepted:\n${requestLog(phase1)}`,
     );
     assert.equal(tries[0]!.id, phase1[0]?.id, `the first upload must carry the tracking_start:\n${requestLog(phase1)}`);
+    // Round 3 (11c): each wait is moved by up to 20 % up or down.
     RETRY_WAITS_MS.forEach((wait, i) => {
       const gap = tries[i + 1]!.receivedAt - tries[i]!.receivedAt;
       assert.ok(
-        gap >= wait - 500 && gap <= wait + 3_000,
-        `try ${i + 2} came ${gap} ms after try ${i + 1}, expected about ${wait} ms:\n${requestLog(phase1)}`,
+        gap >= wait * 0.8 - 500 && gap <= wait * 1.2 + 3_000,
+        `try ${i + 2} came ${gap} ms after try ${i + 1}, expected ${wait * 0.8}–${wait * 1.2} ms:\n${requestLog(phase1)}`,
       );
     });
     for (const r of tries) {

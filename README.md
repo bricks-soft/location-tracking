@@ -1391,15 +1391,24 @@ npm ci && npm run build && npm test
 npm publish               # prepare builds again; publishConfig.access makes it public
 ```
 
-Each later release:
+Each later release, with `scripts/release.sh` (bash; run it from the repository root on `master`):
 
-1. Run `npm version <patch|minor|major>`. It sets the version in `package.json` and `package-lock.json`, copies it to
-   `PLUGIN_VERSION` in `src/web/device.ts` (`npm test` checks this; `android/build.gradle` reads `package.json`
-   itself), and commits and tags. Give the `CHANGELOG.md` section that version and the date.
-2. Merge to `master` and create a GitHub release with a tag such as `v8.0.1`. The release starts the workflow (it can
-   also be started by hand from the Actions tab). The workflow builds, runs `npm test` and runs `npm stage publish`.
-3. In the package's **Staged Packages** tab on npmjs.com, approve the staged version (or run
+1. While you work, write the changes under `## [Unreleased]` in `CHANGELOG.md`.
+2. `scripts/release.sh check <version>` runs every check and changes nothing: `master` is clean and equal to
+   `origin/master`; the version is new and greater than the one on npm, and its major version is Capacitor's; the
+   versions in `package.json`, `package-lock.json` and `src/web/device.ts` agree; `[Unreleased]` is not empty; git
+   can sign; `npm run docgen` leaves the README unchanged; the changes since the last tag contain none of the
+   private-name patterns (a file outside the repository, see the script); the steps of `ci.yml` pass on this
+   computer; and `npm pack` contains only the files listed in `package.json`.
+3. `scripts/release.sh run <version>` runs the checks, renames `[Unreleased]` to `[<version>] - <date>`, runs
+   `npm version <version> --no-git-tag-version` (it sets `package.json`, `package-lock.json` and `PLUGIN_VERSION` in
+   `src/web/device.ts`; `android/build.gradle` reads `package.json` itself), and makes a signed commit and a signed tag
+   `v<version>`. After you type `yes`, it pushes both and creates the GitHub release with the CHANGELOG section as
+   notes. The release starts the workflow (it can also be started by hand from the Actions tab), which builds, runs
+   `npm test` and runs `npm stage publish`; the script waits for it.
+4. In the package's **Staged Packages** tab on npmjs.com, approve the staged version (or run
    `npm stage approve <stage-id>`) with 2FA. Only then can apps install it.
+5. `scripts/release.sh verify <version>` checks that npm serves it as `latest`, with a provenance statement.
 
 Versions published by the workflow carry an npm provenance statement (the repository is public), which links each
 version to the commit and workflow run that built it. The first version, published by hand, has none.

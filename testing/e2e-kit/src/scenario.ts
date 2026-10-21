@@ -92,7 +92,7 @@ export class ScenarioTimeoutError extends Error {
   }
 }
 
-const ID_PATTERN = /^(P-[LHP]\d{2}|F-\d{2})$/;
+const ID_PATTERN = /^(P-[LHPR]\d{2}|F-\d{2})$/;
 const registered: RegisteredScenario[] = [];
 
 /** Scenarios registered in this process, in registration order. */

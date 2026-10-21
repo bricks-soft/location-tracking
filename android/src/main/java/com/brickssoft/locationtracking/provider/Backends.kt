@@ -1,5 +1,6 @@
 package com.brickssoft.locationtracking.provider
 
+import com.brickssoft.locationtracking.core.TrackingException
 import com.brickssoft.locationtracking.model.ActivitySample
 import com.brickssoft.locationtracking.model.DesiredAccuracy
 import com.brickssoft.locationtracking.model.GeofenceAction
@@ -17,6 +18,13 @@ data class LocationRequestSpec(
 /** Receives batches of fixes, on any thread. */
 fun interface LocationListener {
     fun onLocations(locations: List<TrackedLocation>)
+
+    /**
+     * The request made with this listener failed, synchronously or later (recommendation 3): for example a missing
+     * permission, Google Play services or HMS Core refusing the request, or no usable platform provider. The listener is
+     * no longer registered. Called at most once per request, on any thread.
+     */
+    fun onError(error: TrackingException) = Unit
 }
 
 /** Location updates and one-shot fixes from one backend. */
@@ -25,8 +33,8 @@ interface LocationBackend {
 
     /**
      * Supports multiple listeners; requesting again with the same listener replaces its request. A `distanceFilterM`
-     * of 0 means no distance filter (the engine applies its own elastic filter). Never throws: failures such as a
-     * missing permission are logged and the listener receives nothing.
+     * of 0 means no distance filter (the engine applies its own elastic filter). Never throws: a failure, also one the
+     * OS reports later, is logged and reported to [LocationListener.onError] (see [LocationSubscriptions]).
      */
     fun requestUpdates(spec: LocationRequestSpec, listener: LocationListener)
 
@@ -35,8 +43,18 @@ interface LocationBackend {
     /** The OS's cached last location. Implementations may throw `TrackingException(PERMISSION_DENIED)`; callers catch. */
     suspend fun getLastLocation(): TrackedLocation?
 
-    /** Returns null on timeout. @throws com.brickssoft.locationtracking.core.TrackingException PERMISSION_DENIED */
+    /**
+     * Returns null on timeout. A request the OS refuses throws at once (recommendation 3c), not after the timeout.
+     * @throws com.brickssoft.locationtracking.core.TrackingException PERMISSION_DENIED, or the backend's mapping of
+     *   the OS error (for example UNAVAILABLE).
+     */
     suspend fun getCurrentLocation(accuracy: DesiredAccuracy, timeoutMs: Long): TrackedLocation?
+
+    /**
+     * The last `LocationAvailability` that GMS or HMS reported for this backend's requests, or null (none yet, or the
+     * platform backend). A hint only: Google documents that it can be wrong in both directions.
+     */
+    val availabilityHint: Boolean? get() = null
 }
 
 /** Activity recognition. Samples are delivered through a PendingIntent receiver to [ActivitySink]. */
@@ -91,6 +109,12 @@ interface ProviderBundle {
     /** True if the SDK is packaged and usable on this device (e.g. `GoogleApiAvailability` SUCCESS). */
     fun isAvailable(): Boolean
 
+    /** The raw availability result code of the last [isAvailable] (0 = SUCCESS), or null if unknown. */
+    fun availabilityStatus(): Int? = null
+
+    /** A diagnostic about the installed SDK service that does not change the choice (HMS: an old HMS Core), or null. */
+    fun versionDiagnostic(): String? = null
+
     fun location(): LocationBackend
 
     fun activity(): ActivityBackend
@@ -112,7 +136,28 @@ interface ProviderFactory {
 
     /** Re-evaluates the selection (e.g. after setConfig). Returns true if [kind] changed. */
     fun reselect(): Boolean
+
+    /**
+     * What [reselect] would select now, without changing the selection. With `locationProvider: 'auto'` the engine
+     * compares it with [kind] on provider changes and heartbeats, and switches when it is better (recommendation 15).
+     */
+    fun bestAvailable(): ProviderKind = kind
+
+    /** Why the current backend was selected and the raw availability codes (recommendation 15); diagnostic only. */
+    fun selectionInfo(): ProviderSelectionInfo = ProviderSelectionInfo(fallbackReason = null, gmsStatus = null, hmsStatus = null)
 }
+
+/**
+ * Diagnostics of the provider choice: [fallbackReason] says why a better backend was not used (null when the preferred
+ * one was), [gmsStatus] / [hmsStatus] are the raw `GoogleApiAvailability` / `HuaweiApiAvailability` result codes (null
+ * when that SDK is not packaged), and [hmsCoreOutdated] is true when HMS Core is older than 6.3.0.301.
+ */
+data class ProviderSelectionInfo(
+    val fallbackReason: String?,
+    val gmsStatus: Int?,
+    val hmsStatus: Int?,
+    val hmsCoreOutdated: Boolean? = null,
+)
 
 /** Implemented by the TrackingEngine. */
 interface ActivitySink {

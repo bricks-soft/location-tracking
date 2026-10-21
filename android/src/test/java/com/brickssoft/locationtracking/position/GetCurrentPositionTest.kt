@@ -549,6 +549,20 @@ class GetCurrentPositionTest {
         assertEquals(ErrorCode.UNAVAILABLE, result.errorCode())
     }
 
+    @Test
+    fun `a request the backend refuses later rejects at once with that error, not TIMEOUT`() = runTest {
+        val h = harness()
+        val pending = request(h, CurrentPositionOptions(timeoutMs = 30_000))
+
+        h.backend.fail(TrackingException(ErrorCode.PERMISSION_DENIED, "denied by the OS"))
+        runCurrent()
+
+        assertTrue(pending.isCompleted)
+        assertEquals(ErrorCode.PERMISSION_DENIED, pending.await().errorCode())
+        assertEquals(0L, testScheduler.currentTime)
+        assertTrue(h.sink.records.isEmpty())
+    }
+
     // ---- record + persistence
 
     @Test

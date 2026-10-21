@@ -549,6 +549,13 @@ test('getDeviceInfo reports the web platform and the plugin version', async () =
     hmsAvailable: false,
     backend: 'web',
     packagedProviders: [],
+    backendFallbackReason: null,
+    gmsStatus: null,
+    hmsStatus: null,
+    hmsCoreOutdated: null,
+    locationAvailableHint: null,
+    cpuCores: 0,
+    supportedAbis: [],
   });
 });
 

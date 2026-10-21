@@ -773,8 +773,8 @@ scenario(
 
     // Force-stop cancels the app's alarms, so no heartbeat alarm restarts tracking. A Play services activity update
     // that was already on its way can still start the process (CI emulator, API 34: 0.3 s after the force stop); in
-    // that process the plugin must not restart tracking. Past the time the next heartbeat was due: no tracking service
-    // and nothing recorded (the audit trail shows a gap that only the restore explains).
+    // that process the plugin must not restart tracking, and records one tracking_stop with reason user_stopped (round
+    // 3, recommendation 6). Past the time the next heartbeat was due: no tracking service and no other record.
     const quietUntil = forceStopDevice + (MIN_S + 20) * 1000;
     let cameBack: number | null = null;
     while ((await deviceNow(ctx)) < quietUntil) {
@@ -794,10 +794,15 @@ scenario(
       ctx.log(`the process came back (pid ${cameBack}) after am force-stop:\n${lines.join('\n') || '(no plugin log lines)'}`);
     }
     const whileStopped = recordsAfter(office, forceStopDevice);
+    const userStopped = audit('tracking_stop', 'user_stopped');
     assert.equal(
-      whileStopped.length,
+      whileStopped.filter((r) => !userStopped(r)).length,
       0,
       `records were created after am force-stop, before the app was opened again:\n${timeline(whileStopped)}`,
+    );
+    assert.ok(
+      whileStopped.length <= (cameBack === null ? 0 : 1),
+      `expected at most one tracking_stop(user_stopped), and only if the process came back:\n${timeline(whileStopped)}`,
     );
 
     // The user opens the app; the app calls ready() at startup.
@@ -816,7 +821,16 @@ scenario(
 
     const afterStop = recordsAfter(office, forceStopDevice);
     assertCount(afterStop, (r) => r.event === 'tracking_start', 1, 'tracking_start records after the force-stop');
-    assertCount(afterStop, (r) => r.event === 'tracking_stop', 0, 'tracking_stop records after the force-stop');
+    assertCount(
+      afterStop,
+      (r) => r.event === 'tracking_stop' && r.reason !== 'user_stopped',
+      0,
+      'tracking_stop records other than user_stopped after the force-stop',
+    );
+    assert.ok(
+      afterStop.filter(userStopped).length <= 1,
+      `more than one tracking_stop(user_stopped) after the force-stop:\n${timeline(afterStop)}`,
+    );
     assertions.gapsExplained(recordsAfter(office, startDevice), { maxGapS: MAX_S + TOLERANCE_S });
     await ctx.crashes.assertNoFgsDidNotStartInTime();
   },

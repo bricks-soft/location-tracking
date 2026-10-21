@@ -6,11 +6,11 @@ import com.brickssoft.locationtracking.core.Logger
 /**
  * Clamps config values to their allowed ranges and logs a warning for each value it changes. Never throws.
  *
- * - `heartbeat.minInterval` >= 60 s and `heartbeat.maxInterval` >= `minInterval`;
+ * - `heartbeat.minInterval` >= 60 s and `heartbeat.maxInterval` >= `minInterval`; `heartbeat.uploadKeepAwake` in 0..60;
  * - `activity.minimumActivityRecognitionConfidence` in 0..100;
  * - `geolocation.stationaryRadius` >= 1; distances, intervals, delays and filter thresholds >= 0;
  * - `geolocation.locationTimeout` and `http.timeout` > 0 (otherwise their defaults);
- * - `http.maxBatchSize` >= 1, `http.autoSyncThreshold` >= 0, `http.syncInterval` >= 0;
+ * - `http.maxBatchSize` >= 1, `http.autoSyncThreshold` >= 0, `http.syncInterval` >= 0, `http.maxRetryAfter` >= 0;
  * - `persistence.maxDaysToPersist` >= 1, `persistence.maxRecordsToPersist` >= -1 (-1 = unlimited);
  * - `logger.logMaxDays` >= 1;
  * - at most [Constants.MAX_NOTIFICATION_ACTIONS] notification actions (the first ones are kept);
@@ -23,6 +23,9 @@ object ConfigValidator {
     const val MIN_HEARTBEAT_INTERVAL_S = 60
 
     const val MIN_STATIONARY_RADIUS_M = 1.0
+
+    /** Largest allowed `heartbeat.uploadKeepAwake`, seconds. */
+    const val MAX_UPLOAD_KEEP_AWAKE_S = 60
 
     /** Returns [config] with every out-of-range value clamped (equal to [config] when all values are valid). */
     fun validate(config: Config): Config {
@@ -104,12 +107,14 @@ object ConfigValidator {
     private fun heartbeat(h: HeartbeatConfig): HeartbeatConfig {
         val min = atLeast("heartbeat.minInterval", h.minInterval, MIN_HEARTBEAT_INTERVAL_S)
         val max = atLeast("heartbeat.maxInterval", h.maxInterval, min)
-        return h.copy(minInterval = min, maxInterval = max)
+        val keepAwake = inRange("heartbeat.uploadKeepAwake", h.uploadKeepAwake, 0, MAX_UPLOAD_KEEP_AWAKE_S)
+        return h.copy(minInterval = min, maxInterval = max, uploadKeepAwake = keepAwake)
     }
 
     private fun http(h: HttpConfig): HttpConfig = h.copy(
         autoSyncThreshold = atLeast("http.autoSyncThreshold", h.autoSyncThreshold, 0),
         syncInterval = atLeast("http.syncInterval", h.syncInterval, 0),
+        maxRetryAfter = atLeast("http.maxRetryAfter", h.maxRetryAfter, 0),
         maxBatchSize = atLeast("http.maxBatchSize", h.maxBatchSize, 1),
         timeout = positive("http.timeout", h.timeout, HttpConfig().timeout),
     )

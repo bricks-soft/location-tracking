@@ -180,7 +180,7 @@ export interface Gap {
 }
 
 const RESUME_REASONS = new Set(['restore', 'boot', 'package_replaced']);
-const LATE_STOP_REASONS = new Set(['reboot', 'package_replaced', 'service_start_failed', 'permission_denied']);
+const LATE_STOP_REASONS = new Set(['reboot', 'package_replaced', 'service_start_failed', 'permission_denied', 'user_stopped']);
 
 /**
  * Asserts that every gap longer than [maxGapS] between consecutive records (by `recorded_at`) is explained. A gap is

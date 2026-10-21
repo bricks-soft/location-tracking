@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
-    <files-path name="lt_logs" path="location-tracking-logs/" />
+    <!-- Only the gzipped copy in the cache is shared (emailLog); the daily files are under noBackupFilesDir. -->
     <cache-path name="lt_logs_cache" path="location-tracking-logs/" />
 </paths>

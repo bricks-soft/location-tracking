@@ -70,6 +70,16 @@ function configFromDefaults(options: { config?: Config } | undefined): Config {
  * Like the Android bridge, methods other than `ready`, `getState`, `checkPermissions`, `requestPermissions` and
  * `getDeviceInfo` reject with `NOT_READY` until `ready()` has resolved.
  */
+/** The State of `ready`, `setConfig` and `reset`, with the `warnings` the Android plugin also returns. */
+function withWarnings(state: State): State {
+  const url = state.config.http?.url;
+  const warnings =
+    typeof url === 'string' && /^http:\/\//i.test(url.trim())
+      ? ["http.url uses http://: Android 9+ blocks cleartext traffic unless the app's network security config allows it"]
+      : [];
+  return { ...state, warnings };
+}
+
 export class LocationTrackingWeb extends WebPlugin implements LocationTrackingPlugin {
   private config: Config = defaultConfig();
   private isReady = false;
@@ -84,7 +94,7 @@ export class LocationTrackingWeb extends WebPlugin implements LocationTrackingPl
       this.config = config;
     }
     this.isReady = true;
-    return webState(this.config);
+    return withWarnings(webState(this.config));
   }
 
   async setConfig(options: { config: Config }): Promise<State> {
@@ -93,13 +103,13 @@ export class LocationTrackingWeb extends WebPlugin implements LocationTrackingPl
       throw webError('INVALID_ARGUMENT', 'config must be an object.');
     }
     this.config = mergeConfig(this.config, options.config);
-    return webState(this.config);
+    return withWarnings(webState(this.config));
   }
 
   async reset(options?: { config?: Config }): Promise<State> {
     this.requireReady();
     this.config = configFromDefaults(options);
-    return webState(this.config);
+    return withWarnings(webState(this.config));
   }
 
   async getState(): Promise<State> {

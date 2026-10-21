@@ -480,8 +480,10 @@ General rules:
 - Outcomes:
   - 2xx: the records are deleted (an unreadable body still counts as success).
   - 401: refresh the token, then retry once, unless a refresh was already attempted for this upload (at most one refresh per upload, across all tries).
-  - 5xx, 429, or an I/O error (timeout, no connection): the same upload tries again after 2, 4 and 8 s (at most 4 tries, R2-Q18), holding the upload lock; then as below.
-  - Any other status, or the last failed try: the records stay queued, and `attempts` and `last_attempt_at` are updated once per upload.
+  - 5xx, 429, or an I/O error (timeout, no connection): the same upload tries again after 2, 4 and 8 s (at most 4 tries, R2-Q18; ±20 % jitter and `Retry-After` since round 3), holding the upload lock; then as below.
+  - 413 for a batch of more than one record (round 3): the batch size is halved and the same records are sent again.
+  - 3xx: redirects are not followed (round 3); a failed upload like other non-2xx answers.
+  - Any other status, or the last failed try: the records stay queued, and `attempts` and `last_attempt_at` are updated once per upload. Round 3 adds a stored next-try time for normal records (`http/UploadWait.kt`) and an upload job (`http/UploadJobs.kt`); see [DECISIONS.md, Round 3](DECISIONS.md#round-3-comparison-report).
 - One `http` event is emitted per HTTP request (401 + refresh + retry = 2 events; one per try). An invalid `http.url` is treated as no URL.
 
 **Templates.**
@@ -490,7 +492,8 @@ General rules:
   - null is inserted as `null`; a null placeholder wrapped exactly in quotes (`"<%= reason %>"`) replaces the quotes too, giving JSON `null`;
   - strings are JSON-escaped but inserted without quotes, so users write `"<%= timestamp %>"`.
 - Placeholders: `uuid, event, timestamp, recorded_at, sent_at, latitude, longitude, accuracy, altitude, altitude_accuracy, speed, speed_accuracy, heading, heading_accuracy, is_moving, odometer, mock, activity.type, activity.confidence, battery.level, battery.is_charging, elapsed_realtime_ms, boot_count, backend, reason, geofence.identifier, geofence.action, provider.enabled, provider.gps, provider.network, provider.permission, extras, record, provider`. `extras` is substituted as JSON object text (`{}` when the record has none), `record` as the default record object (`RecordJson.toJson`, with `sent_at`), `provider` as the provider object or `null`.
-- An unknown placeholder becomes an empty string and logs a warning.
+- Round 3 adds `stopped_at`, `network`, `battery.temperature`, `battery.health`, `battery.plugged`, `device` and the 11 `device.*` readings ([wire-format.md](wire-format.md#templates)).
+- `setConfig()` rejects an unknown placeholder and a template that does not render to JSON (round 3, `http/ConfigChecks.kt`). At upload time, an unknown placeholder (in a config stored by an older version) becomes an empty string and logs a warning.
 - The rendered text must be a JSON object or array, validated by a strict parser (org.json is too lenient); otherwise the default shape is used and an error is logged.
 
 **Priority records.** `RecordEvent.isPriority` marks `heartbeat`, `tracking_start`, `tracking_stop` and `providerchange`.
@@ -499,7 +502,7 @@ General rules:
 - Normal records follow `autoSync` and the threshold (queue ≥ `max(1, autoSyncThreshold)`).
 - A pass stops at the first failed request, except that when the server rejected (non-2xx, not a network error) an upload in a whole-queue pass, the queued priority records are still sent in the same pass. Normal records behind a rejected normal record stay blocked until it is accepted or pruned.
 - One upload worker; automatic passes and `sync()` share one mutex; triggers during a pass collapse into one more pass.
-- Queued records are retried (there is no timer):
+- Queued records are retried (round 3 adds the stored next-try time and the upload job, see above):
   - on the next insert (every heartbeat is one);
   - when connectivity returns (`ConnectivityChange(connected=true)`, including Doze/Data Saver unblocking);
   - when the syncer starts (first tracking start or restore in a process);
@@ -512,7 +515,7 @@ General rules:
   - `accessToken|access_token`;
   - `refreshToken|refresh_token` (optional);
   - `expires|expires_at` (epoch; interpreted as seconds if less than 1e12; or an ISO-8601 string) or `expires_in` (relative seconds); none → `expires = -1`.
-- **After a refresh:** new tokens are persisted with `configStore.update`. An `authorization` event is emitted for every attempt, on success and on failure. Token values are never logged.
+- **After a refresh:** new tokens are persisted with `configStore.update`, only if the stored tokens are still the ones the refresh started from (round 3). The tokens are stored encrypted, outside the prefs file (`config/SecretStore.kt`). An `authorization` event is emitted for every attempt, on success and on failure. Token values are never logged.
 - **Concurrency:** a single-flight mutex allows at most one refresh per request.
 
 ---
@@ -564,7 +567,7 @@ The root is `android/src/main/java/com/brickssoft/locationtracking/`. In the tab
 Stub receivers and services that the manifest names, for example `provider/gms/GmsActivityReceiver`, exist in the scaffold as empty classes inside the owning unit's package.
 
 **Resources (S).** All resources carry the `lt_` prefix, which `resourcePrefix` enforces.
-- `res/xml/lt_file_paths.xml`: `<files-path name="lt_logs" path="location-tracking-logs/"/>` and `<cache-path name="lt_logs_cache" path="location-tracking-logs/"/>`.
+- `res/xml/lt_file_paths.xml`: `<cache-path name="lt_logs_cache" path="location-tracking-logs/"/>` (round 3: the daily files are under `noBackupFilesDir` and only the gzipped copy in the cache is shared; the `files-path` entry is removed).
 - `res/drawable/lt_ic_notification.xml` (vector).
 - `res/values/lt_strings.xml`: `lt_notification_text`, `lt_notification_channel_name`, `lt_bg_rationale_title|message|positive|negative`.
 
@@ -795,7 +798,7 @@ interface LogStore : LogSink { fun configure(level: LogLevel, maxDays: Int); sus
 ```
 
 **`Constants.kt` (S).**
-- Prefs name `location_tracking_prefs`. Database `location_tracking.db`. Log directory `location-tracking-logs`.
+- Prefs name `location_tracking_prefs`. Database `location_tracking.db` and log directory `location-tracking-logs`, both under `noBackupFilesDir` since round 3 (moved there once from `databases/` and `files/`). Encrypted tokens `location_tracking_secrets.bin` under `noBackupFilesDir`.
 - `NOTIFICATION_ID=7301`.
 - PendingIntent request codes:
 

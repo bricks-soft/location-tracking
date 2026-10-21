@@ -100,5 +100,12 @@ export function webDeviceInfo(userAgent: string, platform?: string): DeviceInfo 
     hmsAvailable: false,
     backend: 'web',
     packagedProviders: [],
+    backendFallbackReason: null,
+    gmsStatus: null,
+    hmsStatus: null,
+    hmsCoreOutdated: null,
+    locationAvailableHint: null,
+    cpuCores: typeof navigator !== 'undefined' && navigator.hardwareConcurrency ? navigator.hardwareConcurrency : 0,
+    supportedAbis: [],
   };
 }

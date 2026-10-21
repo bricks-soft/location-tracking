@@ -43,7 +43,7 @@ object ConfigSamples {
             motionTriggerDelay = 30_000,
             disableStopDetection = true,
         ),
-        heartbeat = HeartbeatConfig(enabled = false, minInterval = 240, maxInterval = 360),
+        heartbeat = HeartbeatConfig(enabled = false, minInterval = 240, maxInterval = 360, uploadKeepAwake = 20),
         http = HttpConfig(
             url = "https://example.com/locations",
             method = HttpMethod.PUT,
@@ -59,6 +59,7 @@ object ConfigSamples {
             locationTemplate = """{"lat":<%= latitude %>,"ts":"<%= timestamp %>"}""",
             geofenceTemplate = """{"id":"<%= geofence.identifier %>"}""",
             timeout = 15_000,
+            maxRetryAfter = 600,
             authorization = AuthorizationConfig(
                 strategy = "JWT",
                 accessToken = "access-1",
@@ -113,7 +114,7 @@ object ConfigSamples {
           "activity": { "disableMotionActivityUpdates": true, "activityRecognitionInterval": 20000,
                         "minimumActivityRecognitionConfidence": 50, "motionTriggerDelay": 30000,
                         "disableStopDetection": true },
-          "heartbeat": { "enabled": false, "minInterval": 240, "maxInterval": 360 },
+          "heartbeat": { "enabled": false, "minInterval": 240, "maxInterval": 360, "uploadKeepAwake": 20 },
           "http": {
             "url": "https://example.com/locations", "method": "PUT",
             "headers": { "X-Api-Key": "k1", "X-Tenant": "t" },
@@ -122,7 +123,7 @@ object ConfigSamples {
             "disableAutoSyncOnCellular": true, "rootProperty": "data",
             "locationTemplate": "{\"lat\":<%= latitude %>,\"ts\":\"<%= timestamp %>\"}",
             "geofenceTemplate": "{\"id\":\"<%= geofence.identifier %>\"}",
-            "timeout": 15000,
+            "timeout": 15000, "maxRetryAfter": 600,
             "authorization": {
               "strategy": "JWT", "accessToken": "access-1", "refreshToken": "refresh-1",
               "refreshUrl": "https://example.com/refresh", "refreshPayload": { "refresh_token": "{refreshToken}" },
@@ -160,11 +161,12 @@ object ConfigSamples {
           "activity": { "disableMotionActivityUpdates": false, "activityRecognitionInterval": 10000,
                         "minimumActivityRecognitionConfidence": 75, "motionTriggerDelay": 0,
                         "disableStopDetection": false },
-          "heartbeat": { "enabled": true, "minInterval": 180, "maxInterval": 300 },
+          "heartbeat": { "enabled": true, "minInterval": 180, "maxInterval": 300, "uploadKeepAwake": 10 },
           "http": {
             "url": null, "method": "POST", "headers": {}, "params": {}, "autoSync": true, "autoSyncThreshold": 0,
             "syncInterval": 0, "batchSync": false, "maxBatchSize": 100, "disableAutoSyncOnCellular": false, "rootProperty": "location",
-            "locationTemplate": null, "geofenceTemplate": null, "timeout": 60000, "authorization": null
+            "locationTemplate": null, "geofenceTemplate": null, "timeout": 60000, "maxRetryAfter": 3600,
+            "authorization": null
           },
           "persistence": { "maxDaysToPersist": 7, "maxRecordsToPersist": -1, "extras": {} },
           "app": { "stopOnTerminate": true, "startOnBoot": false },
@@ -207,5 +209,21 @@ object ConfigSamples {
             backend = ProviderKind.HMS,
         ),
         didReady = true,
+        trackingStartedElapsed = 86_000_000L,
+        trackingStartedBootCount = 42,
+        lastStopReason = "stop",
+        lastStopAt = 1_790_400_000_000L,
+        userStopRecordedFor = 1_790_300_000_000L,
     )
+
+    /** [CUSTOM_JSON] as results return it: the authorization secrets masked (`***` and the last 4 characters). */
+    val CUSTOM_JSON_MASKED: String
+        get() {
+            val json = org.json.JSONObject(CUSTOM_JSON)
+            json.getJSONObject("http").getJSONObject("authorization")
+                .put("accessToken", "***")
+                .put("refreshToken", "***sh-1")
+                .put("refreshHeaders", org.json.JSONObject().put("X-Refresh", "***"))
+            return json.toString()
+        }
 }

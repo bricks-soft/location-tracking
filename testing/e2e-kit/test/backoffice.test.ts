@@ -168,6 +168,19 @@ describe('MockBackOffice over HTTP', () => {
     assert.ok(Date.now() - started >= 190);
   });
 
+  test('faults: answer headers and body; minRecords applies only to bigger bodies', async () => {
+    office.setFault({ path: '/locations', status: 503, headers: { 'Retry-After': '120' }, body: 'x'.repeat(20_000) });
+    const answer = await post('/locations', { location: record('a') });
+    assert.equal(answer.status, 503);
+    assert.equal(answer.headers.get('retry-after'), '120');
+    assert.equal((await answer.text()).length, 20_000);
+
+    office.setFault({ path: '/locations', status: 413, minRecords: 3, count: -1 });
+    assert.equal((await post('/locations', { location: [record('b1'), record('b2'), record('b3')] })).status, 413);
+    assert.equal((await post('/locations', { location: [record('b1'), record('b2')] })).status, 200);
+    assert.deepEqual(office.records().map((r) => r.record.uuid), ['b1', 'b2']);
+  });
+
   test('faults are validated and never apply to control endpoints', async () => {
     assert.throws(() => office.setFault({ path: '/__records' }), /control endpoints/);
     assert.throws(() => office.setFault({ path: 'locations' }), /start with/);

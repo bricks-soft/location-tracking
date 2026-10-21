@@ -30,6 +30,11 @@ internal object RuntimeStateJson {
         .put("trackingStartedAt", JsonUtil.orNull(r.trackingStartedAt))
         .put("providerState", r.providerState?.let { ProviderStateJson.toJson(it) } ?: JSONObject.NULL)
         .put("didReady", r.didReady)
+        .put("trackingStartedElapsed", JsonUtil.orNull(r.trackingStartedElapsed))
+        .put("trackingStartedBootCount", JsonUtil.orNull(r.trackingStartedBootCount))
+        .put("lastStopReason", JsonUtil.orNull(r.lastStopReason))
+        .put("lastStopAt", JsonUtil.orNull(r.lastStopAt))
+        .put("userStopRecordedFor", JsonUtil.orNull(r.userStopRecordedFor))
 
     fun fromJson(json: JSONObject): RuntimeState {
         val d = RuntimeState()
@@ -59,6 +64,11 @@ internal object RuntimeStateJson {
             trackingStartedAt = JsonUtil.optLong(json, "trackingStartedAt"),
             providerState = json.optJSONObject("providerState")?.let { ProviderStateJson.fromJson(it) },
             didReady = JsonUtil.optBoolean(json, "didReady") ?: d.didReady,
+            trackingStartedElapsed = JsonUtil.optLong(json, "trackingStartedElapsed"),
+            trackingStartedBootCount = JsonUtil.optInt(json, "trackingStartedBootCount"),
+            lastStopReason = JsonUtil.optString(json, "lastStopReason"),
+            lastStopAt = JsonUtil.optLong(json, "lastStopAt"),
+            userStopRecordedFor = JsonUtil.optLong(json, "userStopRecordedFor"),
         )
     }
 

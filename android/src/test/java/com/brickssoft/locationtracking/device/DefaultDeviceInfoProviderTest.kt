@@ -1,5 +1,10 @@
 package com.brickssoft.locationtracking.device
 
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertFalse
+import com.brickssoft.locationtracking.provider.ProviderSelectionInfo
+import com.brickssoft.locationtracking.model.DeviceInfoJson
+import android.os.Build
 import android.app.Application
 import android.hardware.Sensor
 import android.hardware.SensorManager
@@ -59,10 +64,42 @@ class DefaultDeviceInfoProviderTest {
                 hmsAvailable = true,
                 backend = ProviderKind.HMS,
                 packagedProviders = listOf("gms", "hms"),
+                cpuCores = Runtime.getRuntime().availableProcessors(),
+                supportedAbis = Build.SUPPORTED_ABIS.toList(),
             ),
             info,
         )
         assertTrue(info.pluginVersion.isNotEmpty())
+    }
+
+    @Test
+    fun `deviceInfo reports why the backend was chosen, the raw availability codes and the availability hint`() {
+        val providers = FakeProviderFactory(ProviderKind.ANDROID).apply {
+            selection = ProviderSelectionInfo(
+                fallbackReason = "gms: service_version_update_required (2)",
+                gmsStatus = 2,
+                hmsStatus = null,
+                hmsCoreOutdated = null,
+            )
+            locationBackend.availabilityHint = false
+        }
+
+        val info = DefaultDeviceInfoProvider(app, lazy { providers }).deviceInfo()
+
+        assertEquals("gms: service_version_update_required (2)", info.backendFallbackReason)
+        assertEquals(2, info.gmsStatus)
+        assertNull(info.hmsStatus)
+        assertNull(info.hmsCoreOutdated)
+        assertEquals(false, info.locationAvailableHint)
+        assertTrue(info.cpuCores >= 1)
+        assertTrue(info.supportedAbis.isNotEmpty())
+
+        val json = DeviceInfoJson.toJson(info)
+        assertEquals("gms: service_version_update_required (2)", json.getString("backendFallbackReason"))
+        assertEquals(2, json.getInt("gmsStatus"))
+        assertTrue(json.isNull("hmsStatus"))
+        assertFalse(json.getBoolean("locationAvailableHint"))
+        assertEquals(info.cpuCores, json.getInt("cpuCores"))
     }
 
     @Test

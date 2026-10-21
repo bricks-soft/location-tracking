@@ -53,6 +53,12 @@ interface TrackingEngine : ActivitySink, StationaryRegionSink {
     suspend fun resumeFromNotification() = Unit
 
     /**
+     * True when this process started after the user stopped the app (Task Manager Stop or force stop, see
+     * `ForceStopProbe`) while tracking was enabled: a background restore must not run (recommendation 6).
+     */
+    fun startedAfterUserStop(): Boolean = false
+
+    /**
      * A transition of the engine's stationary region (`Constants.STATIONARY_REGION_ID`), routed by the
      * GeofenceManager. Round 2, unit 2 implements it (EXIT = the device left the stationary anchor). Default: ignored.
      */

@@ -51,6 +51,16 @@ class HeartbeatAlarmReceiverTest {
     }
 
     @Test
+    fun `after a user stop the alarm records no heartbeat and hands over to the engine`() = runTest {
+        engine.afterUserStop = true
+
+        deliver(HeartbeatTrigger.EXACT_ALARM)
+
+        assertTrue(heartbeat.alarms.isEmpty())
+        assertEquals(listOf("restore"), engine.restoreReasons) // the engine records user_stopped and stops the alarms
+    }
+
+    @Test
     fun `no restore while the service is running`() = runTest {
         service.isRunning = true
 

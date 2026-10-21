@@ -117,8 +117,11 @@ internal object OptionParsers {
         requireNumber(coords, "longitude", "location.coords.longitude").also {
             checkRange(it, LONGITUDE, "location.coords.longitude")
         }
+        requireNumber(coords, "accuracy", "location.coords.accuracy").also {
+            if (it <= 0) invalid("location.coords.accuracy must be > 0")
+        }
         optNumber(coords, "altitude", "location.coords.altitude")
-        for (key in listOf("accuracy", "altitude_accuracy", "speed", "speed_accuracy", "heading_accuracy")) {
+        for (key in listOf("altitude_accuracy", "speed", "speed_accuracy", "heading_accuracy")) {
             val value = optNumber(coords, key, "location.coords.$key")
             if (value != null && value < 0) invalid("location.coords.$key must be >= 0")
         }

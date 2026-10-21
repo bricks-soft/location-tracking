@@ -9,6 +9,9 @@ import com.brickssoft.locationtracking.model.TrackedLocation
 import com.brickssoft.locationtracking.provider.LocationBackend
 import com.brickssoft.locationtracking.provider.LocationListener
 import com.brickssoft.locationtracking.provider.LocationRequestSpec
+import com.brickssoft.locationtracking.provider.LocationSubscriptions
+import com.brickssoft.locationtracking.provider.OsRegistration
+import com.brickssoft.locationtracking.provider.RegistrationEvents
 import com.google.android.gms.location.CurrentLocationRequest
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationAvailability
@@ -25,11 +28,12 @@ import kotlin.coroutines.cancellation.CancellationException
 /**
  * Fused location provider backend.
  *
- * Every [LocationListener] gets its own [LocationCallback] on the main looper. Requesting again with the same
- * listener reuses its callback, which GMS treats as a replacement of the previous request.
+ * Listener bookkeeping is [LocationSubscriptions]: every request gets its own [LocationCallback] on the main looper,
+ * a request for the same listener removes the previous callback first, and a failure of `requestLocationUpdates`
+ * (thrown, or reported later by its Task) reaches the listener's `onError` (recommendation 3).
+ * `onLocationAvailability` is kept as [availabilityHint].
  *
- * Only [getCurrentLocation] throws: the [LocationBackend] contract declares no exception for the other methods, so
- * their failures are logged (a missing permission also shows in the provider state).
+ * Only [getCurrentLocation] throws: the [LocationBackend] contract declares no exception for the other methods.
  */
 internal class GmsLocationBackend(
     private val client: FusedLocationProviderClient,
@@ -37,40 +41,48 @@ internal class GmsLocationBackend(
 ) : LocationBackend {
     override val kind: ProviderKind = ProviderKind.GMS
 
-    /** Guarded by itself; GMS registration calls are made under the same lock so add/remove cannot interleave. */
-    private val callbacks = HashMap<LocationListener, ListenerCallback>()
+    private val subscriptions = LocationSubscriptions(TAG) { GmsErrors.map(it, "requestLocationUpdates") }
 
-    /**
-     * Never throws. A synchronous rejection (e.g. `SecurityException` without location permission) is logged and
-     * leaves a new listener unregistered, or a replaced listener on its previous request. Asynchronous failures of
-     * the GMS Task are logged too.
-     */
+    override val availabilityHint: Boolean? get() = subscriptions.availabilityHint
+
     override fun requestUpdates(spec: LocationRequestSpec, listener: LocationListener) {
         val request = try {
             buildLocationRequest(spec)
         } catch (e: Exception) {
             Logger.e(TAG, "invalid location request $spec", e)
+            listener.onError(GmsErrors.map(e, "requestLocationUpdates"))
             return
         }
-        synchronized(callbacks) {
-            val existing = callbacks[listener]
-            val callback = existing ?: ListenerCallback(listener)
-            try {
-                client.requestLocationUpdates(request, callback, looper()).logFailure(TAG, "requestLocationUpdates")
-            } catch (e: Exception) {
-                val mapped = GmsErrors.map(e, "requestLocationUpdates")
-                Logger.e(TAG, "${mapped.code}: ${mapped.message}", e)
-                return
-            }
-            if (existing == null) callbacks[listener] = callback
-            Logger.d(TAG, "location updates ${if (existing == null) "requested" else "replaced"}: $spec")
-        }
+        subscriptions.request(listener, spec) { events -> Registration(request, events) }
+        Logger.d(TAG, "location updates requested: $spec")
     }
 
     override fun removeUpdates(listener: LocationListener) {
-        synchronized(callbacks) {
-            val callback = callbacks.remove(listener) ?: return
-            callback.active = false
+        subscriptions.remove(listener)
+    }
+
+    /** One `requestLocationUpdates` with its own callback. */
+    private inner class Registration(
+        private val request: LocationRequest,
+        private val events: RegistrationEvents,
+    ) : OsRegistration {
+        private val callback = object : LocationCallback() {
+            override fun onLocationResult(result: LocationResult) {
+                events.locations(result.locations.map(TrackedLocation::from))
+            }
+
+            override fun onLocationAvailability(availability: LocationAvailability) {
+                events.availability(availability.isLocationAvailable)
+            }
+        }
+
+        override fun start(done: (Exception?) -> Unit) {
+            client.requestLocationUpdates(request, callback, looper()).addOnCompleteListener(DirectExecutor) { task ->
+                done(task.exception ?: if (task.isCanceled) IllegalStateException("request cancelled by GMS") else null)
+            }
+        }
+
+        override fun remove() {
             try {
                 client.removeLocationUpdates(callback).logFailure(TAG, "removeLocationUpdates")
             } catch (e: Exception) {
@@ -123,30 +135,6 @@ internal class GmsLocationBackend(
             throw GmsErrors.map(e, "getCurrentLocation")
         } finally {
             cancellation.cancel()
-        }
-    }
-
-    /**
-     * Forwards fixes to one listener until [removeUpdates] deactivates it. Best effort: a batch whose delivery already
-     * started on the looper thread may still reach the listener while [removeUpdates] runs on another thread.
-     */
-    private class ListenerCallback(private val listener: LocationListener) : LocationCallback() {
-        @Volatile
-        var active = true
-
-        override fun onLocationResult(result: LocationResult) {
-            if (!active) return
-            val locations = result.locations.map(TrackedLocation::from)
-            if (locations.isEmpty()) return
-            try {
-                listener.onLocations(locations)
-            } catch (e: Exception) {
-                Logger.e(TAG, "location listener failed", e)
-            }
-        }
-
-        override fun onLocationAvailability(availability: LocationAvailability) {
-            Logger.v(TAG, "location available: ${availability.isLocationAvailable}")
         }
     }
 

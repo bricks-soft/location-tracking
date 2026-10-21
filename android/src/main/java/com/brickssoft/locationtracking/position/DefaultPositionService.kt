@@ -33,7 +33,8 @@ import kotlin.math.min
  *   `maximumAgeMs > 0` it returns the freshest known fix (runtime or backend last location) if it is young
  *   enough. Otherwise it samples a temporary backend request for up to `samples` fixes, stops early on a fix of
  *   [ACCURATE_ENOUGH_M] or better, and keeps the most accurate fix. The timeout bounds the whole call; at the
- *   timeout the best fix so far is returned, or TIMEOUT is thrown if there is none.
+ *   timeout the best fix so far is returned, or TIMEOUT is thrown if there is none. If the backend refuses the request
+ *   (also later, through `LocationListener.onError`), the call rejects at once with that error.
  * - [watchPosition] registers one backend listener per watch id. Each fix becomes a `watch_position` record,
  *   optionally persisted through [recordSink], and is delivered in order from [scope] (see [PositionWatch]).
  *
@@ -162,7 +163,14 @@ class DefaultPositionService(
         if (timeoutMs <= 0) return null
         val collector = SampleCollector(o.samples)
         val fixes = Channel<TrackedLocation>(Channel.UNLIMITED)
-        val listener = LocationListener { batch -> batch.forEach { fixes.trySend(it) } }
+        val listener = object : LocationListener {
+            override fun onLocations(locations: List<TrackedLocation>) = locations.forEach { fixes.trySend(it) }
+
+            // The request failed (recommendation 3c): reject at once with that error instead of TIMEOUT.
+            override fun onError(error: TrackingException) {
+                fixes.close(error)
+            }
+        }
         val spec = LocationRequestSpec(o.desiredAccuracy, SAMPLE_INTERVAL_MS, SAMPLE_FASTEST_INTERVAL_MS, 0f)
         val requestedAt = clock.elapsedRealtime()
         try {

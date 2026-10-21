@@ -16,8 +16,8 @@ export interface ArtifactsOptions {
   bugreport?: boolean;
 }
 
-/** Directory of the plugin's daily log files inside the app's data dir (Constants.LOG_DIR under filesDir). */
-export const PLUGIN_LOG_DIR = 'files/location-tracking-logs';
+/** Directory of the plugin's daily log files inside the app's data dir (Constants.LOG_DIR under noBackupFilesDir). */
+export const PLUGIN_LOG_DIR = 'no_backup/location-tracking-logs';
 
 /**
  * Keeps the lines of `dumpsys alarm` that mention [appId], each with the more indented lines that follow it (the

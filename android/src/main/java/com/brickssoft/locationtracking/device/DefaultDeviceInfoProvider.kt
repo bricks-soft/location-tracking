@@ -44,6 +44,12 @@ class DefaultDeviceInfoProvider(
             Logger.e(TAG, "provider kind unavailable", e)
             null
         }
+        val selection = try {
+            factory?.selectionInfo()
+        } catch (e: Exception) {
+            Logger.w(TAG, "provider selection info unavailable", e)
+            null
+        }
         return DeviceInfo(
             platform = "android",
             manufacturer = Build.MANUFACTURER.orEmpty(),
@@ -56,6 +62,17 @@ class DefaultDeviceInfoProvider(
             hmsAvailable = factory != null && isAvailable(factory, ProviderKind.HMS),
             backend = backend ?: ProviderKind.ANDROID,
             packagedProviders = packagedProviders(),
+            backendFallbackReason = selection?.fallbackReason,
+            gmsStatus = selection?.gmsStatus,
+            hmsStatus = selection?.hmsStatus,
+            hmsCoreOutdated = selection?.hmsCoreOutdated,
+            locationAvailableHint = try {
+                factory?.location()?.availabilityHint
+            } catch (e: Exception) {
+                null
+            },
+            cpuCores = Runtime.getRuntime().availableProcessors(),
+            supportedAbis = Build.SUPPORTED_ABIS?.toList().orEmpty(),
         )
     }
 

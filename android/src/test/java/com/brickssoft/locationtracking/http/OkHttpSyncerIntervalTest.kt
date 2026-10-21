@@ -106,8 +106,10 @@ class OkHttpSyncerIntervalTest {
     private fun TestScope.syncer(): OkHttpSyncer {
         val workerScope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
         workerScopes += workerScope
+        // random 0.5: the retry waits without jitter (exactly 2, 4 and 8 s; 30 s after the first failed upload).
         return OkHttpSyncer(
             configStore, store, device, events, clock, OkHttpClient(), testDispatchers(testScheduler), workerScope,
+            random = { 0.5 },
         )
     }
 

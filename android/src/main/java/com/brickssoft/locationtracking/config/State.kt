@@ -24,6 +24,12 @@ enum class TrackingMode(val wire: String) {
  * @property lastRecordBootCount boot count when the last record was persisted.
  * @property providerState last provider state seen, used to detect `providerchange` across process restarts.
  * @property didReady true once `ready()` has ever completed (drives `ReadyOptions.reset=false`).
+ * @property trackingStartedElapsed elapsed-realtime ms when the session started (`stopAfterElapsedMinutes`), valid
+ *   while the boot count is [trackingStartedBootCount].
+ * @property lastStopReason the reason of the last `tracking_stop` record, and [lastStopAt] when tracking stopped
+ *   (epoch ms).
+ * @property userStopRecordedFor the time of the user stop (Task Manager Stop or force stop) whose `tracking_stop`
+ *   record was written, so a later process does not write it again.
  */
 data class RuntimeState(
     val enabled: Boolean = false,
@@ -39,6 +45,11 @@ data class RuntimeState(
     val trackingStartedAt: Long? = null,
     val providerState: ProviderState? = null,
     val didReady: Boolean = false,
+    val trackingStartedElapsed: Long? = null,
+    val trackingStartedBootCount: Int? = null,
+    val lastStopReason: String? = null,
+    val lastStopAt: Long? = null,
+    val userStopRecordedFor: Long? = null,
 )
 
 /** Snapshot returned to JS as `State` (see `ConfigJson.stateToJson`). */

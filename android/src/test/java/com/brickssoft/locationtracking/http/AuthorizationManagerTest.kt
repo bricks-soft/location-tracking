@@ -77,6 +77,10 @@ class AuthorizationManagerTest {
 
     private val storedAuth get() = configStore.config.value.http.authorization!!
 
+    private fun creds(access: String? = "old", refresh: String? = "r1") = AuthorizationManager.Credentials(access, refresh)
+
+    private fun AuthorizationManager.Result.token(): String? = credentials.accessToken
+
     private fun takeRequest(): RecordedRequest = server.takeRequest(5, TimeUnit.SECONDS)!!
 
     @Test
@@ -87,9 +91,10 @@ class AuthorizationManagerTest {
         )
         val manager = manager(auth())
 
-        val token = manager.refresh(client, "old")
+        val result = manager.renew(client, creds())
 
-        assertEquals("new", token)
+        assertEquals(AuthorizationManager.Outcome.RENEWED, result.outcome)
+        assertEquals(creds("new", "r2"), result.credentials)
         val request = takeRequest()
         assertEquals("POST", request.method)
         assertEquals("/refresh", request.path)
@@ -124,7 +129,7 @@ class AuthorizationManagerTest {
             ),
         )
 
-        assertEquals("new", manager.refresh(client, "old"))
+        assertEquals("new", manager.renew(client, creds(refresh = "r 1&x")).token())
 
         val request = takeRequest()
         assertEquals("application/x-www-form-urlencoded", request.getHeader("Content-Type"))
@@ -139,7 +144,7 @@ class AuthorizationManagerTest {
         server.enqueue(MockResponse().setBody("""{"accessToken":"new"}"""))
         val manager = manager(auth(headers = mapOf("content-type" to "application/vnd.api+json")))
 
-        manager.refresh(client, "old")
+        manager.renew(client, creds())
 
         val request = takeRequest()
         assertEquals("application/vnd.api+json", request.getHeader("Content-Type"))
@@ -152,7 +157,7 @@ class AuthorizationManagerTest {
         server.enqueue(MockResponse().setResponseCode(500).setBody("""{"error":"boom"}"""))
         val manager = manager(auth(expires = 123))
 
-        assertNull(manager.refresh(client, "old"))
+        assertEquals(AuthorizationManager.Outcome.FAILED, manager.renew(client, creds()).outcome)
 
         assertEquals(auth(expires = 123), storedAuth)
         val event = events.ofType<TrackingEvent.Authorization>().single()
@@ -167,7 +172,7 @@ class AuthorizationManagerTest {
         server.enqueue(MockResponse().setBody("""{"token_type":"bearer"}"""))
         val manager = manager(auth())
 
-        assertNull(manager.refresh(client, "old"))
+        assertEquals(AuthorizationManager.Outcome.FAILED, manager.renew(client, creds()).outcome)
 
         assertEquals("old", storedAuth.accessToken)
         val event = events.ofType<TrackingEvent.Authorization>().single()
@@ -181,7 +186,7 @@ class AuthorizationManagerTest {
         server.shutdown()
         val manager = manager(auth(refreshUrl = deadUrl))
 
-        assertNull(manager.refresh(client, "old"))
+        assertEquals(AuthorizationManager.Outcome.FAILED, manager.renew(client, creds()).outcome)
 
         val event = events.ofType<TrackingEvent.Authorization>().single()
         assertFalse(event.success)
@@ -193,54 +198,60 @@ class AuthorizationManagerTest {
     fun `invalid refreshUrl fails without a request`() = runTest {
         val manager = manager(auth(refreshUrl = "not a url"))
 
-        assertNull(manager.refresh(client, "old"))
+        assertEquals(AuthorizationManager.Outcome.FAILED, manager.renew(client, creds()).outcome)
 
         assertEquals(0, server.requestCount)
         assertFalse(events.ofType<TrackingEvent.Authorization>().single().success)
     }
 
     @Test
-    fun `concurrent refreshes share one request`() = runTest {
+    fun `concurrent refreshes of the same tokens make one request, the second sees them changed`() = runTest {
         server.enqueue(MockResponse().setBody("""{"accessToken":"new","expires_in":3600}"""))
         server.enqueue(MockResponse().setBody("""{"accessToken":"newer","expires_in":3600}"""))
         val manager = manager(auth())
 
-        val a = async { manager.refresh(client, "old") }
-        val b = async { manager.refresh(client, "old") }
+        val a = async { manager.renew(client, creds()) }
+        val b = async { manager.renew(client, creds()) }
 
-        assertEquals("new", a.await())
-        assertEquals("new", b.await())
+        assertEquals(AuthorizationManager.Outcome.RENEWED, a.await().outcome)
+        assertEquals(AuthorizationManager.Outcome.CHANGED, b.await().outcome)
+        assertEquals("new", storedAuth.accessToken)
         assertEquals(1, server.requestCount)
         assertEquals(1, events.ofType<TrackingEvent.Authorization>().size)
     }
 
     @Test
-    fun `tokenForRequest uses a valid token without refreshing`() = runTest {
+    fun `prepare uses a valid token without refreshing`() = runTest {
         val manager = manager(auth(expires = clock.now() + 61_000))
 
-        assertEquals(AuthorizationManager.Token("old", refreshAttempted = false), manager.tokenForRequest(client))
+        val prepared = manager.prepare(client, creds(), mayRefresh = true)
+        assertEquals(AuthorizationManager.Result(AuthorizationManager.Outcome.UNCHANGED, creds(), false), prepared)
 
         assertEquals(0, server.requestCount)
     }
 
     @Test
-    fun `tokenForRequest refreshes within 60 s of expiry`() = runTest {
+    fun `prepare refreshes within 60 s of expiry, unless it may not refresh`() = runTest {
         server.enqueue(MockResponse().setBody("""{"accessToken":"new","expires_in":3600}"""))
         val manager = manager(auth(expires = clock.now() + 60_000))
 
-        assertEquals(AuthorizationManager.Token("new", refreshAttempted = true), manager.tokenForRequest(client))
+        assertEquals(AuthorizationManager.Outcome.UNCHANGED, manager.prepare(client, creds(), mayRefresh = false).outcome)
+        assertEquals(0, server.requestCount)
+        val prepared = manager.prepare(client, creds(), mayRefresh = true)
+        assertEquals(AuthorizationManager.Result(AuthorizationManager.Outcome.RENEWED, creds("new"), true), prepared)
         assertEquals(1, server.requestCount)
     }
 
     @Test
-    fun `tokenForRequest fetches a missing token and falls back to the old one on failure`() = runTest {
+    fun `prepare fetches a missing token and keeps the old one on failure`() = runTest {
         server.enqueue(MockResponse().setBody("""{"accessToken":"first"}"""))
         val missing = manager(auth(accessToken = null))
-        assertEquals(AuthorizationManager.Token("first", refreshAttempted = true), missing.tokenForRequest(client))
+        assertEquals("first", missing.prepare(client, creds(access = null), mayRefresh = true).token())
 
         server.enqueue(MockResponse().setResponseCode(503))
         val expired = manager(auth(expires = clock.now() - 1))
-        assertEquals(AuthorizationManager.Token("old", refreshAttempted = true), expired.tokenForRequest(client))
+        val failed = expired.prepare(client, creds(), mayRefresh = true)
+        assertEquals(AuthorizationManager.Result(AuthorizationManager.Outcome.FAILED, creds(), true), failed)
     }
 
     @Test
@@ -249,12 +260,14 @@ class AuthorizationManagerTest {
         server.enqueue(MockResponse().setBody("""{"accessToken":"next","expires_in":3600}"""))
         val manager = manager(auth(expires = clock.now() + 10_000))
 
-        assertEquals(AuthorizationManager.Token("short", refreshAttempted = true), manager.tokenForRequest(client))
-        assertEquals(AuthorizationManager.Token("short", refreshAttempted = false), manager.tokenForRequest(client))
+        val short = manager.prepare(client, creds(), mayRefresh = true)
+        assertEquals(AuthorizationManager.Result(AuthorizationManager.Outcome.RENEWED, creds("short"), true), short)
+        val again = manager.prepare(client, creds("short"), mayRefresh = true)
+        assertEquals(AuthorizationManager.Result(AuthorizationManager.Outcome.UNCHANGED, creds("short"), false), again)
         assertEquals(1, server.requestCount)
 
         clock.advance(30_000)
-        assertEquals(AuthorizationManager.Token("next", refreshAttempted = true), manager.tokenForRequest(client))
+        assertEquals("next", manager.prepare(client, creds("short"), mayRefresh = true).token())
         assertEquals(2, server.requestCount)
     }
 
@@ -262,8 +275,9 @@ class AuthorizationManagerTest {
     fun `without refreshUrl the configured token is used as is`() = runTest {
         val manager = manager(auth(refreshUrl = null, expires = clock.now() - 1))
 
-        assertEquals(AuthorizationManager.Token("old", refreshAttempted = false), manager.tokenForRequest(client))
-        assertNull(manager.refresh(client, "old"))
+        val prepared = manager.prepare(client, creds(), mayRefresh = true)
+        assertEquals(AuthorizationManager.Result(AuthorizationManager.Outcome.UNCHANGED, creds(), false), prepared)
+        assertEquals(AuthorizationManager.Outcome.FAILED, manager.renew(client, creds()).outcome)
         assertEquals(0, server.requestCount)
         assertTrue(events.events.isEmpty())
     }
@@ -272,7 +286,7 @@ class AuthorizationManagerTest {
     fun `no authorization config means no token`() = runTest {
         val manager = manager(null)
 
-        assertEquals(AuthorizationManager.Token(null, refreshAttempted = false), manager.tokenForRequest(client))
+        assertNull(manager.current())
         assertFalse(manager.appliesTo(HttpConfig()))
     }
 
@@ -295,10 +309,41 @@ class AuthorizationManagerTest {
             }
         }
 
-        assertEquals("new", manager.refresh(client, "old"))
+        assertEquals(AuthorizationManager.Outcome.CHANGED, manager.renew(client, creds()).outcome)
 
         assertNull(configStore.config.value.http.authorization)
-        assertTrue(events.ofType<TrackingEvent.Authorization>().single().success)
+        assertTrue(events.ofType<TrackingEvent.Authorization>().isEmpty())
+    }
+
+    @Test
+    fun `a refresh that finishes after the app set another user's tokens does not overwrite them`() = runTest {
+        // Recommendation 2: user A's refresh is in flight when the app configures user B.
+        val manager = manager(auth())
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                configStore.update {
+                    it.copy(http = it.http.copy(authorization = auth(accessToken = "userB", refreshToken = "rB")))
+                }
+                return MockResponse().setBody("""{"accessToken":"userA-new","refreshToken":"rA2"}""")
+            }
+        }
+
+        val result = manager.renew(client, creds())
+
+        assertEquals(AuthorizationManager.Outcome.CHANGED, result.outcome)
+        assertEquals("userB", storedAuth.accessToken)
+        assertEquals("rB", storedAuth.refreshToken)
+    }
+
+    @Test
+    fun `prepare and renew answer CHANGED when the configured tokens are not the upload's`() = runTest {
+        val manager = manager(auth(accessToken = "userB", refreshToken = "rB"))
+
+        assertEquals(AuthorizationManager.Outcome.CHANGED, manager.prepare(client, creds(), mayRefresh = true).outcome)
+        assertEquals(AuthorizationManager.Outcome.CHANGED, manager.renew(client, creds()).outcome)
+        assertTrue(manager.isCurrent(creds("userB", "rB")))
+        assertFalse(manager.isCurrent(creds()))
+        assertEquals(0, server.requestCount)
     }
 
     @Test

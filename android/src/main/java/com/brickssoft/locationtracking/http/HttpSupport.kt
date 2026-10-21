@@ -17,8 +17,11 @@ import java.util.Locale
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Status and body text of a completed HTTP exchange. */
-internal data class HttpResponse(val status: Int, val body: String) {
+/**
+ * Status and body text of a completed HTTP exchange. [retryAfter] is the raw `Retry-After` header value, if the server
+ * sent one.
+ */
+internal data class HttpResponse(val status: Int, val body: String, val retryAfter: String? = null) {
     val isSuccessful: Boolean get() = status in 200..299
 }
 
@@ -28,20 +31,45 @@ internal object HttpSupport {
 
     const val CONTENT_TYPE = "Content-Type"
     const val AUTHORIZATION = "Authorization"
+    const val RETRY_AFTER = "Retry-After"
     const val JSON_CONTENT_TYPE = "application/json; charset=utf-8"
     const val FORM_CONTENT_TYPE = "application/x-www-form-urlencoded"
+
+    /** Most bytes of an upload answer that are read and passed on in the `http` event (16 KB). */
+    const val MAX_UPLOAD_RESPONSE_BYTES = 16_384L
+
+    /**
+     * The plugin's shared client (uploads, token refresh, `uploadLog`). It follows no redirects: OkHttp would send a
+     * redirected POST again as a GET without a body, and a 2xx answer to that GET would delete records the server never
+     * received. A 3xx is therefore an answer like any other non-2xx one. It also does not repeat a request on its own
+     * after a connection failure; the uploader decides about retries.
+     */
+    fun sharedClient(): OkHttpClient = OkHttpClient.Builder()
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .retryOnConnectionFailure(false)
+        .build()
 
     /** Parses an http(s) URL (surrounding whitespace ignored); null if blank or invalid. */
     fun parseUrl(url: String?): HttpUrl? = url?.trim()?.takeIf { it.isNotEmpty() }?.toHttpUrlOrNull()
 
-    /** A client derived from [base] (sharing its pool) whose call, read and write timeouts are [timeoutMs]. */
+    /**
+     * A client derived from [base] (sharing its pool) whose call, read and write timeouts are [timeoutMs] (unless
+     * [timeoutMs] <= 0). Whatever [base] is configured with, the derived client follows no redirects and does not
+     * repeat a request after a connection failure (see [sharedClient]).
+     */
     fun client(base: OkHttpClient, timeoutMs: Long): OkHttpClient {
-        if (timeoutMs <= 0) return base
-        return base.newBuilder()
-            .callTimeout(timeoutMs, TimeUnit.MILLISECONDS)
-            .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
-            .writeTimeout(timeoutMs, TimeUnit.MILLISECONDS)
-            .build()
+        val builder = base.newBuilder()
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .retryOnConnectionFailure(false)
+        if (timeoutMs > 0) {
+            builder
+                .callTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+                .writeTimeout(timeoutMs, TimeUnit.MILLISECONDS)
+        }
+        return builder.build()
     }
 
     /** True if [headers] contains [name], ignoring case. */
@@ -86,10 +114,16 @@ internal object HttpSupport {
     /**
      * Executes [request] on [io]. Cancelling the coroutine cancels the call (OkHttp does not support thread
      * interrupts). A body that fails to read after the status arrived yields "", because the server already answered.
+     * With [maxBodyBytes], at most that many bytes of the body are read (`peekBody`); the rest is discarded.
      *
      * @throws IOException if the exchange fails before a status is received.
      */
-    suspend fun execute(client: OkHttpClient, request: Request, io: CoroutineDispatcher): HttpResponse =
+    suspend fun execute(
+        client: OkHttpClient,
+        request: Request,
+        io: CoroutineDispatcher,
+        maxBodyBytes: Long? = null,
+    ): HttpResponse =
         withContext(io) {
             val call = client.newCall(request)
             val finished = AtomicBoolean(false)
@@ -103,12 +137,16 @@ internal object HttpSupport {
             try {
                 call.execute().use { response ->
                     val text = try {
-                        response.body?.string().orEmpty()
+                        if (maxBodyBytes != null) {
+                            response.peekBody(maxBodyBytes).string()
+                        } else {
+                            response.body?.string().orEmpty()
+                        }
                     } catch (e: IOException) {
                         Logger.w(TAG, "could not read the response body of HTTP ${response.code}: ${e.message}")
                         ""
                     }
-                    HttpResponse(response.code, text)
+                    HttpResponse(response.code, text, response.header(RETRY_AFTER))
                 }
             } finally {
                 finished.set(true)

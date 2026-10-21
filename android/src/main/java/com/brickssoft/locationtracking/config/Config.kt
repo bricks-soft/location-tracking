@@ -97,6 +97,12 @@ data class HeartbeatConfig(
     val minInterval: Int = 180,
     /** seconds, >= minInterval */
     val maxInterval: Int = 300,
+    /**
+     * Seconds, 0..60. After a heartbeat record is queued, the phone is kept awake until its upload has finished, or
+     * at most this long, so the heartbeat reaches the server on time while tracking is on. 0 = the wake lock ends when
+     * the heartbeat is queued.
+     */
+    val uploadKeepAwake: Int = 10,
 )
 
 data class AuthorizationConfig(
@@ -138,6 +144,10 @@ data class HttpConfig(
     val geofenceTemplate: String? = null,
     /** ms */
     val timeout: Long = 60_000,
+    /**
+     * Seconds, >= 0. The longest wait a `Retry-After` header of a 429 or 503 answer can impose on automatic uploads.
+     */
+    val maxRetryAfter: Int = 3600,
     val authorization: AuthorizationConfig? = null,
 )
 

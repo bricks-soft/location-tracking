@@ -5,6 +5,7 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import com.brickssoft.locationtracking.core.Constants
 import com.brickssoft.locationtracking.core.Logger
+import java.io.File
 
 /**
  * SQLiteOpenHelper for [Constants.DATABASE_NAME] (schema [VERSION]), shared by [SqliteLocationStore] and
@@ -17,7 +18,11 @@ import com.brickssoft.locationtracking.core.Logger
  * - `geofences`: `json` is `GeofenceJson.toJson(spec)`; `runtime_json` is `{insideCircle, insidePolygon, enteredAt}`
  *   or null.
  *
- * @param name database file name; `null` creates an in-memory database.
+ * The plugin opens it at [location]: `noBackupFilesDir/location_tracking.db`, so the queue is not copied by Android
+ * Auto Backup or device-to-device transfer (recommendation 7). A database left in the default databases folder by an
+ * older version is moved there once, without losing records.
+ *
+ * @param name database file name or absolute path; `null` creates an in-memory database.
  */
 class TrackingDatabase(
     context: Context,
@@ -86,6 +91,43 @@ class TrackingDatabase(
         const val VERSION = 1
 
         private const val TAG = "LT.Database"
+
+        /** Files SQLite may keep next to a database. */
+        private val SIDE_FILES = listOf("-wal", "-shm", "-journal")
+
+        /**
+         * The absolute path of the plugin's database under `noBackupFilesDir`. A database still in the default
+         * databases folder (an older version) is moved there first: its write-ahead log is folded into the main file
+         * (`PRAGMA wal_checkpoint(TRUNCATE)` and close), then the file is renamed (same file system), then the old side
+         * files are deleted. If anything fails, the old path is returned and nothing is lost. If both exist (a
+         * downgrade and upgrade), the one under `noBackupFilesDir` is used and the old one is left in place.
+         */
+        fun location(context: Context): String {
+            val app = context.applicationContext ?: context
+            val target = File(app.noBackupFilesDir, Constants.DATABASE_NAME)
+            val legacy = app.getDatabasePath(Constants.DATABASE_NAME)
+            if (!legacy.exists()) return target.path
+            if (target.exists()) {
+                Logger.w(TAG, "databases/${Constants.DATABASE_NAME} and its no_backup copy both exist; using the no_backup one")
+                return target.path
+            }
+            return try {
+                SQLiteDatabase.openDatabase(legacy.path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+                    db.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", null).use { it.moveToFirst() }
+                }
+                target.parentFile?.mkdirs()
+                if (!legacy.renameTo(target)) {
+                    Logger.w(TAG, "could not move the database to no_backup; keeping it in databases/")
+                    return legacy.path
+                }
+                for (suffix in SIDE_FILES) File(legacy.path + suffix).delete()
+                Logger.i(TAG, "database moved to no_backup (kept out of Auto Backup and device transfer)")
+                target.path
+            } catch (e: Exception) {
+                Logger.e(TAG, "could not move the database to no_backup; keeping it in databases/", e)
+                legacy.path
+            }
+        }
     }
 }
 

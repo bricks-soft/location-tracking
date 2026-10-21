@@ -47,8 +47,9 @@ test('catalogue ids are unique and complete', () => {
   assert.equal(catalogueOf('plugin-lifecycle').length, 13);
   assert.equal(catalogueOf('plugin-heartbeat').length, 10);
   assert.equal(catalogueOf('plugin-permissions').length, 11);
+  assert.equal(catalogueOf('plugin-round3').length, 13);
   assert.equal(catalogueOf('field-force').length, 12);
-  assert.equal(catalogueOf('manual').length, 8);
+  assert.equal(catalogueOf('manual').length, 12);
 });
 
 test('environment defaults and app id selection', () => {

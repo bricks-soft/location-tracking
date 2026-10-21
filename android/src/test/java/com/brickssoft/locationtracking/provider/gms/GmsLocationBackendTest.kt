@@ -16,6 +16,7 @@ import com.google.android.gms.common.api.CommonStatusCodes
 import com.google.android.gms.common.api.Status
 import com.google.android.gms.location.CurrentLocationRequest
 import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationAvailability
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
@@ -151,16 +152,19 @@ class GmsLocationBackendTest {
     }
 
     @Test
-    fun `same listener replaces its request by reusing its callback`() {
+    fun `same listener replaces its request, the previous callback is removed first and its late fixes are dropped`() {
         val listener = RecordingListener()
 
         backend.requestUpdates(spec(DesiredAccuracy.BALANCED), listener)
         backend.requestUpdates(spec(DesiredAccuracy.HIGH), listener)
 
         assertEquals(2, requests.size)
-        assertSame(requests[0].second, requests[1].second)
+        assertNotSame(requests[0].second, requests[1].second)
         assertEquals(Priority.PRIORITY_HIGH_ACCURACY, requests[1].first.priority)
-        assertTrue(removed.isEmpty())
+        assertEquals(listOf(requests[0].second), removed.toList())
+        requests[0].second.onLocationResult(LocationResult.create(listOf(androidLocation(latitude = 1.0))))
+        requests[1].second.onLocationResult(LocationResult.create(listOf(androidLocation(latitude = 2.0))))
+        assertEquals(listOf(listOf(2.0)), listener.batches.map { batch -> batch.map { it.latitude } })
     }
 
     @Test
@@ -212,7 +216,7 @@ class GmsLocationBackendTest {
     }
 
     @Test
-    fun `synchronous SecurityException is logged, not thrown, and nothing is registered`() {
+    fun `synchronous SecurityException reaches the listener as PERMISSION_DENIED and nothing stays registered`() {
         every { client.requestLocationUpdates(any<LocationRequest>(), any<LocationCallback>(), any<Looper>()) } throws
             SecurityException("no location permission")
         val sink = RecordingLogSink()
@@ -221,14 +225,16 @@ class GmsLocationBackendTest {
 
         backend.requestUpdates(spec(), listener)
 
+        assertEquals(listOf(ErrorCode.PERMISSION_DENIED), listener.errors.map { it.code })
         val error = sink.at(LogLevel.ERROR).single()
-        assertTrue(error.message, error.message.startsWith("PERMISSION_DENIED"))
+        assertTrue(error.message, error.message.startsWith("location request failed: PERMISSION_DENIED"))
+        assertEquals(1, removed.size) // the half-made registration is cleaned up
         backend.removeUpdates(listener)
-        verify(exactly = 0) { client.removeLocationUpdates(any<LocationCallback>()) }
+        assertEquals(1, removed.size)
     }
 
     @Test
-    fun `failed replacement keeps the previous registration`() {
+    fun `a failed replacement is reported, and the previous registration is already gone`() {
         val listener = RecordingListener()
         backend.requestUpdates(spec(), listener)
         val callback = requests.single().second
@@ -239,23 +245,57 @@ class GmsLocationBackendTest {
         callback.onLocationResult(LocationResult.create(listOf(androidLocation())))
         backend.removeUpdates(listener)
 
-        assertEquals(1, listener.batches.size)
-        assertEquals(listOf(callback), removed.toList())
+        assertTrue(listener.batches.isEmpty())
+        assertEquals(1, listener.errors.size)
+        assertEquals(callback, removed.first())
     }
 
     @Test
-    fun `asynchronous request failure is only logged and the listener stays removable`() {
-        every { client.requestLocationUpdates(any<LocationRequest>(), any<LocationCallback>(), any<Looper>()) } returns
+    fun `asynchronous request failure reaches the listener once and the registration is removed`() {
+        every { client.requestLocationUpdates(any<LocationRequest>(), any<LocationCallback>(), any<Looper>()) } answers {
+            requests += firstArg<LocationRequest>() to secondArg<LocationCallback>()
             Tasks.forException(ApiException(Status(CommonStatusCodes.API_NOT_CONNECTED)))
+        }
         val sink = RecordingLogSink()
         Logger.sink = sink
         val listener = RecordingListener()
 
         backend.requestUpdates(spec(), listener)
+        requests.single().second.onLocationResult(LocationResult.create(listOf(androidLocation())))
         backend.removeUpdates(listener)
 
-        assertTrue(sink.lines.any { it.message == "requestLocationUpdates failed" })
+        assertEquals(1, listener.errors.size)
+        assertTrue(listener.batches.isEmpty())
+        assertTrue(sink.at(LogLevel.ERROR).any { it.message.startsWith("location request failed") })
+        assertEquals(listOf(requests.single().second), removed.toList())
+    }
+
+    @Test
+    fun `a registration that completes after removal is removed again`() {
+        val pending = TaskCompletionSource<Void>()
+        every { client.requestLocationUpdates(any<LocationRequest>(), any<LocationCallback>(), any<Looper>()) } answers {
+            requests += firstArg<LocationRequest>() to secondArg<LocationCallback>()
+            pending.task
+        }
+        val listener = RecordingListener()
+        backend.requestUpdates(spec(), listener)
+
+        backend.removeUpdates(listener)
         assertEquals(1, removed.size)
+        pending.setResult(null)
+
+        assertEquals(2, removed.size)
+        assertTrue(listener.errors.isEmpty())
+    }
+
+    @Test
+    fun `onLocationAvailability is kept as a hint`() {
+        backend.requestUpdates(spec(), RecordingListener())
+        assertNull(backend.availabilityHint)
+
+        requests.single().second.onLocationAvailability(locationAvailability(false))
+
+        assertEquals(false, backend.availabilityHint)
     }
 
     @Test
@@ -420,9 +460,18 @@ class GmsLocationBackendTest {
 
     private class RecordingListener : LocationListener {
         val batches = CopyOnWriteArrayList<List<TrackedLocation>>()
+        val errors = CopyOnWriteArrayList<TrackingException>()
 
         override fun onLocations(locations: List<TrackedLocation>) {
             batches += locations
         }
+
+        override fun onError(error: TrackingException) {
+            errors += error
+        }
     }
+
+    /** `LocationAvailability` has no public constructor; mocked. */
+    private fun locationAvailability(available: Boolean): LocationAvailability =
+        mockk<LocationAvailability> { every { isLocationAvailable } returns available }
 }

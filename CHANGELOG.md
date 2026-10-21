@@ -61,6 +61,134 @@ version follows the Capacitor major version (Capacitor 8), as `@bricks-soft/cap-
   per flavor, and per-flavor manifests that remove the other provider's receivers and permission.
 
 
+Round 3: the changes the owner accepted from the comparison report. Decisions:
+[docs/DECISIONS.md, Round 3](docs/DECISIONS.md#round-3-comparison-report).
+
+### Breaking changes
+
+The version stays 8.x (the major version follows Capacitor), so these are listed here. Each one is explained under
+Added, Changed or Security below.
+
+- **Calls that now reject with `INVALID_ARGUMENT`:**
+  - `insertLocation()` without `coords.accuracy`, or with an accuracy of 0 or less. The TypeScript type
+    `InsertLocationInput` makes `accuracy` required.
+  - `ready()`, `setConfig()` and `reset()` with an `http.url` that has user info (`user:password@`) or a fragment, a
+    header name or value with non-ASCII characters or line breaks (`http.headers`,
+    `http.authorization.refreshHeaders`), or a template with an unknown placeholder or one that does not render to
+    valid JSON. Before, these were accepted and failed at upload time, or the unknown placeholder became empty.
+- **Results that changed:**
+  - `getState()` and the results of `ready()`, `setConfig()` and `reset()` return `accessToken`, `refreshToken`,
+    `refreshPayload` and `refreshHeaders` masked. An app that read refreshed tokens from there takes them from the
+    `authorization` event's `response` instead.
+  - `getCurrentPosition()` rejects at once with the OS error (for example `PERMISSION_DENIED` or `UNAVAILABLE`) when
+    the OS rejects the request, instead of `TIMEOUT` after the whole timeout.
+  - The `http` event's `responseText` has at most 16,384 characters.
+  - Text passed to `log()` has tokens, JWTs and URLs removed.
+  - TypeScript: `State` has the new required fields `lastStopReason` and `lastStopAt` (code that builds a `State`
+    object, for example in tests).
+- **Uploads:**
+  - A `3xx` answer is a failed upload; redirects are not followed. The upload URL must be the final one.
+  - With `rootProperty: "."`, an `http.params` key named `network` or `device` is dropped (the record's keys win).
+  - After an authorization failure, normal records wait 15 minutes unless the app sets new tokens.
+- **Records the server receives:**
+  - New keys on every record: `network` and `device` (`device.device_id` is the Android `ANDROID_ID`). Heartbeats
+    and `tracking_start` have new fields. A server that rejects unknown keys must accept them.
+  - New `tracking_stop` reason `user_stopped`, and `service_start_failed` also on Android 11–13. A server with a
+    fixed list of reasons must accept them.
+  - A fix of the `android` backend without an accuracy value has accuracy 1,000,000 m (was 0), so the accuracy
+    filter drops it.
+- **Tracking behavior:**
+  - On Android 11–13 without "Allow all the time" location, a restore from the background (reboot, killed process)
+    stops tracking with `tracking_stop` reason `service_start_failed` (and the resume notification when enabled),
+    instead of running without location.
+  - After the user stopped the app (Force stop), a heartbeat alarm or a service restart no longer starts tracking
+    again; the next `ready()` resumes it.
+- **Backup:** the database and the logs are no longer in Auto Backup or device transfer. A restored config does not
+  turn tracking on and has no tokens: the app sets the tokens again and calls `start()`.
+- **Google Play:** records now carry `ANDROID_ID` (`device.device_id`). An app that uploads it (the default record
+  shape, or a template with `<%= record %>` or `<%= device.device_id %>`) declares "Device or other IDs" in the Data
+  safety form.
+
+### Added
+
+- **Upload job:** a JobScheduler job uploads queued records also when no tracking session runs and after the app's
+  process ended: when a network returns, at the next allowed time after a failure, once when tracking stops, and at
+  the start of every upload while tracking is off, so Android cannot freeze or kill the process in the middle of it
+  (expedited on Android 12+ when it should run at once). `ready()` starts the uploader.
+- **`http.maxRetryAfter`** (s, default 3600): the longest `Retry-After` of a `429` or `503` the plugin waits for.
+- **`heartbeat.uploadKeepAwake`** (s, 0–60, default 10): a heartbeat keeps the CPU awake until its upload has
+  finished, at most this long.
+- **Events:** `locationerror` (the OS rejected the location request; the request is made again after 10 s, doubling
+  up to 5 minutes) and `storagefull` (a record could not be stored because the storage is full).
+  `enabledchange` has a `reason`.
+- **State:** `lastStopReason` and `lastStopAt` in `getState()`; `warnings` in the result of `ready()`, `setConfig()`
+  and `reset()`.
+- **Record fields:** `network` and `device.device_id` (on Android `Settings.Secure.ANDROID_ID`) on every record,
+  `insertLocation()` records included; `device` readings (`background_restricted`, `standby_bucket`,
+  `disk_free_bytes`, `thermal_status`) and battery `temperature`, `health`, `plugged` on heartbeats; the phone
+  (`manufacturer`, `model`, `os_version`, `sdk_int`, `low_ram_device`, `ram_total_bytes`) on `tracking_start`;
+  `stopped_at` on `tracking_stop` reason `user_stopped`. 17 new template placeholders. Apps that upload records
+  declare "Device or other IDs" in Google Play's Data safety form. With `rootProperty: "."`, an `http.params` key named
+  `network` or `device` is now dropped on every record (the record's keys win).
+- **`getDeviceInfo()`:** `backendFallbackReason`, `gmsStatus`, `hmsStatus`, `hmsCoreOutdated`,
+  `locationAvailableHint`, `cpuCores`, `supportedAbis`.
+- **`tracking_stop` reason `user_stopped`**, written once after the user stopped the app (Settings → Force stop, or
+  the Android 13+ Task Manager) when something starts the app's process again.
+
+### Changed
+
+- **`insertLocation()` requires `coords.accuracy` greater than 0** and rejects with `INVALID_ARGUMENT` otherwise
+  (also `LocationTrackingNative.insertLocation`). Before, a missing accuracy was stored as `0`, which reads as a
+  perfect fix.
+- **Uploads:** redirects are not followed (a `3xx` is a failed upload) and OkHttp no longer repeats a request after a
+  connection failure by itself; idle connections older than 4 s are closed before an upload, so a connection the
+  server already closed does not fail it. At most 16 KB of an upload answer is read. The 2, 4 and 8 s retries are moved by up to
+  20 %. After a failed automatic upload, normal records wait for a stored next-try time (30 s doubling to 15 minutes,
+  at least `Retry-After`; 15 minutes after an authorization failure, ended by new tokens), which survives restarts.
+  A `413` for a batch halves the batch size.
+- **Tokens:** one upload uses one token (or the token refreshed from it); an upload stops when the app changes the
+  authorization, and a new upload with the new tokens follows about 10 s later while `http.authorization` is set
+  (none when the app removed it). A refresh that finishes after the app set new tokens does not overwrite them.
+- **Location requests:** the `android` backend uses `gps` and `network` together for `'high'` and `'balanced'`, and
+  drops network fixes while a GPS fix is recent; its `getCurrentPosition` asks the providers in parallel. A fix
+  without an accuracy value counts as 1,000 km inaccurate (was 0 m). With HMS, the first fix counts as a successful
+  registration. `getCurrentPosition()` rejects at once when the OS rejects the request (was `TIMEOUT`).
+- **Backend choice:** with `locationProvider: 'auto'`, a better backend that becomes available (for example after a
+  Play services update) is switched to at the next start, `providerchange` or heartbeat. A warning is logged when HMS
+  Core is older than 6.3.0.301.
+- **Restores:** on Android 11–13, a restore from the background without "Allow all the time" location records
+  `tracking_stop` reason `service_start_failed` and offers the resume notification (the service would get no
+  location). A heartbeat alarm or service restart after a user stop no longer restarts tracking.
+- **`stopAfterElapsedMinutes`** is counted on the elapsed-time clock within one boot, so a wall-clock change does not
+  move it.
+- **`setConfig()` checks** `http.url`, header names and values, and templates, and rejects mistakes with
+  `INVALID_ARGUMENT`; an `http://` URL gives a warning.
+- **Logs:** all log files together stay under 10 MB; text passed to `log()` has tokens, JWTs and URLs removed.
+- **Writes:** a change of `enabled` is written with `commit()`, so a process killed right after `stop()` cannot bring
+  tracking back.
+
+### Security
+
+- `accessToken`, `refreshToken`, `refreshPayload` and `refreshHeaders` are stored encrypted (AES-256-GCM, Android
+  Keystore key) under `noBackupFilesDir`; plain-text tokens of older versions are moved on the first start.
+  `getState()` and the config results return them masked.
+- The database and the log files moved to `noBackupFilesDir` (out of Auto Backup and device transfer). A config
+  restored onto another installation never turns tracking on by itself and drops the tokens.
+
+### Known limitations
+
+- Tested on Android emulators (API 29–35, with and without Google Play services) and on one real phone, a Samsung
+  Galaxy A24 with Android 16 (DECISIONS R3.4): there the encrypted tokens with the hardware-backed (TEE) Keystore,
+  without a reboot, and the `android` backend dropping network fixes while GPS fixes arrive. Not verified on a real
+  phone: HMS registration errors and timing, the tokens after a reboot, the `android` backend with network fixes only
+  (no satellites) and outdoors while moving, and the Android 11–13 restore refusal on phone makers' builds (runbook
+  M-09 … M-12).
+- Not tested: the regular job Android uses when the expedited-job quota is used up, and how Android 11 and 12 record
+  an app update (the reason boot and update restores are not checked for a user stop).
+- `heartbeat.uploadKeepAwake` (default 10 s) can end before a slow upload: on the emulator the first heartbeat after
+  entering Doze took 7.4 s to reach the server, plus 4 s for the answer. The upload then continues when the CPU next
+  wakes.
+
 Round 2: the field-force audit setup, a native API for companion plugins, and end-to-end tests on an Android
 emulator. Decisions: [docs/DECISIONS.md](docs/DECISIONS.md#round-2-field-force-audit-companion-api-and-avd-tests).
 
@@ -181,7 +309,8 @@ emulator. Decisions: [docs/DECISIONS.md](docs/DECISIONS.md#round-2-field-force-a
   the exemption.
 - The PremiseMonitor service can start from the background only while the tracking service is in the foreground or
   right after a geofence transition; a refused start is audited (`service_start_failed`), not a crash.
-- The heartbeat's wake lock ends when the heartbeat is queued; the upload itself holds no wake lock.
+- The heartbeat's wake lock ends when the heartbeat is queued; the upload itself holds no wake lock (changed in round
+  3: `heartbeat.uploadKeepAwake`).
 - Open items and owner questions: [docs/DECISIONS.md, R2.5](docs/DECISIONS.md#r25-open-requests-and-known-limitations).
 
 ## [0.1.0] - Not published

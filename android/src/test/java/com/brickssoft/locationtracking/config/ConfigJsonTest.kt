@@ -363,10 +363,42 @@ class ConfigJsonTest {
         val expected = JSONObject(
             """
             {"enabled":true,"trackingMode":"geofences","isMoving":true,"odometer":1532.4,"backend":"hms",
-             "lastRecordAt":"2026-09-26T10:15:30.456Z"}
+             "lastRecordAt":"2026-09-26T10:15:30.456Z","lastStopReason":"stop","lastStopAt":"2026-09-26T05:20:00.000Z"}
             """,
-        ).put("config", JSONObject(CUSTOM_JSON))
+        ).put("config", JSONObject(ConfigSamples.CUSTOM_JSON_MASKED))
         assertJsonEquals(expected, json)
+    }
+
+    @Test
+    fun `a masked secret given back unchanged keeps the stored value, a new one replaces it`() {
+        val masked = JSONObject(ConfigSamples.CUSTOM_JSON_MASKED)
+
+        val roundTrip = ConfigJson.parse(masked, CUSTOM)
+
+        assertEquals(CUSTOM.http.authorization, roundTrip.http.authorization)
+        val changed = ConfigJson.parse(
+            JSONObject("""{"http":{"authorization":{"accessToken":"new-token","refreshHeaders":{"X-Refresh":"2"}}}}"""),
+            CUSTOM,
+        )
+        assertEquals("new-token", changed.http.authorization!!.accessToken)
+        assertEquals("refresh-1", changed.http.authorization!!.refreshToken)
+        assertEquals(mapOf("X-Refresh" to "2"), changed.http.authorization!!.refreshHeaders)
+        assertEquals("***", ConfigJson.maskSecret("12345678"))
+        assertEquals("***6789", ConfigJson.maskSecret("123456789"))
+    }
+
+    @Test
+    fun `stateToJson masks the refresh payload values except refreshToken placeholders`() {
+        val auth = CUSTOM.http.authorization!!.copy(
+            refreshPayload = """{"refresh_token":"{refreshToken}","client_secret":"s3cr3t-value"}""",
+        )
+        val state = State(CUSTOM.copy(http = CUSTOM.http.copy(authorization = auth)), RuntimeState(), ProviderKind.GMS)
+
+        val payload = ConfigJson.stateToJson(state).getJSONObject("config").getJSONObject("http")
+            .getJSONObject("authorization").getJSONObject("refreshPayload")
+
+        assertEquals("{refreshToken}", payload.getString("refresh_token"))
+        assertEquals("***alue", payload.getString("client_secret"))
     }
 
     @Test
@@ -374,7 +406,8 @@ class ConfigJsonTest {
         val json = ConfigJson.stateToJson(State(Config(), RuntimeState(), ProviderKind.GMS))
 
         val expected = JSONObject(
-            """{"enabled":false,"trackingMode":"location","isMoving":false,"odometer":0,"backend":"gms","lastRecordAt":null}""",
+            """{"enabled":false,"trackingMode":"location","isMoving":false,"odometer":0,"backend":"gms","lastRecordAt":null,
+                "lastStopReason":null,"lastStopAt":null}""",
         ).put("config", JSONObject(DEFAULT_JSON))
         assertJsonEquals(expected, json)
         assertTrue(json.has("lastRecordAt"))

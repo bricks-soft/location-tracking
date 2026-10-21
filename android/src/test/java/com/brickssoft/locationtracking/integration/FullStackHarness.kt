@@ -10,6 +10,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.BatteryManager
 import android.os.Looper
+import android.os.StatFs
 import androidx.test.core.app.ApplicationProvider
 import com.brickssoft.locationtracking.core.LogLevel
 import com.brickssoft.locationtracking.core.Logger
@@ -22,6 +23,8 @@ import kotlinx.coroutines.test.runCurrent
 import org.junit.After
 import org.junit.Before
 import com.brickssoft.locationtracking.config.ConfigStore
+import com.brickssoft.locationtracking.config.FileSecretStore
+import com.brickssoft.locationtracking.config.SecretStore
 import com.brickssoft.locationtracking.config.SharedPrefsConfigStore
 import com.brickssoft.locationtracking.core.AppDispatchers
 import com.brickssoft.locationtracking.core.EventBus
@@ -34,6 +37,7 @@ import com.brickssoft.locationtracking.data.LocationStore
 import com.brickssoft.locationtracking.data.SqliteGeofenceStore
 import com.brickssoft.locationtracking.data.SqliteLocationStore
 import com.brickssoft.locationtracking.data.TrackingDatabase
+import com.brickssoft.locationtracking.device.DefaultDeviceDetails
 import com.brickssoft.locationtracking.device.DefaultDeviceMonitor
 import com.brickssoft.locationtracking.device.DeviceMonitor
 import com.brickssoft.locationtracking.engine.DefaultTrackingEngine
@@ -45,7 +49,9 @@ import com.brickssoft.locationtracking.heartbeat.HeartbeatAlarmReceiver
 import com.brickssoft.locationtracking.heartbeat.HeartbeatIntents
 import com.brickssoft.locationtracking.heartbeat.HeartbeatScheduler
 import com.brickssoft.locationtracking.http.HttpSyncer
+import com.brickssoft.locationtracking.http.JobUploadScheduler
 import com.brickssoft.locationtracking.http.OkHttpSyncer
+import com.brickssoft.locationtracking.http.PrefsNextTryStore
 import com.brickssoft.locationtracking.model.ProviderKind
 import com.brickssoft.locationtracking.model.TrackedLocation
 import com.brickssoft.locationtracking.position.DefaultPositionService
@@ -147,21 +153,31 @@ internal class FullStackProcess(
     }
     val processor: LocationProcessor by lazy { DefaultLocationProcessor(configStore) }
     val odometer: Odometer by lazy { DefaultOdometer(configStore) }
-    val recordFactory: RecordFactory by lazy { DefaultRecordFactory(configStore, device, providers, clock) }
+    val recordFactory: RecordFactory by lazy {
+        DefaultRecordFactory(configStore, device, providers, clock, DefaultDeviceDetails(app))
+    }
+
+    /** As in Components, with the jitter fixed at its middle (waits are exactly 2, 4, 8 s, then 30 s). */
     val syncer: HttpSyncer by lazy {
-        OkHttpSyncer(configStore, locationStore, device, events, clock, http, dispatchers, scope)
+        OkHttpSyncer(
+            configStore, locationStore, device, events, clock, http, dispatchers, scope,
+            PrefsNextTryStore(app), JobUploadScheduler(app), random = { 0.5 },
+        )
     }
 
     /** Uses the real `SystemHeartbeatAlarms`, i.e. Robolectric's AlarmManager (see [HeartbeatAlarmsProbe]). */
     val heartbeat: HeartbeatScheduler by lazy {
         DefaultHeartbeatScheduler(
             app, configStore, device, providers, locationStore, recordFactory, lazy { recordSink }, clock, scope,
+            uploads = lazy { syncer },
         )
     }
     /** Round 2: mirrors `Components.recordHooks`. */
     val recordHooks = RecordHooks()
     val recordSink: RecordSink by lazy {
-        DefaultRecordSink(locationStore, configStore, heartbeat, syncer, events, recordHooks)
+        DefaultRecordSink(locationStore, configStore, heartbeat, syncer, events, recordHooks) {
+            StatFs(app.noBackupFilesDir.path).availableBytes
+        }
     }
     val geofences: GeofenceManager by lazy {
         DefaultGeofenceManager(
@@ -498,11 +514,16 @@ internal abstract class FullStackTestBase {
     protected lateinit var clock: FakeClock
     protected lateinit var gps: Gps
 
+    /** The encrypted tokens file of the app (Robolectric has no Android Keystore); it outlives processes. */
+    protected val secrets: SecretStore = SecretStore.inMemory()
+
     @Before
     fun setUpFullStack() {
         env.install()
         server.start()
         Logger.sink = logs
+        FileSecretStore.testOverride = secrets
+        JobUploadScheduler.resetForTest()
     }
 
     @After
@@ -510,6 +531,8 @@ internal abstract class FullStackTestBase {
         processes.forEach { it.close() }
         server.close()
         Logger.sink = null
+        FileSecretStore.testOverride = null
+        JobUploadScheduler.resetForTest()
     }
 
     /** A new app process; [databaseName] null = in-memory database (a restart needs a file name). */

@@ -146,11 +146,13 @@ class SyncPolicyTest {
     }
 
     @Test
-    fun `a pending retry holds normal records, even over the size cap`() {
+    fun `the stored wait holds normal records, even over the size cap and when due`() {
         val http = HttpConfig(url = url, syncInterval = 300, autoSyncThreshold = 10)
-        val retry = IntervalCheck.RETRY_PENDING
-        assertEquals(Scope.NONE, SyncPolicy.autoScope(http, wifi, 50, priorityQueued = 0, retry))
-        assertEquals(Scope.ALL, SyncPolicy.autoScope(http, wifi, 50, priorityQueued = 1, retry))
+        for (check in IntervalCheck.entries) {
+            assertEquals(Scope.NONE, SyncPolicy.autoScope(http, wifi, 50, priorityQueued = 0, check, waiting = true))
+            assertEquals(Scope.ALL, SyncPolicy.autoScope(http, wifi, 50, priorityQueued = 1, check, waiting = true))
+        }
+        assertEquals(Scope.NONE, SyncPolicy.autoScope(HttpConfig(url = url), wifi, 1, 0, waiting = true))
     }
 
     @Test

@@ -1,5 +1,6 @@
 package com.brickssoft.locationtracking.engine
 
+import android.os.Build
 import com.brickssoft.locationtracking.config.Config
 import com.brickssoft.locationtracking.config.ConfigStore
 import com.brickssoft.locationtracking.config.GeolocationConfig
@@ -22,6 +23,8 @@ import com.brickssoft.locationtracking.http.HttpSyncer
 import com.brickssoft.locationtracking.model.ActivitySample
 import com.brickssoft.locationtracking.model.ActivityType
 import com.brickssoft.locationtracking.model.GeofenceAction
+import com.brickssoft.locationtracking.model.LocationProviderSetting
+import com.brickssoft.locationtracking.model.ProviderKind
 import com.brickssoft.locationtracking.model.PermissionLevel
 import com.brickssoft.locationtracking.model.ProviderState
 import com.brickssoft.locationtracking.model.Record
@@ -99,6 +102,8 @@ class DefaultTrackingEngine(
     private val scope: CoroutineScope,
     /** Background triggers do not restore tracking in a process started after a user force stop. */
     private val forceStopProbe: ForceStopProbe = ForceStopProbe.NEVER,
+    /** `Build.VERSION.SDK_INT`; injectable for tests. */
+    private val sdkInt: Int = Build.VERSION.SDK_INT,
 ) : TrackingEngine {
     private val mutex = Mutex()
     private val engineContext: CoroutineContext =
@@ -108,6 +113,9 @@ class DefaultTrackingEngine(
     /** The tracking session running in this process, or null. Guarded by [mutex]. */
     private var session: Session? = null
     private var nextSessionId = 1L
+
+    /** This process handled the user stop it started after (see [handleUserStop]). Guarded by [mutex]. */
+    private var userStopHandled = false
 
     private val config: Config get() = configStore.config.value
     private val runtime: RuntimeState get() = configStore.runtime.value
@@ -119,6 +127,8 @@ class DefaultTrackingEngine(
         val new = configStore.ready(config, reset)
         configStore.updateRuntime { it.copy(didReady = true) }
         onConfigChanged(old, new)
+        // Queued records are sent whether tracking is on or off (recommendation 10).
+        guarded("syncer.start") { syncer.start() }
         if (session == null && runtime.enabled) {
             Logger.i(TAG, "ready: tracking is enabled but not running in this process; restoring")
             restoreLocked(REASON_RESTORE)
@@ -172,7 +182,21 @@ class DefaultTrackingEngine(
 
     override fun state(): State = State(configStore.config.value, configStore.runtime.value, providers.kind)
 
-    override suspend fun restore(reason: String) = serialized { restoreLocked(reason) }
+    /**
+     * A restore the user did not start: boot, app update, heartbeat alarm, or the service restarted by the system
+     * (sticky or a start command of an earlier process). After a user stop (recommendation 6) the heartbeat-alarm and
+     * service restores (reason `restore`) do not restore; boot and app-update restores are not checked: on Android 11
+     * and 12 an update kill is probably recorded like a user stop.
+     */
+    override suspend fun restore(reason: String) = serialized {
+        if (reason == REASON_RESTORE && session == null && runtime.enabled && forceStopProbe.startedAfterForceStop()) {
+            handleUserStop("restore after a user stop")
+            return@serialized
+        }
+        restoreLocked(reason, background = true)
+    }
+
+    override fun startedAfterUserStop(): Boolean = runtime.enabled && forceStopProbe.startedAfterForceStop()
 
     override suspend fun endWithoutRestore(reason: String) = serialized {
         if (session != null || !runtime.enabled) return@serialized
@@ -206,7 +230,7 @@ class DefaultTrackingEngine(
                 Logger.i(TAG, "resume notification: resuming ${runtime.trackingMode.wire} tracking")
                 configStore.updateRuntime { it.copy(enabled = true) }
                 restoreLocked(REASON_RESUME_NOTIFICATION)
-                if (session != null) events.emit(TrackingEvent.EnabledChange(true))
+                if (session != null) events.emit(TrackingEvent.EnabledChange(true, REASON_RESUME_NOTIFICATION))
             }
         }
     }
@@ -230,11 +254,24 @@ class DefaultTrackingEngine(
         guarded("serviceController.showResumeNotification") { serviceController.showResumeNotification(deadline) }
     }
 
-    /** When `stopAfterElapsedMinutes` ends the session started at `trackingStartedAt`; null without a limit. */
+    /**
+     * When `stopAfterElapsedMinutes` ends the session (wall time, epoch ms); null without a limit. Within the boot in
+     * which the session started it is computed from elapsed realtime (`trackingStartedElapsed`), so setting the wall
+     * clock back or forward does not move it (recommendation 16); after a reboot, from the wall clock
+     * (`trackingStartedAt`).
+     */
     private fun elapsedStopAt(): Long? {
         val minutes = config.geolocation.stopAfterElapsedMinutes
-        val startedAt = runtime.trackingStartedAt ?: return null
-        return if (minutes > 0) startedAt + minutes * MINUTE_MS else null
+        if (minutes <= 0) return null
+        val r = runtime
+        val startedAt = r.trackingStartedAt ?: return null
+        val startedElapsed = r.trackingStartedElapsed
+        val startedBoot = r.trackingStartedBootCount
+        if (startedElapsed != null && startedBoot != null && startedBoot >= 0 && startedBoot == clock.bootCount()) {
+            val remaining = minutes * MINUTE_MS - (clock.elapsedRealtime() - startedElapsed)
+            return clock.now() + remaining
+        }
+        return startedAt + minutes * MINUTE_MS
     }
 
     override suspend fun onTerminate() = serialized {
@@ -281,17 +318,15 @@ class DefaultTrackingEngine(
             Logger.w(TAG, "startGeofences without background location permission: geofences may not fire in background")
         }
         val wasEnabled = runtime.enabled
-        val startedAt = clock.now()
-        configStore.updateRuntime {
-            it.copy(enabled = true, trackingMode = mode, isMoving = false, trackingStartedAt = startedAt)
-        }
+        upgradeBackendIfBetter(null)
+        configStore.updateRuntime { sessionStart(it).copy(enabled = true, trackingMode = mode, isMoving = false) }
         if (!startService()) {
             // Foreground location is granted (checked above): Android refused the foreground service, for example a
             // start from the background, or Android 14+ with only while-in-use location permission. The error code
             // stays PERMISSION_DENIED for the JS API; the audit record gives the precise reason.
             configStore.updateRuntime { it.copy(enabled = false) }
             if (wasEnabled) releaseOrphanedRegistrations()
-            submit(RecordEvent.TRACKING_STOP, bestKnownLocation(null), reason = REASON_SERVICE_START_FAILED)
+            submitStop(null, REASON_SERVICE_START_FAILED)
             throw TrackingException(
                 ErrorCode.PERMISSION_DENIED,
                 "The location foreground service could not be started (Android refused a start from the background)",
@@ -299,7 +334,7 @@ class DefaultTrackingEngine(
         }
         // A process that died while tracking may have left its stationary region with the OS.
         val s = activate(mode, reason, leftoverRegion = wasEnabled)
-        events.emit(TrackingEvent.EnabledChange(true))
+        events.emit(TrackingEvent.EnabledChange(true, reason))
         if (mode == TrackingMode.LOCATION) launchInitialFix(s)
     }
 
@@ -307,7 +342,7 @@ class DefaultTrackingEngine(
      * Cold process with `runtime.enabled`: restarts everything in the persisted mode, without permission prompts. If the
      * session's `stopAfterElapsedMinutes` deadline has passed, it records that stop instead and starts nothing.
      */
-    private suspend fun restoreLocked(reason: String) {
+    private suspend fun restoreLocked(reason: String, background: Boolean = false) {
         if (!runtime.enabled) {
             Logger.i(TAG, "restore($reason): tracking is not enabled; nothing to restore")
             return
@@ -335,10 +370,21 @@ class DefaultTrackingEngine(
             stopLocked(REASON_PERMISSION_DENIED)
             return
         }
+        if (background && sdkInt in Build.VERSION_CODES.R..Build.VERSION_CODES.TIRAMISU &&
+            !permissions.hasBackgroundLocation()
+        ) {
+            // Recommendation 5: on Android 11 to 13 a location foreground service started from the background with
+            // only "while in use" permission is created but gets no location, so tracking would look on with no fixes.
+            // (Android 14+ refuses such a start in DefaultServiceController; Android 10 still gives it location.)
+            Logger.w(TAG, "restore($reason): Android 11-13 without background location permission; stopping")
+            stopLocked(REASON_SERVICE_START_FAILED)
+            offerResume()
+            return
+        }
         val mode = runtime.trackingMode
-        val startedAt = runtime.trackingStartedAt ?: clock.now()
-        configStore.updateRuntime {
-            it.copy(enabled = true, trackingMode = mode, isMoving = false, trackingStartedAt = startedAt)
+        configStore.updateRuntime { current ->
+            val started = if (current.trackingStartedAt == null) sessionStart(current) else current
+            started.copy(enabled = true, trackingMode = mode, isMoving = false)
         }
         // The system may have restarted the service itself (START_STICKY), which then calls restore(): starting it again
         // from the background could be refused on Android 12+ although it is already in the foreground.
@@ -389,8 +435,8 @@ class DefaultTrackingEngine(
             recordMotionChange(s, isMoving = false, bestKnownLocation(s))
         }
         s.mode = mode
-        val startedAt = clock.now()
-        configStore.updateRuntime { it.copy(trackingMode = mode, isMoving = false, trackingStartedAt = startedAt) }
+        // A new stop window starts (owner decision on recommendation 16b: keep this behavior).
+        configStore.updateRuntime { sessionStart(it).copy(trackingMode = mode, isMoving = false) }
         guarded("geofences.onTrackingStarted") { geofences.onTrackingStarted(mode) }
         configureMode(s)
         submit(RecordEvent.TRACKING_START, bestKnownLocation(s), reason = reason)
@@ -437,7 +483,9 @@ class DefaultTrackingEngine(
         } else {
             stopActivityBackend()
         }
-        submit(RecordEvent.TRACKING_STOP, bestKnownLocation(s), reason = reason)
+        submitStop(s, reason)
+        // What stays queued is uploaded by the upload job if this process dies first.
+        guarded("syncer.onTrackingStopped") { syncer.onTrackingStopped() }
         // After the record, so a slow OS call cannot delay it. Without a session (cold process): GMS and HMS keep
         // geofences across a process death, so the previous process may have left the region.
         if (s != null) removeStationaryRegion(s) else removeStationaryRegionFrom(null)
@@ -445,7 +493,7 @@ class DefaultTrackingEngine(
         guarded("heartbeat.stop") { heartbeat.stop() }
         guarded("geofences.onTrackingStopped") { geofences.onTrackingStopped() }
         configStore.updateRuntime { it.copy(enabled = false, isMoving = false) }
-        events.emit(TrackingEvent.EnabledChange(false))
+        events.emit(TrackingEvent.EnabledChange(false, reason))
         Logger.i(TAG, "tracking stopped: reason=$reason")
     }
 
@@ -458,13 +506,31 @@ class DefaultTrackingEngine(
      */
     private suspend fun restoreFromBackgroundTrigger(trigger: String): Boolean {
         if (forceStopProbe.startedAfterForceStop()) {
-            Logger.i(TAG, "$trigger after a force stop: tracking stays off until the app is opened")
-            releaseOrphanedRegistrations()
+            handleUserStop("$trigger after a user stop")
             return false
         }
         Logger.i(TAG, "$trigger in a process where tracking is enabled but not running; restoring")
-        restoreLocked(REASON_RESTORE)
+        restoreLocked(REASON_RESTORE, background = true)
         return session != null
+    }
+
+    /**
+     * A background trigger in a process that started after the user stopped the app (force stop, or the Task
+     * Manager's Stop button on Android 13+, which leaves the alarms in place). Tracking is not restored: the leftover OS
+     * registrations and the heartbeat alarms are released, the service (if the system restarted it) is stopped, and
+     * `enabled` stays set, so opening the app (`ready()`) restores tracking. A `tracking_stop` record with reason
+     * `user_stopped` and `stopped_at` (the time of the user stop) is written once per user stop (recommendation 6).
+     */
+    private suspend fun handleUserStop(trigger: String) {
+        guarded("serviceController.stop") { serviceController.stop() }
+        if (userStopHandled) return
+        userStopHandled = true
+        Logger.i(TAG, "$trigger: tracking stays off until the app is opened")
+        releaseOrphanedRegistrations()
+        val stoppedAt = forceStopProbe.forceStopTime()
+        if (stoppedAt != null && runtime.userStopRecordedFor == stoppedAt) return
+        submitStop(null, REASON_USER_STOPPED, stoppedAt)
+        configStore.updateRuntime { it.copy(userStopRecordedFor = stoppedAt ?: clock.now()) }
     }
 
     private suspend fun releaseOrphanedRegistrations() {
@@ -487,7 +553,9 @@ class DefaultTrackingEngine(
         if (old == new) return
         val s = session
         val providerChanged = old.locationProvider != new.locationProvider
-        if (providerChanged) switchProvider(s, old, new)
+        if (providerChanged) {
+            switchProvider(s, "locationProvider ${old.locationProvider.wire} -> ${new.locationProvider.wire}")
+        }
         if (old.notification.resume.enabled && !new.notification.resume.enabled) {
             guarded("serviceController.cancelResumeNotification") { serviceController.cancelResumeNotification() }
         }
@@ -505,6 +573,31 @@ class DefaultTrackingEngine(
         }
     }
 
+    /**
+     * `locationProvider: 'auto'` (recommendation 15): when a better backend than the current one is available now (GMS
+     * over HMS over the platform; for example Play services finished updating), switch to it. Checked when tracking
+     * starts, on provider changes and on heartbeats.
+     */
+    private suspend fun upgradeBackendIfBetter(s: Session?) {
+        if (config.locationProvider != LocationProviderSetting.AUTO) return
+        val current = providers.kind
+        if (current == ProviderKind.GMS) return
+        val best = try {
+            providers.bestAvailable()
+        } catch (e: Exception) {
+            Logger.w(TAG, "cannot evaluate the location backends", e)
+            return
+        }
+        if (rank(best) <= rank(current)) return
+        switchProvider(s, "a better location backend is available (${current.wire} -> ${best.wire})")
+    }
+
+    private fun rank(kind: ProviderKind): Int = when (kind) {
+        ProviderKind.GMS -> 2
+        ProviderKind.HMS -> 1
+        ProviderKind.ANDROID -> 0
+    }
+
     private fun activitySettingsChanged(old: Config, new: Config): Boolean =
         old.activity.disableMotionActivityUpdates != new.activity.disableMotionActivityUpdates ||
             old.activity.activityRecognitionInterval != new.activity.activityRecognitionInterval
@@ -514,7 +607,7 @@ class DefaultTrackingEngine(
      * stationary region and geofences are removed from the current backend first and registered again on the
      * selected one.
      */
-    private suspend fun switchProvider(s: Session?, old: Config, new: Config) {
+    private suspend fun switchProvider(s: Session?, why: String) {
         if (s != null) {
             removeLocationUpdates(s)
             stopActivityUpdates(s)
@@ -527,11 +620,7 @@ class DefaultTrackingEngine(
             Logger.e(TAG, "provider reselection failed", e)
             false
         }
-        Logger.i(
-            TAG,
-            "locationProvider ${old.locationProvider.wire} -> ${new.locationProvider.wire}: " +
-                "backend ${providers.kind.wire}${if (changed) " (changed)" else " (unchanged)"}",
-        )
+        Logger.i(TAG, "$why: backend ${providers.kind.wire}${if (changed) " (changed)" else " (unchanged)"}")
         if (s != null) {
             guarded("geofences.onTrackingStarted") { geofences.onTrackingStarted(s.mode) }
             startActivityUpdates(s)
@@ -814,8 +903,8 @@ class DefaultTrackingEngine(
             timers.cancel(TimerKind.STOP_AFTER_ELAPSED)
             return
         }
-        val startedAt = runtime.trackingStartedAt ?: clock.now()
-        timers.schedule(TimerKind.STOP_AFTER_ELAPSED, startedAt + minutes * MINUTE_MS - clock.now()) {
+        val deadline = elapsedStopAt() ?: (clock.now() + minutes * MINUTE_MS)
+        timers.schedule(TimerKind.STOP_AFTER_ELAPSED, deadline - clock.now()) {
             if (session === s) {
                 Logger.i(TAG, "stopAfterElapsedMinutes ($minutes) reached")
                 guarded("stop after elapsed") { stopLocked(REASON_STOP_AFTER_ELAPSED) }
@@ -830,12 +919,40 @@ class DefaultTrackingEngine(
         val batch = locations.toList()
         scope.launch {
             mutex.withLock {
+                if (session === s) s.registrationFailures = 0
                 for (raw in batch) {
                     if (session !== s) return@withLock
                     guarded("location fix") { handleFix(s, raw) }
                 }
                 // After the batch, so motion evidence in it wins over a stop timeout that expired while asleep.
                 fireDueTimers(s)
+            }
+        }
+    }
+
+    private fun dispatchRegistrationError(s: Session, error: TrackingException) {
+        scope.launch { mutex.withLock { guarded("location request error") { onRegistrationFailed(s, error) } } }
+    }
+
+    /**
+     * The location request of [s] failed (recommendation 3): the backend no longer has it. Forget it, so the next
+     * [applyLocationRequest] registers again, emit a `locationerror` event, and request it again after a growing wait
+     * (10 s, doubling up to 5 minutes; reset by the next delivered fix).
+     */
+    private fun onRegistrationFailed(s: Session, error: TrackingException) {
+        if (session !== s) return
+        val kind = s.locationBackend?.kind ?: providers.kind
+        s.locationBackend = null
+        s.appliedSpec = null
+        s.registrationFailures++
+        val doublings = (s.registrationFailures - 1).coerceIn(0, 10)
+        val wait = minOf(REQUEST_RETRY_FIRST_MS shl doublings, REQUEST_RETRY_MAX_MS)
+        Logger.e(TAG, "location request on ${kind.wire} failed (${error.code}: ${error.message}); next try in ${wait / 1000} s")
+        events.emit(TrackingEvent.LocationError(error.code, error.message ?: error.code.name, kind, wait))
+        timers.schedule(TimerKind.REQUEST_RETRY, wait) {
+            if (session === s) {
+                Logger.i(TAG, "requesting location updates again after a failure")
+                applyLocationRequest(s)
             }
         }
     }
@@ -850,8 +967,18 @@ class DefaultTrackingEngine(
 
     private fun onEvent(s: Session, event: TrackingEvent) {
         when (event) {
-            is TrackingEvent.Heartbeat -> scope.launch { mutex.withLock { fireDueTimers(s) } }
-            is TrackingEvent.ProviderChange -> scope.launch { mutex.withLock { onProviderChange(s, event.state) } }
+            is TrackingEvent.Heartbeat -> scope.launch {
+                mutex.withLock {
+                    fireDueTimers(s)
+                    if (session === s) guarded("backend check") { upgradeBackendIfBetter(s) }
+                }
+            }
+            is TrackingEvent.ProviderChange -> scope.launch {
+                mutex.withLock {
+                    onProviderChange(s, event.state)
+                    if (session === s) guarded("backend check") { upgradeBackendIfBetter(s) }
+                }
+            }
             // The user geofences may now need the OS slot of the stationary region, or leave it free again.
             is TrackingEvent.GeofencesChange -> scope.launch {
                 mutex.withLock { if (session === s) applyMotionRequests(s, checkLimit = true) }
@@ -1169,14 +1296,32 @@ class DefaultTrackingEngine(
         return listOfNotNull(s?.lastFix, runtime.lastLocation, vetted).maxByOrNull { it.time } ?: fromBackend
     }
 
+    /**
+     * The `tracking_stop` record with [reason] (and [stoppedAt] when the stop happened earlier), and the stop in
+     * `runtime.lastStopReason` / `lastStopAt` (recommendation 9).
+     */
+    private suspend fun submitStop(s: Session?, reason: String, stoppedAt: Long? = null) {
+        submit(RecordEvent.TRACKING_STOP, bestKnownLocation(s), reason = reason, stoppedAt = stoppedAt)
+        configStore.updateRuntime { it.copy(lastStopReason = reason, lastStopAt = stoppedAt ?: clock.now()) }
+    }
+
+    /** [runtime] with a new session start: wall time, elapsed realtime and boot count (`stopAfterElapsedMinutes`). */
+    private fun sessionStart(runtime: RuntimeState): RuntimeState = runtime.copy(
+        trackingStartedAt = clock.now(),
+        trackingStartedElapsed = clock.elapsedRealtime(),
+        trackingStartedBootCount = clock.bootCount(),
+    )
+
     private suspend fun submit(
         event: RecordEvent,
         location: TrackedLocation?,
         reason: String? = null,
         isMoving: Boolean? = null,
+        stoppedAt: Long? = null,
     ): Record? = try {
         var record = recordFactory.create(event, location, reason = reason)
         if (isMoving != null && record.isMoving != isMoving) record = record.copy(isMoving = isMoving)
+        if (stoppedAt != null) record = record.copy(stoppedAt = stoppedAt)
         recordSink.submit(record)
     } catch (e: CancellationException) {
         throw e
@@ -1202,7 +1347,14 @@ class DefaultTrackingEngine(
     /** State of one tracking session in this process. Guarded by [mutex]. */
     private inner class Session(val id: Long, var mode: TrackingMode, settings: MotionSettings) {
         val motion = MotionStateMachine(settings)
-        val listener = LocationListener { locations -> dispatchLocations(this@Session, locations) }
+        val listener = object : LocationListener {
+            override fun onLocations(locations: List<TrackedLocation>) = dispatchLocations(this@Session, locations)
+
+            override fun onError(error: TrackingException) = dispatchRegistrationError(this@Session, error)
+        }
+
+        /** Consecutive failed location requests (see [onRegistrationFailed]). */
+        var registrationFailures = 0
         var locationBackend: LocationBackend? = null
         var appliedSpec: LocationRequestSpec? = null
         var activityBackend: ActivityBackend? = null
@@ -1254,6 +1406,11 @@ class DefaultTrackingEngine(
         const val REASON_PERMISSION_DENIED = "permission_denied"
         const val REASON_SERVICE_START_FAILED = "service_start_failed"
         const val REASON_RESUME_NOTIFICATION = "resume_notification"
+        const val REASON_USER_STOPPED = "user_stopped"
+
+        /** Waits before requesting location updates again after a failure: 10 s, doubling up to 5 minutes. */
+        const val REQUEST_RETRY_FIRST_MS = 10_000L
+        const val REQUEST_RETRY_MAX_MS = 5 * 60_000L
 
         /** `device.checkProviderState` reason after the backend changed. */
         const val PROVIDER_CHECK_REASON = "reselect"

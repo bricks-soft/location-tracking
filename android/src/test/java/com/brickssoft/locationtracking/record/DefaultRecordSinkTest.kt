@@ -164,6 +164,32 @@ class DefaultRecordSinkTest {
     }
 
     @Test
+    fun `a full disk emits storagefull with the record and the free space`() = runTest {
+        val full = DefaultRecordSink(store, configStore, heartbeat, syncer, events, diskFreeBytes = { 4_096L })
+        store.failInsertWith = IOException("write failed: ENOSPC (No space left on device)")
+        val record = Fixtures.record(event = RecordEvent.HEARTBEAT)
+
+        full.submit(record)
+
+        assertEquals(
+            listOf(TrackingEvent.StorageFull(record.uuid, RecordEvent.HEARTBEAT, 4_096L)),
+            events.ofType<TrackingEvent.StorageFull>(),
+        )
+    }
+
+    @Test
+    fun `other insert failures do not emit storagefull, and a failing free-space reading gives null`() = runTest {
+        val sink = DefaultRecordSink(store, configStore, heartbeat, syncer, events, diskFreeBytes = { error("StatFs failed") })
+        store.failInsertWith = IOException("database is locked")
+        sink.submit(Fixtures.record())
+        assertTrue(events.ofType<TrackingEvent.StorageFull>().isEmpty())
+
+        store.failInsertWith = RuntimeException("insert failed", IOException("SQLITE_FULL: database or disk is full"))
+        sink.submit(Fixtures.record(uuid = "u2"))
+        assertEquals(listOf<Long?>(null), events.ofType<TrackingEvent.StorageFull>().map { it.diskFreeBytes })
+    }
+
+    @Test
     fun `every record type is dispatched to the record hooks once`() = runTest {
         val records = RecordEvent.entries.map { Fixtures.record(uuid = it.wire, event = it) }
 

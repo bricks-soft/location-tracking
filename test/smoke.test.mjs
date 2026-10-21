@@ -23,6 +23,8 @@ const EVENT_NAMES = {
   ENABLEDCHANGE: 'enabledchange',
   NOTIFICATIONACTION: 'notificationaction',
   AUTHORIZATION: 'authorization',
+  LOCATIONERROR: 'locationerror',
+  STORAGEFULL: 'storagefull',
 };
 
 const HELPERS = {
@@ -39,6 +41,8 @@ const HELPERS = {
   onEnabledChange: 'enabledchange',
   onNotificationAction: 'notificationaction',
   onAuthorization: 'authorization',
+  onLocationError: 'locationerror',
+  onStorageFull: 'storagefull',
 };
 
 /** Every method that must reject with UNIMPLEMENTED on web, with sample arguments. */

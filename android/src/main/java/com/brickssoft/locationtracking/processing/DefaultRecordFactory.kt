@@ -6,8 +6,11 @@ import com.brickssoft.locationtracking.core.ErrorCode
 import com.brickssoft.locationtracking.core.Iso8601
 import com.brickssoft.locationtracking.core.Logger
 import com.brickssoft.locationtracking.core.TrackingException
+import com.brickssoft.locationtracking.device.DeviceDetails
 import com.brickssoft.locationtracking.device.DeviceMonitor
 import com.brickssoft.locationtracking.model.BatterySnapshot
+import com.brickssoft.locationtracking.model.ConnectivityType
+import com.brickssoft.locationtracking.model.DeviceSnapshot
 import com.brickssoft.locationtracking.model.GeofenceHit
 import com.brickssoft.locationtracking.model.JsonUtil
 import com.brickssoft.locationtracking.model.ProviderKind
@@ -20,16 +23,19 @@ import org.json.JSONObject
 import java.util.UUID
 
 /**
- * Builds records: uuid v4, clock and boot metadata, runtime state (isMoving, odometer, activity), battery and
- * the current provider state (unless the caller passes one, as `providerchange` does) from [device], backend from
- * [providers], and `extras` = `persistence.extras` merged with the per-call extras (per-call keys win; null when
- * both are empty).
+ * Builds records: uuid v4, clock and boot metadata, runtime state (isMoving, odometer, activity), battery, the
+ * connection type and the current provider state (unless the caller passes one, as `providerchange` does) from
+ * [device], backend from [providers], and `extras` = `persistence.extras` merged with the per-call extras (per-call keys
+ * win; null when both are empty). Every record gets `device.device_id` from [details]; heartbeat records also get its
+ * device and battery readings, and `tracking_start` records the phone's model, Android version and memory.
  */
 class DefaultRecordFactory(
     private val configStore: ConfigStore,
     private val device: DeviceMonitor,
     private val providers: ProviderFactory,
     private val clock: Clock,
+    /** The device id of every record, and readings for heartbeat and `tracking_start` records (parts d1 to d7). */
+    private val details: DeviceDetails = DeviceDetails.NONE,
 ) : RecordFactory {
     override fun create(
         event: RecordEvent,
@@ -56,16 +62,30 @@ class DefaultRecordFactory(
             geofence = geofence,
             provider = provider ?: providerState(),
             reason = reason,
+            network = network(),
+            device = when (event) {
+                RecordEvent.HEARTBEAT -> details.forHeartbeat()
+                RecordEvent.TRACKING_START -> details.forTrackingStart()
+                else -> DeviceSnapshot()
+            }.copy(deviceId = details.deviceId()).takeUnless { it.isEmpty },
+            batteryDetails = if (event == RecordEvent.HEARTBEAT) details.batteryDetails() else null,
         )
     }
 
+    private fun network(): ConnectivityType? = try {
+        device.connectivity().type
+    } catch (e: Exception) {
+        Logger.w(TAG, "connectivity unavailable", e)
+        null
+    }
+
     /**
-     * Parses a JS `InsertLocationInput`: `{coords:{latitude, longitude, accuracy?, altitude?, ...}, timestamp?,
-     * event?, is_moving?, extras?}`. `accuracy` defaults to 0; negative optional accuracies, speed and heading
-     * (the "unknown" sentinel of some platforms) become null.
+     * Parses a JS `InsertLocationInput`: `{coords:{latitude, longitude, accuracy, altitude?, ...}, timestamp?,
+     * event?, is_moving?, extras?}`. Negative optional accuracies, speed and heading (the "unknown" sentinel of some
+     * platforms) become null.
      *
      * @throws TrackingException INVALID_ARGUMENT if coords, latitude or longitude are missing or invalid, if
-     *   accuracy is negative, or if `timestamp`, `event`, `is_moving` or `extras` are given but invalid.
+     *   accuracy is missing or not greater than 0, or if `timestamp`, `event`, `is_moving` or `extras` are given but invalid.
      */
     override fun fromExternal(input: JSONObject): Record {
         val coords = input.optJSONObject("coords") ?: invalid("location.coords is required")
@@ -90,8 +110,9 @@ class DefaultRecordFactory(
         } else {
             JsonUtil.optBoolean(input, "is_moving") ?: invalid("is_moving must be a boolean")
         }
-        val accuracy = JsonUtil.optFloat(coords, "accuracy") ?: 0f
-        if (accuracy < 0) invalid("coords.accuracy must be >= 0")
+        // Round 3: no default; an accuracy of 0 would read as a perfect fix.
+        val accuracy = JsonUtil.optFloat(coords, "accuracy") ?: invalid("coords.accuracy is required")
+        if (!(accuracy > 0)) invalid("coords.accuracy must be > 0")
         val extras = if (input.isNull("extras")) {
             null
         } else {

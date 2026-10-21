@@ -2,7 +2,7 @@
 
 Emulators can't show how GMS, HMS, Doze and phone makers' task killers really behave, so this plugin needs manual
 tests on real phones. This checklist uses the [example app](../example/) (package
-`com.brickssoft.locationtracking.example`), which has a button for every method, a live log of all 13 events, a state
+`com.brickssoft.locationtracking.example`), which has a button for every method, a live log of all 15 events, a state
 panel, and a heartbeat panel that refreshes every 10 s.
 
 Run it before every release, at least on the three phone types below. Copy the [checklist table](#checklist) into your
@@ -216,7 +216,7 @@ means the records the mock back office received (`/__records`, or the output of 
 | O1 | HMS | Huawei App launch | openPowerManagerSettings, set the app to Manage manually (all switches on), then leave the phone overnight | The App launch screen opens (`opened: true`). Overnight, no gaps beyond the H4/H5 expectations. Repeat once with "Manage automatically" to see the difference. | |
 | O2 | Xiaomi / Oppo / Vivo / Samsung | Phone maker's power manager | getPowerManagerInfo, openPowerManagerSettings | `available: true` and the phone maker's screen opens, or `available: false` / `opened: false` without a crash. | |
 | M1 | all | Server audit | review the server log for H1–K10 | Every gap above 420 s is explained by a `tracking_stop` (including `service_start_failed`), a `tracking_start` (`boot` / `restore`), a `providerchange`, or a documented case (force-stop, Restricted, idle-paced heartbeats without the exemption). | |
-| M2 | all | Event log | exercise every section | All 13 event types appear in the example's event log with timestamps, newest first. | |
+| M2 | all | Event log | exercise every section | All 15 event types appear in the example's event log with timestamps, newest first. | |
 | M3 | all | Notification actions | check "notification actions", setConfig, tap **Stop** in the notification | A `notificationaction` event with `id:"stop"`, after which the example app calls `stop()`. | |
 | M4 | all | Power saver | toggle Battery Saver | `powersavechange` events. The heartbeat panel shows `isPowerSaveMode`. | |
 | M5 | all | Logs | log, getLog, uploadLog (to `https://<tunnel>/logs`), emailLog | Log lines appear in getLog. The upload returns `success:true`. The email chooser opens with the log attached. | |

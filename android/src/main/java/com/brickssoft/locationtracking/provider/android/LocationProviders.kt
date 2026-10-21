@@ -43,6 +43,26 @@ internal object LocationProviders {
         return if (enabledOnly) enabled else enabled + disabled
     }
 
+    /**
+     * The providers one continuous request for [accuracy] registers (recommendation 12):
+     * - HIGH and BALANCED: the enabled ones of `gps` and `network`, both when both are enabled; if neither is enabled,
+     *   `fused` (API 31+) when it is; if nothing is enabled, the existing ones of `gps` and `network`, which start
+     *   delivering once enabled.
+     * - LOW: the first of [candidates] (network preferred, a single provider).
+     * - PASSIVE: the passive provider.
+     */
+    fun forRequest(lm: LocationManager, accuracy: DesiredAccuracy): List<String> {
+        if (accuracy == DesiredAccuracy.LOW || accuracy == DesiredAccuracy.PASSIVE) {
+            return candidates(lm, accuracy).take(1)
+        }
+        val pair = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER).filter { exists(lm, it) }
+        val enabled = pair.filter { isEnabled(lm, it) }
+        if (enabled.isNotEmpty()) return enabled
+        val fused = candidates(lm, accuracy, enabledOnly = true).firstOrNull()
+        if (fused != null) return listOf(fused)
+        return pair.ifEmpty { candidates(lm, accuracy).take(1) }
+    }
+
     fun exists(lm: LocationManager, provider: String): Boolean =
         try {
             LocationManagerCompat.hasProvider(lm, provider)

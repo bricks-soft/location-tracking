@@ -260,7 +260,7 @@ keys (`preventSuspend`, `pausesLocationUpdatesAutomatically`, `useSignificantCha
 | `getCount()` | `getCount()` → `{ count }` |
 | `destroyLocations()` | `destroyLocations()` → `{ count }` |
 | `destroyLocation(uuid)` | `destroyLocation({ uuid })` → `{ deleted }` |
-| `insertLocation(location)` | `insertLocation({ location: { coords, timestamp?, event?, is_moving?, extras? } })` → `{ uuid }`. It emits no event. |
+| `insertLocation(location)` | `insertLocation({ location: { coords, timestamp?, event?, is_moving?, extras? } })` → `{ uuid }`. `coords.accuracy` (greater than 0) is required. It emits no event. |
 | `sync()` | `sync()` → `{ locations }` |
 | `getOdometer()` | `getOdometer()` → `{ odometer }` |
 | `setOdometer(value)` | `setOdometer({ odometer })` → `{ odometer }` (v8 resolved a location) |

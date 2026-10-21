@@ -9,6 +9,7 @@ import android.location.Location
 import android.location.LocationManager
 import android.os.CancellationSignal
 import android.os.Looper
+import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import androidx.core.location.LocationListenerCompat
 import androidx.core.location.LocationManagerCompat
@@ -22,12 +23,22 @@ import com.brickssoft.locationtracking.model.TrackedLocation
 import com.brickssoft.locationtracking.provider.LocationBackend
 import com.brickssoft.locationtracking.provider.LocationListener
 import com.brickssoft.locationtracking.provider.LocationRequestSpec
+import com.brickssoft.locationtracking.provider.LocationSubscriptions
+import com.brickssoft.locationtracking.provider.OsRegistration
+import com.brickssoft.locationtracking.provider.RegistrationEvents
+import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ClosedReceiveChannelException
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -35,11 +46,18 @@ import kotlin.coroutines.resumeWithException
  * [LocationBackend] over the platform [LocationManager] (through `LocationManagerCompat`), used when neither GMS nor
  * HMS is available.
  *
- * - Provider per accuracy: HIGH uses gps, BALANCED/LOW use network, each falling back to whichever is enabled;
- *   PASSIVE uses the passive provider (see [LocationProviders.candidates]).
- * - Updates arrive on the main looper. While any listener is registered, `PROVIDERS_CHANGED_ACTION` moves each
- *   registration to its best enabled provider.
- * - A [SecurityException] from the platform surfaces as a [TrackingException] with [ErrorCode.PERMISSION_DENIED].
+ * - Providers per request ([LocationProviders.forRequest]): HIGH and BALANCED use `gps` and `network` together, as two
+ *   platform listeners (recommendation 12), so a phone indoors without satellites still gets network fixes. While a GPS
+ *   fix arrived in the last [gpsPriorityMs], network fixes are dropped, so GPS and network points do not alternate
+ *   (a network fix can be 1–2 km off). LOW uses one provider (network, else gps); PASSIVE the passive provider. When
+ *   neither gps nor network is enabled, `fused` (Android 12+) is used; when nothing is enabled, the existing providers
+ *   are registered anyway and start delivering once enabled.
+ * - Listener bookkeeping is [LocationSubscriptions]; a request that no provider accepts reaches the listener's
+ *   `onError` (PERMISSION_DENIED when every provider refused with a [SecurityException], else UNAVAILABLE).
+ * - Updates arrive on the main looper. While any listener is registered, `PROVIDERS_CHANGED_ACTION` registers each
+ *   request again when its provider set changed.
+ * - [getCurrentLocation] asks the enabled providers in parallel and returns the most accurate fix that arrived within
+ *   [CURRENT_LOCATION_GRACE_MS] of the first one.
  */
 class AndroidLocationBackend(
     context: Context,
@@ -49,30 +67,32 @@ class AndroidLocationBackend(
     private val appContext: Context = context.applicationContext ?: context
     override val kind: ProviderKind = ProviderKind.ANDROID
 
-    /** Serializes (re-)registrations; [registrations] is also read lock-free by the delivery path. */
+    private val subscriptions = LocationSubscriptions(TAG, ::mapError)
+
+    /** The providers each listener's current registration uses. */
+    private val registeredProviders = ConcurrentHashMap<LocationListener, List<String>>()
+
+    /** Guards [providersReceiver]. */
     private val lock = Any()
-    private val registrations = ConcurrentHashMap<LocationListener, Registration>()
     private var providersReceiver: BroadcastReceiver? = null
 
     override fun requestUpdates(spec: LocationRequestSpec, listener: LocationListener) {
-        val lm = locationManager ?: return Logger.e(TAG, "no LocationManager: cannot request location updates")
-        synchronized(lock) {
-            val providers = LocationProviders.candidates(lm, spec.accuracy)
-            val registration = register(lm, spec, listener, providers)
-                ?: return Logger.e(TAG, "no usable location provider for ${spec.accuracy.wire} (tried $providers)")
-            registrations.put(listener, registration)?.let { unregister(lm, it) }
-            observeProviderChanges()
-            Logger.d(TAG, "requested ${registration.provider} updates: $spec")
+        val lm = locationManager ?: run {
+            Logger.e(TAG, "no LocationManager: cannot request location updates")
+            listener.onError(TrackingException(ErrorCode.UNAVAILABLE, "This device has no LocationManager"))
+            return
         }
+        val providers = LocationProviders.forRequest(lm, spec.accuracy)
+        registeredProviders[listener] = providers
+        subscriptions.request(listener, spec) { events -> PlatformRegistration(lm, spec, providers, events) }
+        observeProviderChanges()
+        Logger.d(TAG, "requested $providers updates: $spec")
     }
 
     override fun removeUpdates(listener: LocationListener) {
-        val lm = locationManager ?: return
-        synchronized(lock) {
-            val registration = registrations.remove(listener) ?: return
-            unregister(lm, registration)
-            if (registrations.isEmpty()) stopObservingProviderChanges()
-        }
+        subscriptions.remove(listener)
+        registeredProviders.remove(listener)
+        if (subscriptions.count == 0) stopObservingProviderChanges()
     }
 
     override suspend fun getLastLocation(): TrackedLocation? {
@@ -81,9 +101,12 @@ class AndroidLocationBackend(
     }
 
     /**
-     * Requests one fix from the best enabled provider for [accuracy] (PASSIVE is treated as LOW). The platform gives
-     * up after about 30 s, so the request is repeated until [timeoutMs] elapses. Returns null on timeout or when no
-     * provider is enabled.
+     * Requests one fix from every enabled provider for [accuracy] in parallel (PASSIVE is treated as LOW). The platform
+     * gives up after about 30 s, so each request is repeated until [timeoutMs] elapses. After the first fix, the
+     * others get [CURRENT_LOCATION_GRACE_MS] to deliver a more accurate one. Returns null on timeout or when no provider
+     * is enabled.
+     *
+     * @throws TrackingException PERMISSION_DENIED if every provider refused with a [SecurityException].
      */
     override suspend fun getCurrentLocation(accuracy: DesiredAccuracy, timeoutMs: Long): TrackedLocation? {
         val lm = locationManager ?: return null
@@ -92,28 +115,53 @@ class AndroidLocationBackend(
             ?.let(TrackedLocation::from)
     }
 
-    private suspend fun awaitCurrentLocation(lm: LocationManager, accuracy: DesiredAccuracy): Location? {
-        while (true) {
-            val enabled = LocationProviders.candidates(lm, accuracy, enabledOnly = true)
-            if (enabled.isEmpty()) return null
-            currentLocationFromFirst(lm, enabled)?.let { return it }
-            delay(CURRENT_LOCATION_RETRY_DELAY_MS)
-        }
-    }
-
-    /** Asks the first provider of [providers] that does not refuse with a [SecurityException]. */
-    private suspend fun currentLocationFromFirst(lm: LocationManager, providers: List<String>): Location? {
-        var denied: SecurityException? = null
-        for (provider in providers) {
+    private suspend fun awaitCurrentLocation(lm: LocationManager, accuracy: DesiredAccuracy): Location? =
+        coroutineScope {
+            val providers = LocationProviders.candidates(lm, accuracy, enabledOnly = true)
+            if (providers.isEmpty()) return@coroutineScope null
+            val fixes = Channel<Location>(Channel.UNLIMITED)
+            val denied = AtomicInteger(0)
+            val requests = providers.map { provider ->
+                launch {
+                    try {
+                        repeatCurrentLocation(lm, provider)?.let { fixes.send(it) }
+                    } catch (e: SecurityException) {
+                        denied.incrementAndGet()
+                    } catch (e: IllegalArgumentException) {
+                        Logger.w(TAG, "provider $provider rejected getCurrentLocation", e)
+                    }
+                }
+            }
+            launch {
+                requests.joinAll()
+                fixes.close(
+                    if (denied.get() == providers.size) {
+                        TrackingException(ErrorCode.PERMISSION_DENIED, "Location permission denied")
+                    } else {
+                        null
+                    },
+                )
+            }
             try {
-                return currentLocation(lm, provider)
-            } catch (e: SecurityException) {
-                denied = e
-            } catch (e: IllegalArgumentException) {
-                Logger.w(TAG, "provider $provider rejected getCurrentLocation", e)
+                var best = fixes.receive()
+                withTimeoutOrNull(CURRENT_LOCATION_GRACE_MS) {
+                    for (next in fixes) if (next.accuracy < best.accuracy) best = next
+                }
+                best
+            } catch (e: ClosedReceiveChannelException) {
+                null
+            } finally {
+                requests.forEach { it.cancel() }
+                coroutineContext.cancelChildren()
             }
         }
-        if (denied != null) throw TrackingException(ErrorCode.PERMISSION_DENIED, "Location permission denied", denied)
+
+    /** One fix from [provider], asking again while it is enabled and gives up without one. */
+    private suspend fun repeatCurrentLocation(lm: LocationManager, provider: String): Location? {
+        while (LocationProviders.isEnabled(lm, provider)) {
+            currentLocation(lm, provider)?.let { return it }
+            delay(CURRENT_LOCATION_RETRY_DELAY_MS)
+        }
         return null
     }
 
@@ -132,85 +180,39 @@ class AndroidLocationBackend(
             }
         }
 
-    /**
-     * Registers [listener] on the first of [providers] that accepts the request.
-     *
-     * @return null if no provider accepted it for a reason other than permissions.
-     * @throws TrackingException [ErrorCode.PERMISSION_DENIED] if a provider refused with a [SecurityException] and
-     *   no other accepted.
-     */
-    @SuppressLint("MissingPermission")
-    private fun register(
-        lm: LocationManager,
-        spec: LocationRequestSpec,
-        listener: LocationListener,
-        providers: List<String>,
-    ): Registration? {
-        var denied: SecurityException? = null
-        for (provider in providers) {
-            val registration = Registration(listener, spec, provider)
-            try {
-                LocationManagerCompat.requestLocationUpdates(
-                    lm, provider, requestFor(spec), registration, Looper.getMainLooper(),
-                )
-                return registration
-            } catch (e: SecurityException) {
-                Logger.w(TAG, "provider $provider refused location updates", e)
-                denied = e
-            } catch (e: IllegalArgumentException) {
-                Logger.w(TAG, "provider $provider rejected location updates", e)
-            }
-        }
-        if (denied != null) throw TrackingException(ErrorCode.PERMISSION_DENIED, "Location permission denied", denied)
-        return null
-    }
-
-    private fun unregister(lm: LocationManager, registration: Registration) {
-        try {
-            LocationManagerCompat.removeUpdates(lm, registration)
-        } catch (e: Exception) {
-            Logger.w(TAG, "removeUpdates failed for ${registration.provider}", e)
-        }
-    }
-
-    /** Moves every registration whose best enabled provider changed to that provider. Runs on the main thread. */
+    /** Registers each request again whose provider set changed. Runs on the main thread. */
     private fun onProvidersChanged() {
         val lm = locationManager ?: return
-        synchronized(lock) {
-            for ((listener, current) in registrations.entries.toList()) {
-                val best = LocationProviders.candidates(lm, current.spec.accuracy, enabledOnly = true).firstOrNull()
-                if (best == null || best == current.provider) continue
-                val next = try {
-                    register(lm, current.spec, listener, listOf(best))
-                } catch (e: TrackingException) {
-                    null
-                } ?: continue
-                registrations[listener] = next
-                unregister(lm, current)
-                Logger.i(TAG, "location provider changed: ${current.provider} -> $best")
-            }
+        for ((listener, spec) in subscriptions.requests()) {
+            val wanted = LocationProviders.forRequest(lm, spec.accuracy)
+            val current = registeredProviders[listener]
+            if (wanted == current) continue
+            Logger.i(TAG, "location providers changed: $current -> $wanted")
+            registeredProviders[listener] = wanted
+            subscriptions.request(listener, spec) { events -> PlatformRegistration(lm, spec, wanted, events) }
         }
     }
 
     private fun observeProviderChanges() {
-        if (providersReceiver != null) return
-        val receiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context, intent: Intent) = onProvidersChanged()
-        }
-        try {
-            ContextCompat.registerReceiver(
-                appContext, receiver, IntentFilter(LocationManager.PROVIDERS_CHANGED_ACTION),
-                ContextCompat.RECEIVER_NOT_EXPORTED,
-            )
-            providersReceiver = receiver
-        } catch (e: Exception) {
-            Logger.w(TAG, "cannot observe location provider changes", e)
+        synchronized(lock) {
+            if (providersReceiver != null) return
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context, intent: Intent) = onProvidersChanged()
+            }
+            try {
+                ContextCompat.registerReceiver(
+                    appContext, receiver, IntentFilter(LocationManager.PROVIDERS_CHANGED_ACTION),
+                    ContextCompat.RECEIVER_NOT_EXPORTED,
+                )
+                providersReceiver = receiver
+            } catch (e: Exception) {
+                Logger.w(TAG, "cannot observe location provider changes", e)
+            }
         }
     }
 
     private fun stopObservingProviderChanges() {
-        val receiver = providersReceiver ?: return
-        providersReceiver = null
+        val receiver = synchronized(lock) { providersReceiver.also { providersReceiver = null } } ?: return
         try {
             appContext.unregisterReceiver(receiver)
         } catch (e: Exception) {
@@ -218,23 +220,86 @@ class AndroidLocationBackend(
         }
     }
 
-    /** One platform registration of [listener] on [provider]; stale ones (replaced or removed) drop their fixes. */
-    private inner class Registration(
-        val listener: LocationListener,
-        val spec: LocationRequestSpec,
-        val provider: String,
-    ) : LocationListenerCompat {
-        override fun onLocationChanged(location: Location) = deliver(listOf(location))
+    private fun mapError(e: Exception): TrackingException = when (e) {
+        is TrackingException -> e
+        is SecurityException -> TrackingException(ErrorCode.PERMISSION_DENIED, "Location permission denied", e)
+        else -> TrackingException(ErrorCode.UNAVAILABLE, "Location updates failed: ${e.message}", e)
+    }
 
-        override fun onLocationChanged(locations: MutableList<Location>) = deliver(locations)
+    /**
+     * One platform listener per provider of [providers]. Registration succeeds if at least one provider accepts the
+     * request. Network fixes are dropped while a GPS fix is recent (see the class docs).
+     */
+    private inner class PlatformRegistration(
+        private val lm: LocationManager,
+        private val spec: LocationRequestSpec,
+        private val providers: List<String>,
+        private val events: RegistrationEvents,
+    ) : OsRegistration {
+        private val listeners = ArrayList<ProviderListener>()
 
-        private fun deliver(locations: List<Location>) {
-            if (locations.isEmpty() || registrations[listener] !== this) return
-            try {
-                listener.onLocations(locations.map(TrackedLocation::from))
-            } catch (e: Exception) {
-                Logger.e(TAG, "location listener failed", e)
+        /** `SystemClock.elapsedRealtime()` of the last GPS fix delivered, or null. */
+        @Volatile
+        private var lastGpsFixAt: Long? = null
+        private val gpsPriorityMs = gpsPriorityMs(spec)
+
+        @SuppressLint("MissingPermission")
+        override fun start(done: (Exception?) -> Unit) {
+            var denied: SecurityException? = null
+            for (provider in providers) {
+                val listener = ProviderListener(provider)
+                try {
+                    LocationManagerCompat.requestLocationUpdates(
+                        lm, provider, requestFor(spec), listener, Looper.getMainLooper(),
+                    )
+                    synchronized(listeners) { listeners += listener }
+                } catch (e: SecurityException) {
+                    Logger.w(TAG, "provider $provider refused location updates", e)
+                    denied = e
+                } catch (e: IllegalArgumentException) {
+                    Logger.w(TAG, "provider $provider rejected location updates", e)
+                }
             }
+            val accepted = synchronized(listeners) { listeners.isNotEmpty() }
+            when {
+                accepted -> done(null)
+                denied != null -> done(denied)
+                else -> done(
+                    TrackingException(ErrorCode.UNAVAILABLE, "No usable location provider for ${spec.accuracy.wire} (tried $providers)"),
+                )
+            }
+        }
+
+        override fun remove() {
+            val registered = synchronized(listeners) { listeners.toList().also { listeners.clear() } }
+            for (listener in registered) {
+                try {
+                    LocationManagerCompat.removeUpdates(lm, listener)
+                } catch (e: Exception) {
+                    Logger.w(TAG, "removeUpdates failed for ${listener.provider}", e)
+                }
+            }
+        }
+
+        private fun deliver(provider: String, locations: List<Location>) {
+            if (locations.isEmpty()) return
+            val now = SystemClock.elapsedRealtime()
+            if (provider == LocationManager.GPS_PROVIDER) {
+                lastGpsFixAt = now
+            } else if (provider == LocationManager.NETWORK_PROVIDER && LocationManager.GPS_PROVIDER in providers) {
+                val gps = lastGpsFixAt
+                if (gps != null && now - gps < gpsPriorityMs) {
+                    Logger.v(TAG, "network fix dropped: a GPS fix arrived ${(now - gps) / 1_000} s ago")
+                    return
+                }
+            }
+            events.locations(locations.map(TrackedLocation::from))
+        }
+
+        private inner class ProviderListener(val provider: String) : LocationListenerCompat {
+            override fun onLocationChanged(location: Location) = deliver(provider, listOf(location))
+
+            override fun onLocationChanged(locations: MutableList<Location>) = deliver(provider, locations)
         }
     }
 
@@ -243,6 +308,15 @@ class AndroidLocationBackend(
 
         /** Pause between two platform `getCurrentLocation` attempts that returned no fix. */
         const val CURRENT_LOCATION_RETRY_DELAY_MS = 1_000L
+
+        /** After the first current-location fix, how long the other providers may still deliver a better one. */
+        const val CURRENT_LOCATION_GRACE_MS = 3_000L
+
+        /** Network fixes are dropped for at least this long after a GPS fix. */
+        const val GPS_PRIORITY_MIN_MS = 10_000L
+
+        /** How long after a GPS fix network fixes are dropped: twice the request interval, at least 10 s. */
+        fun gpsPriorityMs(spec: LocationRequestSpec): Long = maxOf(GPS_PRIORITY_MIN_MS, 2 * spec.intervalMs)
 
         private val DIRECT_EXECUTOR = Executor { it.run() }
 

@@ -1,7 +1,9 @@
 package com.brickssoft.locationtracking.model
 
+import com.brickssoft.locationtracking.core.ErrorCode
 import com.brickssoft.locationtracking.core.TrackingEvent
 import com.brickssoft.locationtracking.testing.Fixtures
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -50,7 +52,13 @@ class EventJsonTest {
                 setOf("connected", "type"),
             ),
             Triple(TrackingEvent.PowerSaveChange(true), "powersavechange", setOf("isPowerSaveMode")),
-            Triple(TrackingEvent.EnabledChange(false), "enabledchange", setOf("enabled")),
+            Triple(TrackingEvent.EnabledChange(false, "user_stopped"), "enabledchange", setOf("enabled", "reason")),
+            Triple(
+                TrackingEvent.LocationError(ErrorCode.PERMISSION_DENIED, "no permission", ProviderKind.GMS, 10_000L),
+                "locationerror",
+                setOf("code", "message", "backend", "retryInMs"),
+            ),
+            Triple(TrackingEvent.StorageFull("u1", RecordEvent.LOCATION, 1024L), "storagefull", setOf("uuid", "event", "diskFreeBytes")),
             Triple(TrackingEvent.NotificationAction("pause"), "notificationaction", setOf("id")),
             Triple(
                 TrackingEvent.Authorization(true, 200, "none", """{"accessToken":"t"}"""),
@@ -59,7 +67,7 @@ class EventJsonTest {
             ),
         )
 
-        assertEquals(13, cases.map { it.second }.toSet().size)
+        assertEquals(15, cases.map { it.second }.toSet().size)
         for ((event, name, expectedKeys) in cases) {
             assertEquals(name, EventJson.name(event))
             assertEquals(name, expectedKeys, keys(event))
@@ -73,6 +81,23 @@ class EventJsonTest {
             keys(TrackingEvent.Geofence("home", GeofenceAction.ENTER, record, null)),
         )
         assertEquals(setOf("success", "status"), keys(TrackingEvent.Authorization(false, 401, null, null)))
+    }
+
+    @Test
+    fun `events that carry a record carry its device_id`() {
+        val withId = Fixtures.record().copy(device = DeviceSnapshot(deviceId = "9774d56d682e549c"))
+        val events = listOf(
+            TrackingEvent.Location(withId) to { json: JSONObject -> json },
+            TrackingEvent.MotionChange(true, withId) to { json: JSONObject -> json.getJSONObject("location") },
+            TrackingEvent.Heartbeat(withId) to { json: JSONObject -> json.getJSONObject("location") },
+            TrackingEvent.Geofence("home", GeofenceAction.ENTER, withId, null) to
+                { json: JSONObject -> json.getJSONObject("location") },
+        )
+
+        for ((event, location) in events) {
+            val payload = location(EventJson.payload(event))
+            assertEquals(EventJson.name(event), "9774d56d682e549c", payload.getJSONObject("device").getString("device_id"))
+        }
     }
 
     @Test

@@ -19,6 +19,9 @@ internal enum class TimerKind {
 
     /** `stopAfterElapsedMinutes`, measured from `trackingStartedAt`. */
     STOP_AFTER_ELAPSED,
+
+    /** The location request failed (recommendation 3): request it again. */
+    REQUEST_RETRY,
 }
 
 /**

@@ -1,5 +1,7 @@
 package com.brickssoft.locationtracking.heartbeat
 
+import java.util.concurrent.CopyOnWriteArrayList
+import kotlinx.coroutines.CompletableDeferred
 import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Context
@@ -810,6 +812,79 @@ class DefaultHeartbeatSchedulerTest {
         assertNotNull(wakeLock)
         assertFalse(wakeLock.isHeld)
         assertEquals("LocationTracking:heartbeat", shadowOf(wakeLock).tag)
+    }
+
+    /** An uploader whose pass for a ticket finishes when the test completes [passDone]. */
+    private class GatedUploads : HttpSyncer by FakeHttpSyncer() {
+        val passDone = CompletableDeferred<Unit>()
+        val awaited = CopyOnWriteArrayList<Long>()
+
+        override fun uploadTicket(): Long = 7L
+
+        override suspend fun awaitUpload(ticket: Long) {
+            awaited += ticket
+            passDone.await()
+        }
+    }
+
+    private fun uploadWakeLock(): PowerManager.WakeLock? =
+        ShadowPowerManager.getLatestWakeLock()?.takeIf { shadowOf(it).tag == "LocationTracking:heartbeat-upload" }
+
+    @Test
+    fun `a heartbeat keeps the phone awake until its upload pass has finished`() = runTest {
+        ShadowPowerManager.clearWakeLocks()
+        val uploads = GatedUploads()
+        val h = HeartbeatHarness(backgroundScope, syncer = uploads, uploads = lazy { uploads })
+        h.scheduler.start()
+
+        h.at(MIN_MS)
+        h.scheduler.onAlarm(HeartbeatTrigger.LISTENER_ALARM)
+        runCurrent()
+
+        val lock = uploadWakeLock()
+        assertNotNull(lock)
+        assertTrue(lock!!.isHeld)
+        assertEquals(listOf(7L), uploads.awaited.toList())
+
+        uploads.passDone.complete(Unit)
+        runCurrent()
+        assertFalse(lock.isHeld)
+    }
+
+    @Test
+    fun `the upload wake lock ends after uploadKeepAwake seconds`() = runTest {
+        ShadowPowerManager.clearWakeLocks()
+        val uploads = GatedUploads()
+        val config = Config(heartbeat = HeartbeatConfig(uploadKeepAwake = 5))
+        val h = HeartbeatHarness(backgroundScope, config = config, syncer = uploads, uploads = lazy { uploads })
+        h.scheduler.start()
+        h.at(MIN_MS)
+        h.scheduler.onAlarm(HeartbeatTrigger.LISTENER_ALARM)
+        runCurrent()
+        val lock = uploadWakeLock()!!
+
+        advanceTimeBy(4_999)
+        runCurrent()
+        assertTrue(lock.isHeld)
+        advanceTimeBy(1)
+        runCurrent()
+        assertFalse(lock.isHeld)
+    }
+
+    @Test
+    fun `uploadKeepAwake 0 takes no upload wake lock`() = runTest {
+        ShadowPowerManager.clearWakeLocks()
+        val uploads = GatedUploads()
+        val config = Config(heartbeat = HeartbeatConfig(uploadKeepAwake = 0))
+        val h = HeartbeatHarness(backgroundScope, config = config, syncer = uploads, uploads = lazy { uploads })
+        h.scheduler.start()
+        h.at(MIN_MS)
+
+        h.scheduler.onAlarm(HeartbeatTrigger.LISTENER_ALARM)
+        runCurrent()
+
+        assertNull(uploadWakeLock())
+        assertTrue(uploads.awaited.isEmpty())
     }
 
     @Test

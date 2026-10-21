@@ -11,12 +11,14 @@ import type {
   HeartbeatEvent,
   HttpEvent,
   Location,
+  LocationErrorEvent,
   LocationTrackingEventMap,
   LocationTrackingEventName,
   MotionChangeEvent,
   NotificationActionEvent,
   PowerSaveChangeEvent,
   ProviderState,
+  StorageFullEvent,
 } from './definitions';
 import { LocationTracking } from './plugin';
 
@@ -35,6 +37,8 @@ export const Events = {
   ENABLEDCHANGE: 'enabledchange',
   NOTIFICATIONACTION: 'notificationaction',
   AUTHORIZATION: 'authorization',
+  LOCATIONERROR: 'locationerror',
+  STORAGEFULL: 'storagefull',
 } as const;
 
 interface UntypedListenerTarget {
@@ -79,7 +83,7 @@ export const onConnectivityChange = (cb: (e: ConnectivityChangeEvent) => void): 
 /** Battery-saver mode changes. */
 export const onPowerSaveChange = (cb: (e: PowerSaveChangeEvent) => void): Promise<PluginListenerHandle> =>
   on('powersavechange', cb);
-/** Tracking enabled / disabled. */
+/** Tracking enabled / disabled, with the reason (the same values as the tracking_start / tracking_stop records). */
 export const onEnabledChange = (cb: (e: EnabledChangeEvent) => void): Promise<PluginListenerHandle> =>
   on('enabledchange', cb);
 /** Taps on the foreground notification's action buttons. */
@@ -88,3 +92,9 @@ export const onNotificationAction = (cb: (e: NotificationActionEvent) => void): 
 /** JWT refresh results. */
 export const onAuthorization = (cb: (e: AuthorizationEvent) => void): Promise<PluginListenerHandle> =>
   on('authorization', cb);
+/** The location request failed; the plugin requests updates again after `retryInMs`. */
+export const onLocationError = (cb: (e: LocationErrorEvent) => void): Promise<PluginListenerHandle> =>
+  on('locationerror', cb);
+/** A record could not be stored because the device storage is full. */
+export const onStorageFull = (cb: (e: StorageFullEvent) => void): Promise<PluginListenerHandle> =>
+  on('storagefull', cb);

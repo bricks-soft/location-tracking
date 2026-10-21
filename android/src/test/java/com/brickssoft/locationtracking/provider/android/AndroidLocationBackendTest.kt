@@ -39,6 +39,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowLocationManager
+import java.time.Duration
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executor
 
@@ -52,9 +53,14 @@ class AndroidLocationBackendTest {
 
     private class RecordingListener : LocationListener {
         val batches = CopyOnWriteArrayList<List<TrackedLocation>>()
+        val errors = CopyOnWriteArrayList<TrackingException>()
 
         override fun onLocations(locations: List<TrackedLocation>) {
             batches += locations
+        }
+
+        override fun onError(error: TrackingException) {
+            errors += error
         }
     }
 
@@ -95,21 +101,20 @@ class AndroidLocationBackendTest {
     }
 
     @Test
-    fun `high accuracy requests gps with interval, min interval and distance`() {
+    fun `high accuracy requests gps and network with interval, min interval and distance`() {
         backend.requestUpdates(spec(DesiredAccuracy.HIGH), RecordingListener())
 
-        val requests: List<LocationRequest> = shadowLm.getLocationRequests(GPS_PROVIDER)
-        assertEquals(1, requests.size)
-        val request = requests.single()
-        assertEquals(10_000L, request.intervalMillis)
-        assertEquals(5_000L, request.minUpdateIntervalMillis)
-        assertEquals(25f, request.minUpdateDistanceMeters)
-        assertEquals(LocationRequestCompat.QUALITY_HIGH_ACCURACY, request.quality)
-        assertEquals(0, listenersOn(NETWORK_PROVIDER))
+        for (provider in listOf(GPS_PROVIDER, NETWORK_PROVIDER)) {
+            val request = shadowLm.getLocationRequests(provider).single()
+            assertEquals(10_000L, request.intervalMillis)
+            assertEquals(5_000L, request.minUpdateIntervalMillis)
+            assertEquals(25f, request.minUpdateDistanceMeters)
+            assertEquals(LocationRequestCompat.QUALITY_HIGH_ACCURACY, request.quality)
+        }
     }
 
     @Test
-    fun `balanced and low accuracy request network`() {
+    fun `balanced accuracy requests gps and network, low accuracy only network`() {
         backend.requestUpdates(spec(DesiredAccuracy.BALANCED), RecordingListener())
         backend.requestUpdates(spec(DesiredAccuracy.LOW), RecordingListener())
 
@@ -118,7 +123,34 @@ class AndroidLocationBackendTest {
             listOf(LocationRequestCompat.QUALITY_BALANCED_POWER_ACCURACY, LocationRequestCompat.QUALITY_LOW_POWER),
             qualities,
         )
-        assertEquals(0, listenersOn(GPS_PROVIDER))
+        assertEquals(
+            listOf(LocationRequestCompat.QUALITY_BALANCED_POWER_ACCURACY),
+            shadowLm.getLocationRequests(GPS_PROVIDER).map { it.quality },
+        )
+    }
+
+    @Test
+    fun `network fixes are dropped while a gps fix is recent, then delivered again`() {
+        val listener = RecordingListener()
+        backend.requestUpdates(spec(DesiredAccuracy.HIGH, interval = 1_000), listener)
+
+        shadowLm.simulateLocation(NETWORK_PROVIDER, fix(NETWORK_PROVIDER, lat = 1.0)) // no gps fix yet: delivered
+        idleMain()
+        shadowLm.simulateLocation(GPS_PROVIDER, fix(GPS_PROVIDER, lat = 2.0))
+        idleMain()
+        shadowLm.simulateLocation(NETWORK_PROVIDER, fix(NETWORK_PROVIDER, lat = 3.0)) // dropped
+        idleMain()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(AndroidLocationBackend.GPS_PRIORITY_MIN_MS))
+        shadowLm.simulateLocation(NETWORK_PROVIDER, fix(NETWORK_PROVIDER, lat = 4.0)) // gps silent for 10 s
+        idleMain()
+
+        assertEquals(listOf(1.0, 2.0, 4.0), listener.batches.flatten().map { it.latitude })
+    }
+
+    @Test
+    fun `gps priority lasts twice the interval, at least 10 s`() {
+        assertEquals(10_000L, AndroidLocationBackend.gpsPriorityMs(spec(DesiredAccuracy.HIGH, interval = 1_000)))
+        assertEquals(60_000L, AndroidLocationBackend.gpsPriorityMs(spec(DesiredAccuracy.HIGH, interval = 30_000)))
     }
 
     @Test
@@ -189,19 +221,20 @@ class AndroidLocationBackendTest {
         backend.requestUpdates(spec(DesiredAccuracy.HIGH), a)
         backend.requestUpdates(spec(DesiredAccuracy.HIGH), b)
         assertEquals(2, listenersOn(GPS_PROVIDER))
+        assertEquals(2, listenersOn(NETWORK_PROVIDER))
 
-        backend.requestUpdates(spec(DesiredAccuracy.BALANCED), a)
+        backend.requestUpdates(spec(DesiredAccuracy.LOW), a)
 
         assertEquals(1, listenersOn(GPS_PROVIDER))
-        assertEquals(1, listenersOn(NETWORK_PROVIDER))
+        assertEquals(2, listenersOn(NETWORK_PROVIDER))
         shadowLm.simulateLocation(GPS_PROVIDER, fix(GPS_PROVIDER))
         idleMain()
         assertEquals(0, a.batches.size)
         assertEquals(1, b.batches.size)
         shadowLm.simulateLocation(NETWORK_PROVIDER, fix(NETWORK_PROVIDER))
         idleMain()
-        assertEquals(1, a.batches.size)
-        assertEquals(1, b.batches.size)
+        assertEquals(1, a.batches.size) // a's LOW request has no gps, so nothing is dropped
+        assertEquals(1, b.batches.size) // b got a gps fix just now: the network fix is dropped
     }
 
     @Test
@@ -243,10 +276,11 @@ class AndroidLocationBackendTest {
     }
 
     @Test
-    fun `moves to the preferred provider when it becomes enabled`() {
+    fun `adds gps when it becomes enabled`() {
         shadowLm.setProviderEnabled(GPS_PROVIDER, false)
         val listener = RecordingListener()
         backend.requestUpdates(spec(DesiredAccuracy.HIGH), listener)
+        assertEquals(0, listenersOn(GPS_PROVIDER))
         assertEquals(1, listenersOn(NETWORK_PROVIDER))
 
         shadowLm.setProviderEnabled(GPS_PROVIDER, true)
@@ -254,7 +288,7 @@ class AndroidLocationBackendTest {
         idleMain()
 
         assertEquals(1, listenersOn(GPS_PROVIDER))
-        assertEquals(0, listenersOn(NETWORK_PROVIDER))
+        assertEquals(1, listenersOn(NETWORK_PROVIDER))
         shadowLm.simulateLocation(GPS_PROVIDER, fix(GPS_PROVIDER))
         idleMain()
         assertEquals(1, listener.batches.size)
@@ -407,10 +441,42 @@ class AndroidLocationBackendTest {
     @Test
     fun `SecurityException maps to PERMISSION_DENIED`() = runTest {
         val denied = AndroidLocationBackend(app, deniedManager(setOf(GPS_PROVIDER, NETWORK_PROVIDER)))
+        val listener = RecordingListener()
 
-        assertPermissionDenied { denied.requestUpdates(spec(DesiredAccuracy.HIGH), RecordingListener()) }
+        denied.requestUpdates(spec(DesiredAccuracy.HIGH), listener)
+
+        assertEquals(listOf(ErrorCode.PERMISSION_DENIED), listener.errors.map { it.code })
         assertPermissionDenied { denied.getLastLocation() }
         assertPermissionDenied { denied.getCurrentLocation(DesiredAccuracy.HIGH, 1_000) }
+    }
+
+    @Test
+    fun `getCurrentLocation asks gps and network in parallel and keeps the more accurate fix of the grace period`() = runTest {
+        val result = async { backend.getCurrentLocation(DesiredAccuracy.HIGH, 30_000) }
+        runCurrent()
+
+        shadowLm.simulateLocation(NETWORK_PROVIDER, fix(NETWORK_PROVIDER, lat = 1.0).apply { accuracy = 900f })
+        idleMain()
+        runCurrent()
+        shadowLm.simulateLocation(GPS_PROVIDER, fix(GPS_PROVIDER, lat = 2.0).apply { accuracy = 4f })
+        idleMain()
+
+        val best = result.await()!!
+        assertEquals(2.0, best.latitude, 0.0)
+        assertEquals(GPS_PROVIDER, best.provider)
+    }
+
+    @Test
+    fun `getCurrentLocation returns the first fix when no better one comes within the grace period`() = runTest {
+        val result = async { backend.getCurrentLocation(DesiredAccuracy.HIGH, 30_000) }
+        runCurrent()
+
+        shadowLm.simulateLocation(NETWORK_PROVIDER, fix(NETWORK_PROVIDER, lat = 1.0).apply { accuracy = 900f })
+        idleMain()
+
+        assertEquals(1.0, result.await()!!.latitude, 0.0)
+        assertTrue(testScheduler.currentTime >= AndroidLocationBackend.CURRENT_LOCATION_GRACE_MS)
+        assertTrue(testScheduler.currentTime < 30_000)
     }
 
     @Test

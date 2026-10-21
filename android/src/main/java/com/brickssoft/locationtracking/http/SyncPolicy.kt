@@ -19,7 +19,9 @@ import com.brickssoft.locationtracking.model.RecordEvent
  *   - `syncInterval > 0` while tracking: the whole queue once the oldest pending normal record is at least
  *     `syncInterval` seconds old (age = now − `recorded_at`; a negative age, which a wall clock set back produces,
  *     counts as due), or once the queue holds `autoSyncThreshold` records when that is above 0 (a size cap that
- *     uploads earlier); nothing while a retry after a failed upload is pending.
+ *     uploads earlier).
+ * - While the stored wait after a failed automatic upload runs (`waiting`, see `NextTry`), normal records are not
+ *   sent; priority records still are, and take the whole queue with them.
  */
 internal object SyncPolicy {
     /** The records an upload pass sends. */
@@ -39,9 +41,6 @@ internal object SyncPolicy {
 
         /** The oldest pending normal record is due ([isIntervalDue]). */
         DUE,
-
-        /** An automatic upload failed less than `syncInterval` ago: normal records wait for the retry time. */
-        RETRY_PENDING,
     }
 
     val PRIORITY_EVENTS: Set<RecordEvent> = RecordEvent.entries.filter { it.isPriority }.toSet()
@@ -83,6 +82,7 @@ internal object SyncPolicy {
      * @param queued number of queued records.
      * @param priorityQueued number of queued priority records.
      * @param interval the state of the `syncInterval` rule; [IntervalCheck.OFF] applies the threshold rule.
+     * @param waiting true while the stored wait after a failed automatic upload runs: normal records are not sent.
      */
     fun autoScope(
         http: HttpConfig,
@@ -90,16 +90,16 @@ internal object SyncPolicy {
         queued: Int,
         priorityQueued: Int,
         interval: IntervalCheck = IntervalCheck.OFF,
+        waiting: Boolean = false,
     ): Scope {
         if (!hasUrl(http) || !connectivity.connected) return Scope.NONE
         val restricted = isCellularRestricted(http, connectivity)
         if (priorityQueued > 0) return if (restricted) Scope.PRIORITY_ONLY else Scope.ALL
-        if (restricted || !http.autoSync || queued <= 0) return Scope.NONE
+        if (restricted || !http.autoSync || queued <= 0 || waiting) return Scope.NONE
         val upload = when (interval) {
             IntervalCheck.OFF -> queued >= maxOf(1, http.autoSyncThreshold)
             IntervalCheck.NOT_DUE -> http.autoSyncThreshold > 0 && queued >= http.autoSyncThreshold
             IntervalCheck.DUE -> true
-            IntervalCheck.RETRY_PENDING -> false
         }
         return if (upload) Scope.ALL else Scope.NONE
     }

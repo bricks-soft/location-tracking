@@ -64,12 +64,17 @@ export interface RequestLogEntry {
   body: string;
   /** set when a fault answered the request */
   fault?: 'status' | 'drop' | 'delay';
+  /** host epoch ms when the answer was written (or the connection dropped) */
+  answeredAt?: number;
 }
 
 /**
  * A fault for the next [count] requests to [path] (default 1; -1 = until reset): answer [status] (default 500), or
  * [drop] the connection without an answer, after [delayMs]. A fault with only [delayMs] delays and then answers
  * normally. Faulted requests (status/drop) store nothing. Faults never apply to the control endpoints (`/__*`).
+ * A status answer carries [headers] (for example `Retry-After` or `Location`) and [body] (default
+ * `{"ok":false,"fault":true}`). With [minRecords], the fault applies only to requests whose body holds at least that
+ * many records (a body-size limit, HTTP 413).
  */
 export interface Fault {
   path: string;
@@ -77,6 +82,9 @@ export interface Fault {
   count?: number;
   delayMs?: number;
   drop?: boolean;
+  headers?: Record<string, string>;
+  body?: string;
+  minRecords?: number;
 }
 
 /** One `POST /logs` upload (`uploadLog()`), as a size summary. */
@@ -112,11 +120,14 @@ const RECORD_KEYS = new Set([
   'activity',
   'battery',
   'backend',
+  'network',
+  'device',
   'extras',
   'geofence',
   'provider',
   'reason',
   'heartbeat',
+  'stopped_at',
 ]);
 
 function isRecord(value: unknown): value is WireRecord {
@@ -177,6 +188,9 @@ interface ActiveFault {
   remaining: number;
   delayMs: number;
   drop: boolean;
+  headers: Record<string, string>;
+  body: string | undefined;
+  minRecords: number;
 }
 
 class HttpError extends Error {
@@ -400,6 +414,9 @@ export class MockBackOffice {
       remaining: count,
       delayMs: Math.max(0, fault.delayMs ?? 0),
       drop: fault.drop === true,
+      headers: fault.headers ?? {},
+      body: fault.body,
+      minRecords: fault.minRecords ?? 0,
     });
   }
 
@@ -425,9 +442,9 @@ export class MockBackOffice {
 
   // ---- request handling
 
-  private takeFault(path: string): ActiveFault | undefined {
+  private takeFault(path: string, records: () => number): ActiveFault | undefined {
     if (path.startsWith('/__')) return undefined;
-    const index = this.faults.findIndex((f) => f.path === path && f.remaining !== 0);
+    const index = this.faults.findIndex((f) => f.path === path && f.remaining !== 0 && (f.minRecords <= 0 || records() >= f.minRecords));
     if (index < 0) return undefined;
     const fault = this.faults[index]!;
     if (fault.remaining > 0) fault.remaining -= 1;
@@ -461,7 +478,7 @@ export class MockBackOffice {
     this.requestLog.push(entry);
     let note = '';
 
-    const fault = this.takeFault(url.pathname);
+    const fault = this.takeFault(url.pathname, () => requestRecords(entry).length);
     if (fault) {
       if (fault.delayMs > 0) await sleep(fault.delayMs);
       if (fault.drop) {
@@ -474,7 +491,13 @@ export class MockBackOffice {
       if (fault.status !== undefined || fault.delayMs === 0) {
         entry.fault = 'status';
         entry.status = fault.status ?? 500;
-        json(res, entry.status, { ok: false, fault: true });
+        const text = fault.body ?? JSON.stringify({ ok: false, fault: true });
+        res.writeHead(entry.status, {
+          'content-type': 'application/json; charset=utf-8',
+          'content-length': Buffer.byteLength(text),
+          ...fault.headers,
+        });
+        res.end(text);
         this.writeLog(entry, `fault: status ${entry.status}`);
         return;
       }
@@ -589,7 +612,7 @@ export class MockBackOffice {
     }
     if (path === '/__faults' && method === 'POST') {
       const body = parseBody() as Fault | undefined;
-      if (!body || typeof body !== 'object') throw new HttpError(400, 'expected a fault object {path, status?, count?, delayMs?, drop?}');
+      if (!body || typeof body !== 'object') throw new HttpError(400, 'expected a fault object {path, status?, count?, delayMs?, drop?, headers?, body?, minRecords?}');
       try {
         this.setFault(body);
       } catch (error) {
@@ -617,6 +640,9 @@ export class MockBackOffice {
   }
 
   private writeLog(entry: RequestLogEntry, note: string): void {
+    entry.answeredAt = Date.now();
+    const answerMs = entry.answeredAt - entry.receivedAt;
+    if (answerMs >= 1_000) note = [note, `answered after ${answerMs} ms`].filter((part) => part).join('; ');
     const auth = entry.headers['authorization'];
     const line =
       `${new Date(entry.receivedAt).toISOString()} #${entry.id} ${entry.method} ${entry.path}${entry.query ? `?${entry.query}` : ''}` +

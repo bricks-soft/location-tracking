@@ -1,5 +1,8 @@
 package com.brickssoft.locationtracking.http
 
+import com.brickssoft.locationtracking.model.DeviceSnapshot
+import com.brickssoft.locationtracking.model.ConnectivityType
+import com.brickssoft.locationtracking.model.BatteryDetails
 import com.brickssoft.locationtracking.config.HttpConfig
 import com.brickssoft.locationtracking.core.Iso8601
 import com.brickssoft.locationtracking.core.LogLevel
@@ -18,6 +21,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -176,7 +180,37 @@ class TemplateRendererTest {
         for (name in TemplateRenderer.PLACEHOLDERS) {
             assertNotNull("placeholder $name", TemplateRenderer.literal(name, record, sentAt))
         }
-        assertEquals(34, TemplateRenderer.PLACEHOLDERS.size)
+        assertEquals(51, TemplateRenderer.PLACEHOLDERS.size)
+        assertTrue("device.device_id" in TemplateRenderer.PLACEHOLDERS)
+        assertFalse("device.android_id" in TemplateRenderer.PLACEHOLDERS) // renamed to device.device_id
+    }
+
+    @Test
+    fun `stop time, network, battery details and device readings have placeholders`() {
+        val record = Fixtures.record(event = RecordEvent.HEARTBEAT).copy(
+            stoppedAt = Iso8601.parse("2026-09-26T10:00:00.000Z"),
+            network = ConnectivityType.WIFI,
+            batteryDetails = BatteryDetails(temperature = 29.5f, health = "good", plugged = "ac"),
+            device = DeviceSnapshot(
+                deviceId = "9774d56d682e549c", backgroundRestricted = false, standbyBucket = "rare", diskFreeBytes = 123L,
+                thermalStatus = "none",
+            ),
+        )
+        val template = """{"id":"<%= device.device_id %>","stop":"<%= stopped_at %>","net":"<%= network %>",""" +
+            """"t":<%= battery.temperature %>,""" +
+            """"h":"<%= battery.health %>","p":"<%= battery.plugged %>","bucket":"<%= device.standby_bucket %>",""" +
+            """"restricted":<%= device.background_restricted %>,"disk":<%= device.disk_free_bytes %>,""" +
+            """"model":"<%= device.model %>","device":<%= device %>}"""
+
+        val json = TemplateRenderer.render(template, record, sentAt) as JSONObject
+
+        assertJsonEquals(
+            """{"id":"9774d56d682e549c","stop":"2026-09-26T10:00:00.000Z","net":"wifi","t":29.5,"h":"good","p":"ac",
+               "bucket":"rare","restricted":false,"disk":123,"model":null,
+               "device":{"device_id":"9774d56d682e549c","background_restricted":false,"standby_bucket":"rare",
+                         "disk_free_bytes":123,"thermal_status":"none"}}""",
+            json,
+        )
     }
 
     @Test

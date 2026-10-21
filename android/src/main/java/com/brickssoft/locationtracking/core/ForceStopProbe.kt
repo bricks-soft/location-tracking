@@ -11,11 +11,17 @@ import android.os.Build
  * Android cancels the app's alarms and does not restart its services after a force stop, so tracking stays off until
  * the user opens the app again. A broadcast that was already on its way can still start the process (on the CI
  * emulator a Play services activity update arrived 0.5 s after `am force-stop`, scenario P-L04). The engine asks this
- * probe before a background trigger (activity update, stationary region EXIT) restores tracking.
+ * probe before a background trigger (activity update, stationary region EXIT, heartbeat alarm, the service's sticky or
+ * earlier-process restart) restores tracking. A user stop means both the Settings force stop and the Stop button of
+ * the Android 13+ Task Manager; unlike a force stop, the Task Manager leaves the app's alarms in place, so the heartbeat
+ * alarm can start the process again (recommendation 6).
  */
 fun interface ForceStopProbe {
     /** True when the previous process of this app ended with a user force stop. */
     fun startedAfterForceStop(): Boolean
+
+    /** When the previous process was stopped by the user (the exit record's time, epoch ms), or null. */
+    fun forceStopTime(): Long? = null
 
     companion object {
         private const val TAG = "LT.ForceStop"
@@ -35,28 +41,33 @@ fun interface ForceStopProbe {
          */
         fun system(context: Context): ForceStopProbe {
             val app = context.applicationContext ?: context
-            val result by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { lastExitWasForceStop(app) }
-            return ForceStopProbe { result }
+            val result by lazy(LazyThreadSafetyMode.SYNCHRONIZED) { lastExitForceStopTime(app) }
+            return object : ForceStopProbe {
+                override fun startedAfterForceStop(): Boolean = result != null
+
+                override fun forceStopTime(): Long? = result
+            }
         }
 
-        private fun lastExitWasForceStop(context: Context): Boolean {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
+        /** The time of the previous main process's exit if it was a user stop, else null. */
+        private fun lastExitForceStopTime(context: Context): Long? {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
             return try {
-                val manager = context.getSystemService(ActivityManager::class.java) ?: return false
+                val manager = context.getSystemService(ActivityManager::class.java) ?: return null
                 val mainProcess = context.applicationInfo?.processName ?: context.packageName
                 val previous = manager.getHistoricalProcessExitReasons(context.packageName, 0, EXIT_RECORDS)
                     .firstOrNull { it.processName == mainProcess }
-                    ?: return false
+                    ?: return null
                 val forceStopped = previous.reason == ApplicationExitInfo.REASON_USER_REQUESTED
                 Logger.i(
                     TAG,
                     "previous process ${previous.pid} exited with reason ${previous.reason} " +
                         "(${previous.description ?: "no description"}); force stop: $forceStopped",
                 )
-                forceStopped
+                if (forceStopped) previous.timestamp else null
             } catch (e: Exception) {
                 Logger.w(TAG, "the previous process's exit reason is unknown", e)
-                false
+                null
             }
         }
     }

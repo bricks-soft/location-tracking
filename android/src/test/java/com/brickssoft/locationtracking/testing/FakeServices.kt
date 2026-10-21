@@ -265,6 +265,12 @@ class FakeTrackingEngine(
     @Volatile
     var failWith: TrackingException? = null
 
+    /** What [startedAfterUserStop] returns. */
+    @Volatile
+    var afterUserStop = false
+
+    override fun startedAfterUserStop(): Boolean = afterUserStop
+
     override suspend fun ready(config: JSONObject?, reset: Boolean): State = call("ready") {
         configStore.ready(config, reset)
         configStore.updateRuntime { it.copy(didReady = true) }

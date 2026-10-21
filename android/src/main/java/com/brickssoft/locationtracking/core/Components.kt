@@ -2,6 +2,7 @@ package com.brickssoft.locationtracking.core
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.os.StatFs
 import androidx.annotation.VisibleForTesting
 import com.brickssoft.locationtracking.api.NativeListeners
 import com.brickssoft.locationtracking.config.ConfigStore
@@ -11,6 +12,7 @@ import com.brickssoft.locationtracking.data.LocationStore
 import com.brickssoft.locationtracking.data.SqliteGeofenceStore
 import com.brickssoft.locationtracking.data.SqliteLocationStore
 import com.brickssoft.locationtracking.data.TrackingDatabase
+import com.brickssoft.locationtracking.device.DefaultDeviceDetails
 import com.brickssoft.locationtracking.device.DefaultDeviceInfoProvider
 import com.brickssoft.locationtracking.device.DefaultDeviceMonitor
 import com.brickssoft.locationtracking.device.DeviceInfoProvider
@@ -21,8 +23,12 @@ import com.brickssoft.locationtracking.geofence.DefaultGeofenceManager
 import com.brickssoft.locationtracking.geofence.GeofenceManager
 import com.brickssoft.locationtracking.heartbeat.DefaultHeartbeatScheduler
 import com.brickssoft.locationtracking.heartbeat.HeartbeatScheduler
+import com.brickssoft.locationtracking.http.HttpSupport
 import com.brickssoft.locationtracking.http.HttpSyncer
+import com.brickssoft.locationtracking.http.JobUploadScheduler
 import com.brickssoft.locationtracking.http.OkHttpSyncer
+import com.brickssoft.locationtracking.http.PrefsNextTryStore
+import com.brickssoft.locationtracking.http.UploadScheduler
 import com.brickssoft.locationtracking.logging.FileLogger
 import com.brickssoft.locationtracking.logging.LogStore
 import com.brickssoft.locationtracking.permission.DefaultPermissionManager
@@ -72,7 +78,7 @@ class Components private constructor(context: Context) {
 
     /** Round 2: every queued record (sink and insertLocation) for the companion native API (unit 5). */
     val recordHooks: RecordHooks = RecordHooks()
-    val http: OkHttpClient by lazy { OkHttpClient() }
+    val http: OkHttpClient by lazy { HttpSupport.sharedClient() }
 
     // U17
     val logStore: LogStore by lazy { FileLogger(this.context, clock, dispatchers, lazy { http }) }
@@ -97,30 +103,40 @@ class Components private constructor(context: Context) {
     val deviceInfo: DeviceInfoProvider by lazy { DefaultDeviceInfoProvider(this.context, lazy { providers }) }
 
     // U10
-    private val database by lazy { TrackingDatabase(this.context) }
+    private val database by lazy { TrackingDatabase(this.context, TrackingDatabase.location(this.context)) }
     val locationStore: LocationStore by lazy { SqliteLocationStore(database, configStore, clock, dispatchers) }
     val geofenceStore: GeofenceStore by lazy { SqliteGeofenceStore(database, dispatchers) }
 
     // U9
     val processor: LocationProcessor by lazy { DefaultLocationProcessor(configStore) }
     val odometer: Odometer by lazy { DefaultOdometer(configStore) }
-    val recordFactory: RecordFactory by lazy { DefaultRecordFactory(configStore, device, providers, clock) }
+    val recordFactory: RecordFactory by lazy {
+        DefaultRecordFactory(configStore, device, providers, clock, DefaultDeviceDetails(this.context))
+    }
 
     // U11
+    /** Schedules the upload job that sends queued records when no tracking session runs (recommendation 10). */
+    val uploadScheduler: UploadScheduler by lazy { JobUploadScheduler(this.context) }
     val syncer: HttpSyncer by lazy {
-        OkHttpSyncer(configStore, locationStore, device, events, clock, http, dispatchers, scope)
+        OkHttpSyncer(
+            configStore, locationStore, device, events, clock, http, dispatchers, scope,
+            PrefsNextTryStore(this.context), uploadScheduler,
+        )
     }
 
     // U12
     val heartbeat: HeartbeatScheduler by lazy {
         DefaultHeartbeatScheduler(
             this.context, configStore, device, providers, locationStore, recordFactory, lazy { recordSink }, clock, scope,
+            uploads = lazy { syncer },
         )
     }
 
     // SCAFFOLD
     val recordSink: RecordSink by lazy {
-        DefaultRecordSink(locationStore, configStore, heartbeat, syncer, events, recordHooks)
+        DefaultRecordSink(locationStore, configStore, heartbeat, syncer, events, recordHooks) {
+            StatFs(this.context.noBackupFilesDir.path).availableBytes
+        }
     }
 
     // U13 (round 2: STATIONARY_REGION_ID transitions go to the engine)

@@ -67,6 +67,20 @@ class ConfigValidatorTest {
     }
 
     @Test
+    fun `heartbeat uploadKeepAwake is clamped to 0-60 s and http maxRetryAfter to at least 0`() {
+        val high = ConfigValidator.validate(Config(heartbeat = HeartbeatConfig(uploadKeepAwake = 600)))
+        val low = ConfigValidator.validate(
+            Config(heartbeat = HeartbeatConfig(uploadKeepAwake = -1), http = HttpConfig(maxRetryAfter = -5)),
+        )
+
+        assertEquals(60, high.heartbeat.uploadKeepAwake)
+        assertEquals(0, low.heartbeat.uploadKeepAwake)
+        assertEquals(0, low.http.maxRetryAfter)
+        assertEquals(10, Config().heartbeat.uploadKeepAwake)
+        assertEquals(3_600, Config().http.maxRetryAfter)
+    }
+
+    @Test
     fun `activity confidence is clamped to 0-100`() {
         val low = ConfigValidator.validate(Config(activity = ActivityConfig(minimumActivityRecognitionConfidence = -5)))
         val high = ConfigValidator.validate(Config(activity = ActivityConfig(minimumActivityRecognitionConfidence = 150)))

@@ -56,6 +56,7 @@ export function defaultConfig(): Config {
       enabled: true,
       minInterval: 180,
       maxInterval: 300,
+      uploadKeepAwake: 10,
     },
     http: {
       url: null,
@@ -72,6 +73,7 @@ export function defaultConfig(): Config {
       locationTemplate: null,
       geofenceTemplate: null,
       timeout: 60000,
+      maxRetryAfter: 3600,
       authorization: null,
     },
     persistence: {
@@ -220,6 +222,9 @@ function clamp(config: Config): void {
     ) {
       heartbeat.maxInterval = heartbeat.minInterval;
     }
+    if (typeof heartbeat.uploadKeepAwake === 'number') {
+      heartbeat.uploadKeepAwake = Math.min(60, Math.max(0, heartbeat.uploadKeepAwake));
+    }
   }
   const activity = config.activity;
   if (activity && typeof activity.minimumActivityRecognitionConfidence === 'number') {
@@ -234,6 +239,9 @@ function clamp(config: Config): void {
   }
   if (http && typeof http.syncInterval === 'number' && http.syncInterval < 0) {
     http.syncInterval = 0;
+  }
+  if (http && typeof http.maxRetryAfter === 'number' && http.maxRetryAfter < 0) {
+    http.maxRetryAfter = 0;
   }
   const notification = config.notification;
   if (notification && Array.isArray(notification.actions) && notification.actions.length > 3) {
@@ -265,6 +273,8 @@ export function webState(config: Config): State {
     odometer: 0,
     backend: 'web',
     lastRecordAt: null,
+    lastStopReason: null,
+    lastStopAt: null,
     config: cloneJson(config),
   };
 }

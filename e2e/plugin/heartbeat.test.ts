@@ -1624,11 +1624,12 @@ scenario(
       `the tracking_start must be answered 500 three times, then accepted:\n${requestLog(phase1)}`,
     );
     assert.equal(tries[0]!.id, phase1[0]?.id, `the first upload must carry the tracking_start:\n${requestLog(phase1)}`);
+    // Round 3 (11c): each wait is moved by up to 20 % up or down.
     RETRY_WAITS_MS.forEach((wait, i) => {
       const gap = tries[i + 1]!.receivedAt - tries[i]!.receivedAt;
       assert.ok(
-        gap >= wait - 500 && gap <= wait + 3_000,
-        `try ${i + 2} came ${gap} ms after try ${i + 1}, expected about ${wait} ms:\n${requestLog(phase1)}`,
+        gap >= wait * 0.8 - 500 && gap <= wait * 1.2 + 3_000,
+        `try ${i + 2} came ${gap} ms after try ${i + 1}, expected ${wait * 0.8}–${wait * 1.2} ms:\n${requestLog(phase1)}`,
       );
     });
     for (const r of tries) {
@@ -1702,9 +1703,10 @@ scenario(
     });
     assert.equal(headerValue(next, 'authorization'), 'Bearer e2e-access-1', `later uploads keep the refreshed token: ${describeRequest(next)}`);
     assert.equal(sortedRequests(office, '/auth/refresh', phase2Since).length, 1, 'no second refresh while the token is valid');
+    // The State masks the tokens (round 3, recommendation 16): "***" plus the last 4 characters.
     const state = await ctx.commands.state();
-    assert.equal(valueAt(state.config, ['http', 'authorization', 'accessToken']), 'e2e-access-1', 'the refreshed access token is saved in the config');
-    assert.equal(valueAt(state.config, ['http', 'authorization', 'refreshToken']), 'e2e-refresh-1', 'the refreshed refresh token is saved in the config');
+    assert.equal(valueAt(state.config, ['http', 'authorization', 'accessToken']), '***ss-1', 'the refreshed access token is saved in the config');
+    assert.equal(valueAt(state.config, ['http', 'authorization', 'refreshToken']), '***sh-1', 'the refreshed refresh token is saved in the config');
   },
   { timeoutMs: 10 * 60_000 },
 );

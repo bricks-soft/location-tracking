@@ -40,6 +40,10 @@ class HeartbeatAlarmReceiver : BroadcastReceiver() {
         /**
          * The post-alarm decision: run the heartbeat, then restore tracking if it is enabled while the foreground
          * service is not running. Failures are logged; the restore check runs even if the heartbeat failed.
+         *
+         * In a process that started after the user stopped the app (the Android 13+ Task Manager's Stop leaves the
+         * alarms in place), no heartbeat is created: the engine's restore releases the alarms and records the user stop
+         * instead (recommendation 6).
          */
         suspend fun deliver(
             trigger: HeartbeatTrigger,
@@ -48,6 +52,24 @@ class HeartbeatAlarmReceiver : BroadcastReceiver() {
             serviceController: Lazy<ServiceController>,
             engine: Lazy<TrackingEngine>,
         ) {
+            val userStopped = try {
+                configStore.runtime.value.enabled && !serviceController.value.isRunning &&
+                    engine.value.startedAfterUserStop()
+            } catch (e: Exception) {
+                Logger.w(TAG, "cannot tell whether the user stopped the app", e)
+                false
+            }
+            if (userStopped) {
+                Logger.i(TAG, "heartbeat alarm ($trigger) after a user stop: no heartbeat")
+                try {
+                    engine.value.restore("restore")
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Logger.e(TAG, "handling the user stop failed", e)
+                }
+                return
+            }
             try {
                 heartbeat.onAlarm(trigger)
             } catch (e: CancellationException) {

@@ -43,6 +43,9 @@ class DefaultProviderFactory(
     /** Created bundles; a null value means the bundle could not be loaded. Guarded by [lock]. */
     private val bundles = HashMap<ProviderKind, ProviderBundle?>()
 
+    /** Bundles whose [ProviderBundle.versionDiagnostic] is logged once, when they are created. Guarded by [lock]. */
+    private val bundleVersionWarnings = HashSet<ProviderKind>()
+
     override val kind: ProviderKind get() = current().kind
 
     override fun location(): LocationBackend = current().bundle.location()
@@ -54,6 +57,56 @@ class DefaultProviderFactory(
     override fun isAvailable(kind: ProviderKind): Boolean {
         val bundle = synchronized(lock) { bundleLocked(kind) } ?: return false
         return isUsable(bundle)
+    }
+
+    override fun bestAvailable(): ProviderKind = synchronized(lock) {
+        if (configStore.config.value.locationProvider != LocationProviderSetting.AUTO) return@synchronized kind
+        when {
+            availableLocked(ProviderKind.GMS) -> ProviderKind.GMS
+            availableLocked(ProviderKind.HMS) -> ProviderKind.HMS
+            else -> ProviderKind.ANDROID
+        }
+    }
+
+    /**
+     * Why the current backend was selected (recommendation 15): for each better backend that was not used, its reason
+     * (not listed, SDK not packaged, receivers removed, or the availability status code); null when the preferred
+     * backend is used. The status codes are those of the last availability checks.
+     */
+    override fun selectionInfo(): ProviderSelectionInfo = synchronized(lock) {
+        val setting = configStore.config.value.locationProvider
+        val current = current().kind
+        val preferred = when (setting) {
+            LocationProviderSetting.AUTO -> listOf(ProviderKind.GMS, ProviderKind.HMS)
+            LocationProviderSetting.GMS -> listOf(ProviderKind.GMS)
+            LocationProviderSetting.HMS -> listOf(ProviderKind.HMS)
+            LocationProviderSetting.ANDROID -> emptyList()
+        }
+        val skipped = preferred.takeWhile { it != current }.map { kind -> "${kind.wire}: ${skipReasonLocked(kind)}" }
+        val hms = bundles[ProviderKind.HMS]
+        ProviderSelectionInfo(
+            fallbackReason = skipped.takeIf { it.isNotEmpty() }?.joinToString("; "),
+            gmsStatus = bundles[ProviderKind.GMS]?.availabilityStatus(),
+            hmsStatus = hms?.availabilityStatus(),
+            hmsCoreOutdated = hms?.let { guard("HMS Core version check") { it.versionDiagnostic() } != null },
+        )
+    }
+
+    private fun skipReasonLocked(kind: ProviderKind): String {
+        when (packaging.status(kind)) {
+            ProviderPackaging.Status.NOT_LISTED -> return "not listed in ${ProviderPackaging.PROVIDERS_META_DATA}"
+            ProviderPackaging.Status.SDK_MISSING -> return "SDK not packaged"
+            ProviderPackaging.Status.RECEIVERS_REMOVED -> return "receivers not in the manifest"
+            ProviderPackaging.Status.PACKAGED -> Unit
+        }
+        val bundle = bundleLocked(kind) ?: return "backend could not be loaded"
+        val available = isUsable(bundle)
+        val status = bundle.availabilityStatus()
+        return when {
+            available -> "available, not selected"
+            status != null -> "unavailable (status $status)"
+            else -> "unavailable"
+        }
     }
 
     override fun reselect(): Boolean = synchronized(lock) {
@@ -106,6 +159,10 @@ class DefaultProviderFactory(
             ProviderPackaging.Status.SDK_MISSING -> "SDK is not packaged"
             ProviderPackaging.Status.RECEIVERS_REMOVED -> "SDK is present but its receivers are not in the manifest"
         }
+        if (reason == null && kind == ProviderKind.HMS) {
+            // Diagnostic only (recommendation 15): HMS is used whatever the HMS Core version.
+            bundleVersionWarnings += kind
+        }
         if (reason != null) {
             // Listed in the app's PROVIDERS meta-data but unusable is a setup error; otherwise it is expected.
             if (packaging.listedExplicitly(kind)) {
@@ -117,6 +174,9 @@ class DefaultProviderFactory(
         }
         val name = ProviderBundles.bundleClassName(kind)
         val bundle = guard("create $name") { createBundle(name) }
+        if (bundle != null && kind in bundleVersionWarnings) {
+            guard("${kind.wire} version check") { bundle.versionDiagnostic() }?.let { Logger.w(TAG, it) }
+        }
         if (bundle == null && kind == ProviderKind.ANDROID) {
             // The last resort must always exist; it lives in this module, so it can be constructed directly.
             Logger.e(TAG, "reflective creation of the android bundle failed; constructing it directly")

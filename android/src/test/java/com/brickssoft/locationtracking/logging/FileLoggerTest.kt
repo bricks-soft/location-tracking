@@ -52,7 +52,8 @@ class FileLoggerTest {
     private val context: Context = ApplicationProvider.getApplicationContext()
     private val clock = FakeClock() // 2026-09-26T10:15:30.456Z
     private var server: MockWebServer? = null
-    private val logDir = File(context.filesDir, Constants.LOG_DIR)
+    private val logDir = File(context.noBackupFilesDir, Constants.LOG_DIR)
+    private val legacyLogDir = File(context.filesDir, Constants.LOG_DIR)
     private val cacheLogDir = File(context.cacheDir, Constants.LOG_DIR)
 
     @After
@@ -60,11 +61,14 @@ class FileLoggerTest {
         Logger.sink = null
         server?.shutdown()
         logDir.deleteRecursively()
+        legacyLogDir.deleteRecursively()
         cacheLogDir.deleteRecursively()
     }
 
-    private fun TestScope.newLogger(maxPending: Int = FileLogger.DEFAULT_MAX_PENDING) =
-        FileLogger(context, clock, testDispatchers(testScheduler), lazy { OkHttpClient() }, maxPending)
+    private fun TestScope.newLogger(
+        maxPending: Int = FileLogger.DEFAULT_MAX_PENDING,
+        maxTotalBytes: Long = FileLogger.DEFAULT_MAX_TOTAL_BYTES,
+    ) = FileLogger(context, clock, testDispatchers(testScheduler), lazy { OkHttpClient() }, maxPending, maxTotalBytes)
 
     private fun at(iso: String) {
         clock.nowMs = Iso8601.parse(iso)!!
@@ -152,6 +156,62 @@ class FileLoggerTest {
             setOf("lt-2026-09-24.log", "lt-2026-09-25.log", "lt-2026-09-26.log", "notes.txt", "lt-garbage.log"),
             logDir.list()!!.toSet(),
         )
+    }
+
+    @Test
+    fun `log files of an older version are moved out of filesDir into noBackupFilesDir`() = runTest {
+        legacyLogDir.mkdirs()
+        File(legacyLogDir, "lt-2026-09-25.log").writeText("2026-09-25T12:00:00.000Z INFO    Old: yesterday\n")
+        val logger = newLogger()
+
+        logger.write(LogLevel.INFO, "Tag", "today", null)
+        logger.flush()
+
+        assertFalse(legacyLogDir.exists())
+        assertTrue(logFile("2026-09-25").exists())
+        assertEquals(listOf("yesterday", "today"), messages(logger.read(LogQuery())))
+    }
+
+    @Test
+    fun `when the moved folder cannot be renamed the files are moved one by one`() = runTest {
+        legacyLogDir.mkdirs()
+        File(legacyLogDir, "lt-2026-09-25.log").writeText("2026-09-25T12:00:00.000Z INFO    Old: moved\n")
+        File(legacyLogDir, "lt-2026-09-26.log").writeText("2026-09-26T09:00:00.000Z INFO    Old: kept in old place\n")
+        logDir.mkdirs()
+        logFile("2026-09-26").writeText("2026-09-26T10:00:00.000Z INFO    New: already here\n")
+        val logger = newLogger()
+
+        logger.write(LogLevel.INFO, "Tag", "today", null)
+        logger.flush()
+
+        assertTrue(logFile("2026-09-25").exists())
+        assertEquals(listOf("lt-2026-09-26.log"), legacyLogDir.list()!!.toList())
+        assertEquals(listOf("moved", "already here", "today"), messages(logger.read(LogQuery())))
+    }
+
+    @Test
+    fun `the oldest daily files are deleted when all of them exceed the total size limit`() = runTest {
+        logDir.mkdirs()
+        listOf("2026-09-23", "2026-09-24", "2026-09-25").forEach { logFile(it).writeText("x".repeat(400) + "\n") }
+        val logger = newLogger(maxTotalBytes = 1_000)
+
+        logger.configure(LogLevel.INFO, 14)
+        advanceUntilIdle()
+
+        assertEquals(setOf("lt-2026-09-24.log", "lt-2026-09-25.log"), logDir.list()!!.toSet())
+    }
+
+    @Test
+    fun `the size limit never deletes today's file`() = runTest {
+        logDir.mkdirs()
+        logFile("2026-09-25").writeText("x".repeat(400) + "\n")
+        logFile("2026-09-26").writeText("x".repeat(2_000) + "\n")
+        val logger = newLogger(maxTotalBytes = 1_000)
+
+        logger.configure(LogLevel.INFO, 14)
+        advanceUntilIdle()
+
+        assertEquals(setOf("lt-2026-09-26.log"), logDir.list()!!.toSet())
     }
 
     @Test

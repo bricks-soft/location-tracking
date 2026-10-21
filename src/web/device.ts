@@ -2,7 +2,7 @@
 import type { DeviceInfo } from '../definitions';
 
 /** `npm version` copies the `package.json` version here (scripts/sync-version.mjs); a test checks it. */
-export const PLUGIN_VERSION = '8.0.1';
+export const PLUGIN_VERSION = '8.1.0';
 
 /** Tokens after `Android x` that do not name a device ('K' is Chrome's reduced user agent). */
 const NOT_A_MODEL = ['K', 'U', 'wv', 'Mobile', 'Tablet', 'HarmonyOS'];

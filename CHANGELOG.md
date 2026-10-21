@@ -9,6 +9,8 @@ gives that section the version and the date.
 
 ## [Unreleased]
 
+## [8.1.0] - 2026-10-22
+
 Round 3: the changes the owner accepted from the comparison report. Decisions:
 [docs/DECISIONS.md, Round 3](docs/DECISIONS.md#round-3-comparison-report).
 

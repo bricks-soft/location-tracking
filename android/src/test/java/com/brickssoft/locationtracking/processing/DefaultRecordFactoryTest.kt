@@ -250,13 +250,13 @@ class DefaultRecordFactoryTest {
 
     @Test
     fun `fromExternal applies defaults`() {
-        val record = factory.fromExternal(JSONObject("""{"coords":{"latitude":1.5,"longitude":-2.25}}"""))
+        val record = factory.fromExternal(JSONObject("""{"coords":{"latitude":1.5,"longitude":-2.25,"accuracy":5}}"""))
 
         assertEquals(RecordEvent.LOCATION, record.event)
         val location = record.location!!
         assertEquals(1.5, location.latitude, 0.0)
         assertEquals(-2.25, location.longitude, 0.0)
-        assertEquals(0f, location.accuracy, 0f)
+        assertEquals(5f, location.accuracy, 0f)
         assertNull(location.altitude)
         assertNull(location.speed)
         assertNull(location.heading)
@@ -270,13 +270,13 @@ class DefaultRecordFactoryTest {
     fun `fromExternal treats JSON nulls as missing`() {
         val record = factory.fromExternal(
             JSONObject(
-                """{"coords":{"latitude":1,"longitude":2,"accuracy":null,"speed":null},
+                """{"coords":{"latitude":1,"longitude":2,"accuracy":5,"speed":null},
                    "timestamp":null,"event":null,"is_moving":null,"extras":null}""",
             ),
         )
 
         assertEquals(RecordEvent.LOCATION, record.event)
-        assertEquals(0f, record.location!!.accuracy, 0f)
+        assertEquals(5f, record.location!!.accuracy, 0f)
         assertNull(record.location!!.speed)
         assertEquals(clock.now(), record.location!!.time)
         assertTrue(record.isMoving)
@@ -287,7 +287,7 @@ class DefaultRecordFactoryTest {
     fun `fromExternal maps every wire event name`() {
         for (event in RecordEvent.entries) {
             val record = factory.fromExternal(
-                JSONObject().put("coords", JSONObject().put("latitude", 1).put("longitude", 2)).put("event", event.wire),
+                JSONObject().put("coords", JSONObject().put("latitude", 1).put("longitude", 2).put("accuracy", 5)).put("event", event.wire),
             )
             assertEquals(event, record.event)
         }
@@ -296,7 +296,7 @@ class DefaultRecordFactoryTest {
     @Test
     fun `fromExternal accepts timestamps with an offset`() {
         val record = factory.fromExternal(
-            JSONObject("""{"coords":{"latitude":1,"longitude":2},"timestamp":"2026-09-26T13:15:30.123+03:00"}"""),
+            JSONObject("""{"coords":{"latitude":1,"longitude":2,"accuracy":5},"timestamp":"2026-09-26T13:15:30.123+03:00"}"""),
         )
 
         assertEquals(Fixtures.FIX_TIME, record.location!!.time)
@@ -304,7 +304,7 @@ class DefaultRecordFactoryTest {
 
     @Test
     fun `fromExternal accepts numeric strings for coordinates`() {
-        val record = factory.fromExternal(JSONObject("""{"coords":{"latitude":"24.5","longitude":"46.25"}}"""))
+        val record = factory.fromExternal(JSONObject("""{"coords":{"latitude":"24.5","longitude":"46.25","accuracy":5}}"""))
 
         assertEquals(24.5, record.location!!.latitude, 0.0)
         assertEquals(46.25, record.location!!.longitude, 0.0)
@@ -325,19 +325,23 @@ class DefaultRecordFactoryTest {
 
     @Test
     fun `fromExternal rejects invalid optional fields`() {
-        assertInvalid("""{"coords":{"latitude":1,"longitude":2},"timestamp":"yesterday"}""", "timestamp")
-        assertInvalid("""{"coords":{"latitude":1,"longitude":2},"timestamp":1790417730123}""", "timestamp")
-        assertInvalid("""{"coords":{"latitude":1,"longitude":2},"event":"teleport"}""", "event")
-        assertInvalid("""{"coords":{"latitude":1,"longitude":2},"extras":"x=1"}""", "extras")
-        assertInvalid("""{"coords":{"latitude":1,"longitude":2},"is_moving":1}""", "is_moving")
+        assertInvalid("""{"coords":{"latitude":1,"longitude":2,"accuracy":5},"timestamp":"yesterday"}""", "timestamp")
+        assertInvalid("""{"coords":{"latitude":1,"longitude":2,"accuracy":5},"timestamp":1790417730123}""", "timestamp")
+        assertInvalid("""{"coords":{"latitude":1,"longitude":2,"accuracy":5},"event":"teleport"}""", "event")
+        assertInvalid("""{"coords":{"latitude":1,"longitude":2,"accuracy":5},"extras":"x=1"}""", "extras")
+        assertInvalid("""{"coords":{"latitude":1,"longitude":2,"accuracy":5},"is_moving":1}""", "is_moving")
         assertInvalid("""{"coords":{"latitude":1,"longitude":2,"accuracy":-1}}""", "accuracy")
+        // Round 3: accuracy is required and must be > 0 (0 would read as a perfect fix).
+        assertInvalid("""{"coords":{"latitude":1,"longitude":2}}""", "accuracy is required")
+        assertInvalid("""{"coords":{"latitude":1,"longitude":2,"accuracy":null}}""", "accuracy is required")
+        assertInvalid("""{"coords":{"latitude":1,"longitude":2,"accuracy":0}}""", "accuracy must be > 0")
     }
 
     @Test
     fun `fromExternal maps negative unknown sentinels to null`() {
         val record = factory.fromExternal(
             JSONObject(
-                """{"coords":{"latitude":1,"longitude":2,"altitude":-12.5,"altitude_accuracy":-1,"speed":-1,
+                """{"coords":{"latitude":1,"longitude":2,"accuracy":5,"altitude":-12.5,"altitude_accuracy":-1,"speed":-1,
                    "speed_accuracy":-1,"heading":-1,"heading_accuracy":-1}}""",
             ),
         )
@@ -355,7 +359,7 @@ class DefaultRecordFactoryTest {
     fun `fromExternal accepts is_moving as a boolean string`() {
         configStore.updateRuntime { it.copy(isMoving = false) }
 
-        val record = factory.fromExternal(JSONObject("""{"coords":{"latitude":1,"longitude":2},"is_moving":"true"}"""))
+        val record = factory.fromExternal(JSONObject("""{"coords":{"latitude":1,"longitude":2,"accuracy":5},"is_moving":"true"}"""))
 
         assertTrue(record.isMoving)
     }
@@ -457,7 +461,7 @@ class DefaultRecordFactoryTest {
     @Test
     fun `every record has device_id, inserted records included`() {
         val records = RecordEvent.entries.map { factory.create(it, Fixtures.location()) } +
-            factory.fromExternal(JSONObject("""{"coords":{"latitude":1.5,"longitude":-2.25}}"""))
+            factory.fromExternal(JSONObject("""{"coords":{"latitude":1.5,"longitude":-2.25,"accuracy":5}}"""))
 
         records.forEach { record ->
             assertEquals(record.event.wire, DEVICE_ID, RecordJson.toJson(record).getJSONObject("device").getString("device_id"))

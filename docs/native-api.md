@@ -213,7 +213,7 @@ method and delivers the JS result shape to a `NativeCallback` on the `LT-native`
 | `getState(context, cb)` | | `State` JSON |
 | `getHeartbeatStatus(context, cb)` | | `HeartbeatStatus` JSON |
 | `sync(context, cb)` | | `JSONArray` of the uploaded records (the JS `locations` array) |
-| `insertLocation(context, location, cb)` | an `InsertLocationInput` object (`{coords, timestamp?, event?, is_moving?, extras?}`) | the new record's `uuid` |
+| `insertLocation(context, location, cb)` | an `InsertLocationInput` object (`{coords, timestamp?, event?, is_moving?, extras?}`; `coords.accuracy` > 0 is required) | the new record's `uuid` |
 | `addGeofence(context, geofence, cb)` | a JS `Geofence` object | `Unit` |
 | `removeGeofence(context, identifier, cb)` | | `Unit` |
 | `getGeofences(context, cb)` | | `JSONArray` of JS `Geofence` objects |

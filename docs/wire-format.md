@@ -195,7 +195,7 @@ off, so they can arrive outside a `tracking_start` … `tracking_stop` period.
 ### Records added with `insertLocation()`
 
 The app can add its own records with `insertLocation()`. They have the default shape, with the `event` the app gave
-(`location` if none), its `coords` (`accuracy` 0 if not given), `timestamp` (the insert time if not given) and
+(`location` if none), its `coords` (`accuracy` is required and must be greater than 0), `timestamp` (the insert time if not given) and
 `is_moving` (the current state if not given), and the current `odometer`, `activity`, `battery`, `backend`, `network`,
 `provider` and `device.device_id`. Their
 `extras` are `persistence.extras` merged with the given ones. They are queued and uploaded like any other

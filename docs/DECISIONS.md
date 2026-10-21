@@ -748,6 +748,7 @@ Decisions the owner gave with the rulings:
 | R3-Q6 | Every change to a decision recorded in this file is written into this file (R3.3). |
 | R3-Q7 | 2026-10-21, after the first round-3 delivery: "device.device_id on every record. device_id will be a normalized device id across platforms later. Wrapped under device, similar to tracking_start record." Confirmed as a rename: `device.android_id` of `tracking_start` becomes `device.device_id`, and no `android_id` key is left. |
 | R3-Q8 | 2026-10-21: after an upload stopped because the app changed the tokens (2a), a new automatic pass about 10 s later with the new tokens, if `http.authorization` is still set; nothing if it is null (logout step 3). It also runs while tracking is off or after the process died (the upload job). |
+| R3-Q9 | 2026-10-21, after the real-phone run (R3.4, "Real phones"): "accuracy 0 is invalid value". `insertLocation()` requires `coords.accuracy` greater than 0: a missing, `null`, `0` or negative accuracy rejects with `INVALID_ARGUMENT`, from JS and from `LocationTrackingNative.insertLocation`. No consuming app called it without an accuracy; in this repository only P-R12 and runbook M-10 step 3 did. |
 
 ### R3.2 Design decisions
 
@@ -799,6 +800,7 @@ Decisions the owner gave with the rulings:
 | R2.3 "A background trigger … does not restore tracking in a process that started after a user force stop … No `tracking_stop` is recorded." | The heartbeat-alarm and service restores are checked too, and one `tracking_stop` reason `user_stopped` with `stopped_at` is recorded (6a, 6b). |
 | R3.1 d7 and R3.2 d1–d7: `android_id` on `tracking_start` records only | `device.device_id` on every record (R3-Q7). |
 | R3.2 2a "no new pass is requested" after an upload stopped for new tokens | A new pass 10 s later while `http.authorization` is set (R3-Q8). |
+| `docs/wire-format.md` (unit 9): a record from `insertLocation()` gets `accuracy` 0 when none is given | `coords.accuracy` is required and must be greater than 0 (R3-Q9). |
 | Round 1 records, logs and config were in Auto Backup | The database and logs are under `noBackupFilesDir`; tokens are encrypted there; a restored prefs file never turns tracking on (7a, 7b, 8a). |
 
 ### R3.4 Verified, not done, and not verified

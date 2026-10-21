@@ -1815,7 +1815,7 @@ debug APK, the back office with a tunnel ([4.3](#43-reaching-it-from-a-real-phon
 1. **[auto]** Common setup; launch the app. `node lt-js.mjs ready '{"config":{"http":{"url":"https://<tunnel>/locations","authorization":{"accessToken":"m10-access","refreshToken":"m10-refresh","refreshUrl":"https://<tunnel>/auth/refresh","refreshPayload":{"refresh_token":"{refreshToken}"}}}},"reset":true}'`.
 2. **[auto]** `adb shell run-as $APP ls no_backup` lists `location_tracking_secrets.bin`;
    `adb shell run-as $APP cat shared_prefs/location_tracking_prefs.xml | grep -c m10-` prints `0`.
-3. **[auto]** `node lt-js.mjs insertLocation '{"location":{"coords":{"latitude":24.7,"longitude":46.6}}}'`: the back office
+3. **[auto]** `node lt-js.mjs insertLocation '{"location":{"coords":{"latitude":24.7,"longitude":46.6,"accuracy":8}}}'`: the back office
    request log (`curl -s 'localhost:8787/__requests?path=/locations'`) shows `authorization: Bearer m10-access`.
 4. **[auto]** `adb shell am force-stop $APP`, launch the app, `node lt-js.mjs ready '{"reset":false}'`, repeat step 3. Then `adb reboot`,
    wait for the boot, unlock, launch the app, `node lt-js.mjs ready '{"reset":false}'`, repeat step 3.

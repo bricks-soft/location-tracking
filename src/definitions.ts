@@ -493,7 +493,8 @@ export interface HeartbeatMeta {
 export type LocationRecord = Location;
 
 export interface InsertLocationInput {
-  coords: Pick<Coords, 'latitude' | 'longitude'> & Partial<Coords>;
+  /** `accuracy` (m) is required and must be greater than 0; otherwise the call rejects with `INVALID_ARGUMENT`. */
+  coords: Pick<Coords, 'latitude' | 'longitude' | 'accuracy'> & Partial<Coords>;
   timestamp?: string;
   event?: RecordEvent;
   is_moving?: boolean;

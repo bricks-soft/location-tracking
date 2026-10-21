@@ -92,6 +92,9 @@ Round 3: the changes the owner accepted from the comparison with the reference p
 
 ### Changed
 
+- **`insertLocation()` requires `coords.accuracy` greater than 0** and rejects with `INVALID_ARGUMENT` otherwise
+  (also `LocationTrackingNative.insertLocation`). Before, a missing accuracy was stored as `0`, which reads as a
+  perfect fix.
 - **Uploads:** redirects are not followed (a `3xx` is a failed upload) and OkHttp no longer repeats a request after a
   connection failure by itself; idle connections older than 4 s are closed before an upload, so a connection the
   server already closed does not fail it. At most 16 KB of an upload answer is read. The 2, 4 and 8 s retries are moved by up to

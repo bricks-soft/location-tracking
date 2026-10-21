@@ -94,7 +94,7 @@ internal class NativeFullStackTest : FullStackTestBase() {
         val inserted = native<String> {
             LocationTrackingNative.insertLocation(
                 app,
-                JSONObject().put("coords", JSONObject().put("latitude", gps.latitudeAt(50.0)).put("longitude", Fixtures.LNG)),
+                JSONObject().put("coords", JSONObject().put("latitude", gps.latitudeAt(50.0)).put("longitude", Fixtures.LNG).put("accuracy", 5)),
                 it,
             )
         }

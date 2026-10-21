@@ -126,7 +126,7 @@ class PluginHandlersTest {
         "getLocations" to op { handlers.getLocations(JSONObject()) },
         "getCount" to op { handlers.getCount() },
         "insertLocation" to op {
-            handlers.insertLocation(json("""{"location":{"coords":{"latitude":1,"longitude":2}}}"""))
+            handlers.insertLocation(json("""{"location":{"coords":{"latitude":1,"longitude":2,"accuracy":5}}}"""))
         },
         "destroyLocations" to op { handlers.destroyLocations() },
         "destroyLocation" to op { handlers.destroyLocation(json("""{"uuid":"x"}""")) },
@@ -538,9 +538,12 @@ class PluginHandlersTest {
             """{"location":{}}""",
             """{"location":{"coords":{"latitude":91,"longitude":0}}}""",
             """{"location":{"coords":{"latitude":0,"longitude":"x"}}}""",
-            """{"location":{"coords":{"latitude":0,"longitude":0},"timestamp":"yesterday"}}""",
-            """{"location":{"coords":{"latitude":0,"longitude":0},"event":"teleport"}}""",
+            """{"location":{"coords":{"latitude":0,"longitude":0,"accuracy":5},"timestamp":"yesterday"}}""",
+            """{"location":{"coords":{"latitude":0,"longitude":0,"accuracy":5},"event":"teleport"}}""",
             """{"location":{"coords":{"latitude":0,"longitude":0,"accuracy":-1}}}""",
+            """{"location":{"coords":{"latitude":0,"longitude":0}}}""",
+            """{"location":{"coords":{"latitude":0,"longitude":0,"accuracy":null}}}""",
+            """{"location":{"coords":{"latitude":0,"longitude":0,"accuracy":0}}}""",
         )
         for (text in bad) assertRejects(ErrorCode.INVALID_ARGUMENT) { handlers.insertLocation(json(text)) }
 

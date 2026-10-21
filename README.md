@@ -982,8 +982,8 @@ How to measure the cost on a real phone: procedure M-04 in the
   `NETWORK_ERROR` at the first failed upload, after its tries (records uploaded before the failure are already
   deleted).
 - `insertLocation({ location })` stores a record of your own (default `event: 'location'`) and uploads it like the
-  others. It emits **no** event and does **not** restart the heartbeat window, because it is not evidence that
-  tracking runs.
+  others. `location.coords` needs `latitude`, `longitude` and an `accuracy` (m) greater than 0. It emits **no**
+  event and does **not** restart the heartbeat window, because it is not evidence that tracking runs.
 - `persistence.maxDaysToPersist` and `maxRecordsToPersist` prune the queue, including heartbeats and audit records.
 
 ### Live location: `http.syncInterval`
@@ -2636,13 +2636,13 @@ Heartbeat records: `background_restricted`, `standby_bucket`, `disk_free_bytes`,
 
 #### InsertLocationInput
 
-| Prop            | Type                                                                                                                                                                      |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`coords`**    | <code><a href="#pick">Pick</a>&lt;<a href="#coords">Coords</a>, 'latitude' \| 'longitude'&gt; & <a href="#partial">Partial</a>&lt;<a href="#coords">Coords</a>&gt;</code> |
-| **`timestamp`** | <code>string</code>                                                                                                                                                       |
-| **`event`**     | <code><a href="#recordevent">RecordEvent</a></code>                                                                                                                       |
-| **`is_moving`** | <code>boolean</code>                                                                                                                                                      |
-| **`extras`**    | <code><a href="#record">Record</a>&lt;string, unknown&gt;</code>                                                                                                          |
+| Prop            | Type                                                                                                                                                                                    | Description                                                                                                |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| **`coords`**    | <code><a href="#pick">Pick</a>&lt;<a href="#coords">Coords</a>, 'latitude' \| 'longitude' \| 'accuracy'&gt; & <a href="#partial">Partial</a>&lt;<a href="#coords">Coords</a>&gt;</code> | `accuracy` (m) is required and must be greater than 0; otherwise the call rejects with `INVALID_ARGUMENT`. |
+| **`timestamp`** | <code>string</code>                                                                                                                                                                     |                                                                                                            |
+| **`event`**     | <code><a href="#recordevent">RecordEvent</a></code>                                                                                                                                     |                                                                                                            |
+| **`is_moving`** | <code>boolean</code>                                                                                                                                                                    |                                                                                                            |
+| **`extras`**    | <code><a href="#record">Record</a>&lt;string, unknown&gt;</code>                                                                                                                        |                                                                                                            |
 
 
 #### Geofence
@@ -2905,7 +2905,7 @@ A record could not be stored because the device storage is full.
 
 Construct a type with a set of properties K of type T
 
-<code>{ [P in K]: T; }</code>
+<code>{ [P in K]: T; }</code>
 
 
 #### NotificationPriority
@@ -2964,14 +2964,14 @@ Rejection `code` of every failed promise.
 
 From T, pick a set of properties whose keys are in the union K
 
-<code>{ [P in K]: T[P]; }</code>
+<code>{ [P in K]: T[P]; }</code>
 
 
 #### Partial
 
 Make all properties in T optional
 
-<code>{ [P in keyof T]?: T[P]; }</code>
+<code>{ [P in keyof T]?: T[P]; }</code>
 
 
 #### HeartbeatStrategy

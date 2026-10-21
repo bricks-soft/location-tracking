@@ -134,6 +134,16 @@ class OptionParsersTest {
     }
 
     @Test
+    fun `insert location input needs an accuracy greater than 0`() {
+        for (accuracy in listOf("", ""","accuracy":null""", ""","accuracy":0""", ""","accuracy":-1""", ""","accuracy":"5"""")) {
+            assertInvalid("""{"location":{"coords":{"latitude":1,"longitude":2$accuracy}}}""") {
+                OptionParsers.insertLocationInput(it)
+            }
+        }
+        OptionParsers.insertLocationInput(json("""{"location":{"coords":{"latitude":1,"longitude":2,"accuracy":0.5}}}"""))
+    }
+
+    @Test
     fun `log query`() {
         assertEquals(LogQuery(), OptionParsers.logQuery(JSONObject()))
         assertEquals(

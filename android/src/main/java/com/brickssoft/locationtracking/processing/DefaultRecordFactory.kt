@@ -80,12 +80,12 @@ class DefaultRecordFactory(
     }
 
     /**
-     * Parses a JS `InsertLocationInput`: `{coords:{latitude, longitude, accuracy?, altitude?, ...}, timestamp?,
-     * event?, is_moving?, extras?}`. `accuracy` defaults to 0; negative optional accuracies, speed and heading
-     * (the "unknown" sentinel of some platforms) become null.
+     * Parses a JS `InsertLocationInput`: `{coords:{latitude, longitude, accuracy, altitude?, ...}, timestamp?,
+     * event?, is_moving?, extras?}`. Negative optional accuracies, speed and heading (the "unknown" sentinel of some
+     * platforms) become null.
      *
      * @throws TrackingException INVALID_ARGUMENT if coords, latitude or longitude are missing or invalid, if
-     *   accuracy is negative, or if `timestamp`, `event`, `is_moving` or `extras` are given but invalid.
+     *   accuracy is missing or not greater than 0, or if `timestamp`, `event`, `is_moving` or `extras` are given but invalid.
      */
     override fun fromExternal(input: JSONObject): Record {
         val coords = input.optJSONObject("coords") ?: invalid("location.coords is required")
@@ -110,8 +110,9 @@ class DefaultRecordFactory(
         } else {
             JsonUtil.optBoolean(input, "is_moving") ?: invalid("is_moving must be a boolean")
         }
-        val accuracy = JsonUtil.optFloat(coords, "accuracy") ?: 0f
-        if (accuracy < 0) invalid("coords.accuracy must be >= 0")
+        // Round 3: no default; an accuracy of 0 would read as a perfect fix.
+        val accuracy = JsonUtil.optFloat(coords, "accuracy") ?: invalid("coords.accuracy is required")
+        if (!(accuracy > 0)) invalid("coords.accuracy must be > 0")
         val extras = if (input.isNull("extras")) {
             null
         } else {

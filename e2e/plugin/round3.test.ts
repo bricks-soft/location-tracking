@@ -1021,7 +1021,7 @@ scenario(
     await ctx.adb.shell(`fallocate -l ${Math.max(0, freeKb - 512)}k ${fill} || dd if=/dev/zero of=${fill} bs=1m count=${Math.floor(freeKb / 1024)} || true`);
     ctx.log(`filled /data: ${(await ctx.adb.shell('df -k /data | tail -1')).trim()}`);
 
-    const rejected = await ctx.commands.insertLocation({ coords: { latitude: PLACES.hq.lat, longitude: PLACES.hq.lon } }).then(
+    const rejected = await ctx.commands.insertLocation({ coords: { latitude: PLACES.hq.lat, longitude: PLACES.hq.lon, accuracy: 8 } }).then(
       () => undefined,
       (error: unknown) => String(error),
     );

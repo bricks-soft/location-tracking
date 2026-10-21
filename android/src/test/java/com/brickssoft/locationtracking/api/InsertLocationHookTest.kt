@@ -48,7 +48,7 @@ class InsertLocationHookTest {
         Logger.sink = null
     }
 
-    private fun input() = JSONObject("""{"location":{"coords":{"latitude":24.7,"longitude":46.6}}}""")
+    private fun input() = JSONObject("""{"location":{"coords":{"latitude":24.7,"longitude":46.6,"accuracy":5}}}""")
 
     @Test
     fun `the inserted record reaches the record hooks after the insert and before the upload policy`() = runTest {

@@ -1,65 +1,13 @@
 # Changelog
 
 All notable changes to `@bricks-soft/capacitor-location-tracking` are listed here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The major version follows the Capacitor major version
+(Capacitor 8), as `@bricks-soft/cap-downloader` does. Within it, versions follow
+[Semantic Versioning](https://semver.org/), except that a minor version can have breaking changes; they are listed
+under "Breaking changes" in that version. New changes are written under `[Unreleased]`; `scripts/release.sh`
+gives that section the version and the date.
 
-## [8.0.0] - Unreleased
-
-The first version published to npm. It contains everything below, including [0.1.0], which was never published. The
-version follows the Capacitor major version (Capacitor 8), as `@bricks-soft/cap-downloader` does.
-
-### Changed
-
-- **Published to npm** as `@bricks-soft/capacitor-location-tracking` with public access: `package.json` no longer has
-  `"private": true`, and has `repository`, `bugs`, `homepage`, `publishConfig` and a `prepare` build (it also builds
-  `dist/` when an app installs the package from git, since `dist/` is not committed). The
-  workflow `.github/workflows/npm-publish.yml` stages a version on npm when a GitHub release is created (trusted
-  publishing, no npm token); a maintainer approves it on npmjs.com. Steps: README, "Publishing to npm".
-- **License: MIT** (was `UNLICENSED`). `LICENSE` added.
-- `getDeviceInfo().pluginVersion` and the log file header report `8.0.0`.
-- **`com.huawei.hms:location` 6.16.0.302** (was 6.12.0.300), the release Huawei lists with 16 KB page-size support.
-  A build that packages HMS (`hms` or `gms,hms`) now meets Google Play's 16 KB requirement; 6.12.0.300 brought
-  `libTransform.so` (`arm64-v8a`) and `libucs-credential.so` (`x86_64`) with 4 KB alignment. The HMS backend no
-  longer calls `LocationRequest.setCoordinateType(WGS84)`, which 6.16 removed; WGS84 was the default, and the plugin
-  still builds against 6.12.0.300.
-- **`provider` on every record** (was `providerchange` only): the location provider state (`enabled`, `gps`,
-  `network`, `permission`, `accuracy`, `backend`) read when the record is created, so a server sees it on every
-  heartbeat and right after a restart. `providerchange` records and their detection are unchanged
-  ([wire-format.md, Record fields](docs/wire-format.md#record-fields)).
-- **`getDeviceInfo().packagedProviders` reports the SDKs in the APK** (checked at runtime), not the
-  `locationTracking.providers` value the plugin was built with, so a flavored app with `none` reports `["gms"]` or
-  `["hms"]`. The `PACKAGED_PROVIDERS` build constant is removed.
-- **A provider whose receivers the app removed is not used.** GMS or HMS counts as packaged only when its SDK
-  classes are in the APK and the merged manifest declares its activity and geofence receivers. `auto` skips it, an
-  explicit `gms`/`hms` falls back to `android` with a warning, and `packagedProviders`, `gmsAvailable` and
-  `hmsAvailable` leave it out. An AppGallery flavor that removes the GMS receivers now uses HMS even when another
-  library brings Google's location classes and the phone has Google Play services; before, `auto` selected GMS and
-  its activity and geofence events (including the stationary geofence exit) never arrived.
-- **`<meta-data android:name="com.brickssoft.locationtracking.PROVIDERS">`** in the app's manifest lists the providers
-  the plugin may use (`gms`, `hms`, `android`, comma-separated), for example `hms` in an AppGallery flavor. A provider
-  that is not listed is not packaged: `auto` skips it and an explicit `gms`/`hms` falls back to `android`. Without the
-  entry both are allowed, as before. A listed provider whose SDK or receivers are missing is logged as a warning
-  ([README, Choose the location SDKs](README.md#1-choose-the-location-sdks-to-package)).
-
-### Added
-
-- **`<%= record %>` template placeholder**: the whole default record object (`sent_at` included), so a template can
-  nest every field without listing them, e.g. `"record": <%= record %>`
-  ([wire-format.md, Templates](docs/wire-format.md#templates)).
-- **Resume notification** (`notification.resume`, off by default): when Android refuses to restore tracking from
-  the background (typically after a reboot or an app update on Android 14+ with only "while in use" location), the
-  plugin posts a notification whose tap resumes the session (`tracking_start` reason `resume_notification`)
-  ([README, `config.notification.resume`](README.md#confignotificationresume)).
-- **A restore after the `stopAfterElapsedMinutes` deadline** (after a reboot, an app update, a killed process or
-  `ready()`) now records `tracking_stop` with reason `stop_after_elapsed` and starts nothing. Before, it restored the
-  session and stopped it at once (`tracking_start` then `stop_after_elapsed`), or recorded `service_start_failed` when
-  Android refused the background start.
-- **`<%= provider %>` template placeholder**: the record's `provider` object, or `null`, e.g.
-  `"provider": <%= provider %>`.
-- **Store flavors**: README section "Separate Play and AppGallery APKs (product flavors)" for apps that build a
-  Google Play APK with only GMS and an AppGallery APK with only HMS: `locationTracking.providers=none`, the SDK added
-  per flavor, and per-flavor manifests that remove the other provider's receivers and permission.
-
+## [Unreleased]
 
 Round 3: the changes the owner accepted from the comparison report. Decisions:
 [docs/DECISIONS.md, Round 3](docs/DECISIONS.md#round-3-comparison-report).
@@ -188,6 +136,72 @@ Added, Changed or Security below.
 - `heartbeat.uploadKeepAwake` (default 10 s) can end before a slow upload: on the emulator the first heartbeat after
   entering Doze took 7.4 s to reach the server, plus 4 s for the answer. The upload then continues when the CPU next
   wakes.
+
+## [8.0.1] - 2026-10-07
+
+### Changed
+
+- The first version published by `.github/workflows/npm-publish.yml` (npm trusted publishing), so it has an npm
+  provenance statement; 8.0.0 was published by hand. No change in the plugin's behavior.
+- `android/build.gradle` reads the plugin version from `package.json`, and `npm version` copies it to
+  `src/web/device.ts`, so `getDeviceInfo().pluginVersion` and the log file header report the published version.
+
+## [8.0.0] - 2026-10-07
+
+The first version published to npm. It contains everything below, including [0.1.0], which was never published. The
+version follows the Capacitor major version (Capacitor 8), as `@bricks-soft/cap-downloader` does.
+
+### Changed
+
+- **Published to npm** as `@bricks-soft/capacitor-location-tracking` with public access: `package.json` no longer has
+  `"private": true`, and has `repository`, `bugs`, `homepage`, `publishConfig` and a `prepare` build (it also builds
+  `dist/` when an app installs the package from git, since `dist/` is not committed). The
+  workflow `.github/workflows/npm-publish.yml` stages a version on npm when a GitHub release is created (trusted
+  publishing, no npm token); a maintainer approves it on npmjs.com. Steps: README, "Publishing to npm".
+- **License: MIT** (was `UNLICENSED`). `LICENSE` added.
+- `getDeviceInfo().pluginVersion` and the log file header report `8.0.0`.
+- **`com.huawei.hms:location` 6.16.0.302** (was 6.12.0.300), the release Huawei lists with 16 KB page-size support.
+  A build that packages HMS (`hms` or `gms,hms`) now meets Google Play's 16 KB requirement; 6.12.0.300 brought
+  `libTransform.so` (`arm64-v8a`) and `libucs-credential.so` (`x86_64`) with 4 KB alignment. The HMS backend no
+  longer calls `LocationRequest.setCoordinateType(WGS84)`, which 6.16 removed; WGS84 was the default, and the plugin
+  still builds against 6.12.0.300.
+- **`provider` on every record** (was `providerchange` only): the location provider state (`enabled`, `gps`,
+  `network`, `permission`, `accuracy`, `backend`) read when the record is created, so a server sees it on every
+  heartbeat and right after a restart. `providerchange` records and their detection are unchanged
+  ([wire-format.md, Record fields](docs/wire-format.md#record-fields)).
+- **`getDeviceInfo().packagedProviders` reports the SDKs in the APK** (checked at runtime), not the
+  `locationTracking.providers` value the plugin was built with, so a flavored app with `none` reports `["gms"]` or
+  `["hms"]`. The `PACKAGED_PROVIDERS` build constant is removed.
+- **A provider whose receivers the app removed is not used.** GMS or HMS counts as packaged only when its SDK
+  classes are in the APK and the merged manifest declares its activity and geofence receivers. `auto` skips it, an
+  explicit `gms`/`hms` falls back to `android` with a warning, and `packagedProviders`, `gmsAvailable` and
+  `hmsAvailable` leave it out. An AppGallery flavor that removes the GMS receivers now uses HMS even when another
+  library brings Google's location classes and the phone has Google Play services; before, `auto` selected GMS and
+  its activity and geofence events (including the stationary geofence exit) never arrived.
+- **`<meta-data android:name="com.brickssoft.locationtracking.PROVIDERS">`** in the app's manifest lists the providers
+  the plugin may use (`gms`, `hms`, `android`, comma-separated), for example `hms` in an AppGallery flavor. A provider
+  that is not listed is not packaged: `auto` skips it and an explicit `gms`/`hms` falls back to `android`. Without the
+  entry both are allowed, as before. A listed provider whose SDK or receivers are missing is logged as a warning
+  ([README, Choose the location SDKs](README.md#1-choose-the-location-sdks-to-package)).
+
+### Added
+
+- **`<%= record %>` template placeholder**: the whole default record object (`sent_at` included), so a template can
+  nest every field without listing them, e.g. `"record": <%= record %>`
+  ([wire-format.md, Templates](docs/wire-format.md#templates)).
+- **Resume notification** (`notification.resume`, off by default): when Android refuses to restore tracking from
+  the background (typically after a reboot or an app update on Android 14+ with only "while in use" location), the
+  plugin posts a notification whose tap resumes the session (`tracking_start` reason `resume_notification`)
+  ([README, `config.notification.resume`](README.md#confignotificationresume)).
+- **A restore after the `stopAfterElapsedMinutes` deadline** (after a reboot, an app update, a killed process or
+  `ready()`) now records `tracking_stop` with reason `stop_after_elapsed` and starts nothing. Before, it restored the
+  session and stopped it at once (`tracking_start` then `stop_after_elapsed`), or recorded `service_start_failed` when
+  Android refused the background start.
+- **`<%= provider %>` template placeholder**: the record's `provider` object, or `null`, e.g.
+  `"provider": <%= provider %>`.
+- **Store flavors**: README section "Separate Play and AppGallery APKs (product flavors)" for apps that build a
+  Google Play APK with only GMS and an AppGallery APK with only HMS: `locationTracking.providers=none`, the SDK added
+  per flavor, and per-flavor manifests that remove the other provider's receivers and permission.
 
 Round 2: the field-force audit setup, a native API for companion plugins, and end-to-end tests on an Android
 emulator. Decisions: [docs/DECISIONS.md](docs/DECISIONS.md#round-2-field-force-audit-companion-api-and-avd-tests).

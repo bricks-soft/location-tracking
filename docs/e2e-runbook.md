@@ -7,7 +7,7 @@ It covers:
 
 - the automated suites on an Android emulator (AVD): the plugin suite (`e2e/plugin`, against the plugin's example app
   `example/`) and the field-force suite (`examples/field-force/e2e`, against the field-force example app);
-- the manual procedures **M-01 … M-08**, which need a real phone, a real drive, a real night or a release build.
+- the manual procedures **M-01 … M-12**, which need a real phone, a real drive, a real night or a release build.
 
 The contract behind the tests (scenario ids, debug commands, mock back office, kit API) is
 [docs/e2e/architecture.md](e2e/architecture.md). The older manual release checklist for real phones is
@@ -22,7 +22,7 @@ The contract behind the tests (scenario ids, debug commands, mock back office, k
 5. [Driving the apps by hand](#5-driving-the-apps-by-hand)
 6. [Running the automated suites](#6-running-the-automated-suites)
 7. [Triage of a failed scenario](#7-triage-of-a-failed-scenario)
-8. [Manual procedures M-01 … M-08](#8-manual-procedures-m-01--m-08)
+8. [Manual procedures M-01 … M-12](#8-manual-procedures-m-01--m-12)
 9. [Report template for a full run](#9-report-template-for-a-full-run)
 
 ---
@@ -59,7 +59,7 @@ Words used in this runbook:
 | FGS | Foreground service: a service with a visible notification. The plugin's tracking service is one. |
 | Back office | The server that receives the uploads. In the tests this is the **mock back office** (section [4](#4-the-mock-back-office)). |
 | Record | One object the plugin uploads, for example a `location` or a `heartbeat`. Fields: [wire-format.md](wire-format.md). |
-| Scenario id | A stable test id: `P-L01` … `P-P11` (plugin suite), `F-01` … `F-12` (field-force suite), `M-01` … `M-08` (manual). |
+| Scenario id | A stable test id: `P-L01` … `P-P11` and `P-R01` … `P-R13` (plugin suite), `F-01` … `F-12` (field-force suite), `M-01` … `M-12` (manual). |
 | Battery exemption | The app is excluded from battery optimization ("Unrestricted" battery use). See [heartbeat.md](heartbeat.md#battery-optimization-exemption). |
 
 ---
@@ -100,6 +100,19 @@ suite and `testing/e2e-kit` can move into the Bricks app later as its integratio
 | Travel distance and time | F-04 | M-03 |
 | Battery use | – | M-04 |
 | 16 KB page size (Google Play) | CI 16 KB check | M-07 |
+| Android 11–13 restore without background location; resume notification | P-R01 (API 30, 31, 33), P-R02 (API 29) | M-12 |
+| Uploads with no tracking session (upload job) | P-R03 | – |
+| Task Manager stop (Android 13+) | P-R04 | M-12 |
+| Update from the previous version (data moved, tokens encrypted) | P-R05 | – |
+| Backup restored onto a new installation | P-R06 | – |
+| Encrypted tokens, damaged secrets file | P-R07 | M-10 |
+| Platform backend with `gps` and `network` | P-R08 | M-11 |
+| Heartbeat upload wake lock in Doze | P-R09 | M-08 |
+| Upload rules (`Retry-After`, 429, 413, 3xx, answer size) | P-R10 | – |
+| Token changes during an upload or a refresh | P-R11 | – |
+| Storage full | P-R12 | – |
+| `device.device_id` on every record | P-R13 | – |
+| HMS registration errors and timing | – | M-09 |
 
 The scenario list with titles is printed by `npm run catalogue` in `testing/e2e-kit`.
 
@@ -174,6 +187,17 @@ avdmanager list avd | grep -E 'Name: e2e-34'   # both names must be listed
 ```
 
 `echo no` answers "Do you wish to create a custom hardware profile?".
+
+The API subsets and the round-3 scenarios use more AVDs of the same kind (images from
+`sdkmanager "system-images;android-<api>;google_apis;x86_64"`): `e2e-29`, `e2e-30`, `e2e-31`, `e2e-33` and `e2e-35`, and
+`e2e-34b` (a second API 34 AVD for a parallel lane, [6.4](#64-the-same-run-as-ci-githubscriptsrun-e2esh)):
+
+```bash
+for api in 29 30 31 33 35; do
+  echo no | avdmanager create avd --force -n e2e-$api -k "system-images;android-$api;google_apis;x86_64" -d pixel_6
+done
+echo no | avdmanager create avd --force -n e2e-34b -k "system-images;android-34;google_apis;x86_64" -d pixel_6
+```
 
 ### 3.5 Start an AVD (cold boot) and get root
 
@@ -671,7 +695,7 @@ two suites at the same time against one emulator.
 
 ### 6.1 Full runs
 
-**[auto]** The plugin suite (34 scenarios; estimated 2 to 3 hours on a KVM host):
+**[auto]** The plugin suite (47 scenarios: 34 of rounds 1–2 and 13 of round 3, [6.10](#610-round-3-scenarios-p-r01--p-r13); estimated 2 to 3 hours on a KVM host):
 
 ```bash
 cd e2e/plugin
@@ -798,6 +822,7 @@ cd e2e/plugin && NODE_OPTIONS='--test-name-pattern=^P-P08' npm run test:e2e
 | `E2E_SERIAL` | the only device | adb serial, for example `emulator-5556`. |
 | `E2E_APP_ID` | by id: `P-*` plugin example, `F-*` field-force | Overrides the app under test. |
 | `E2E_APK` | none | APK for the (re)install scenarios. |
+| `E2E_OLD_APK` | none | The example APK of the previous version, installed before `E2E_APK` by P-R05 ([6.10](#610-round-3-scenarios-p-r01--p-r13)). |
 | `E2E_BACKEND_PORT` | `8787` | Port of the suites' back office on the host. |
 | `E2E_INCLUDE_LONG` | off | `1` also runs `long` scenarios. |
 | `E2E_DRY_RUN` | off | `1` lists the scenarios and runs nothing (no device needed). |
@@ -810,7 +835,7 @@ cd e2e/plugin && NODE_OPTIONS='--test-name-pattern=^P-P08' npm run test:e2e
 ```bash
 (cd e2e/plugin && npm run dry-run)                  # prints "DRY-RUN <id> | <title> | requires: … | timeout …s"
 (cd examples/field-force/e2e && npm run dry-run)
-(cd testing/e2e-kit && npm run catalogue)           # the whole catalogue, including M-01 … M-08
+(cd testing/e2e-kit && npm run catalogue)           # the whole catalogue, including M-01 … M-12
 ```
 
 A dry run checks that every scenario id exists in the catalogue and prints each scenario's requirements. It needs no
@@ -894,6 +919,33 @@ scenario id (the kit writes it once a scenario has started the suite's back offi
 `.github/scripts/run-e2e.sh`, `$E2E_ARTIFACTS_DIR/_run/` also holds `logcat.txt` (the whole run: the main, system,
 crash and events buffers), `test-output.txt`, `device.txt`, `getprop.txt` and `crash-buffer.txt`.
 
+### 6.10 Round-3 scenarios (P-R01 … P-R13)
+
+The round-3 scenarios are in `e2e/plugin/round3.test.ts`, so a full plugin run includes them; the ones whose API
+level does not match the AVD are skipped with the reason. They need these AVDs:
+
+| Scenarios | AVD | Notes |
+|---|---|---|
+| P-R01 | `e2e-30`, `e2e-31`, `e2e-33` | Root (for `kill -9`). Taps the resume notification with `uiautomator dump` and `input tap`. |
+| P-R02 | `e2e-29` | |
+| P-R03 … P-R13 | `e2e-34` | P-R04 needs API 34+ (`am stop-app`), P-R08 API 31+, P-R12 root. |
+| P-R08 | also `e2e-34-nogms` | The same check without Google Play services. |
+
+P-R05 installs the example app of the **previous version** first: set `E2E_OLD_APK` to its debug APK, or the
+scenario is skipped. Build it from the last commit before round 3 in a separate worktree (the debug keystore is the
+same, so `adb install -r` of `E2E_APK` keeps the data):
+
+```bash
+git worktree add --detach ../lt-previous 5deb3f0
+(cd ../lt-previous && npm ci && npm run build && cd example && npm ci && npm run sync && \
+  cd android && ./gradlew assembleDebug -PlocationTracking.providers=gms,hms)
+cp ../lt-previous/example/android/app/build/outputs/apk/debug/app-debug.apk ~/lt-runs/plugin-example-previous.apk
+E2E_OLD_APK=~/lt-runs/plugin-example-previous.apk E2E_TEST_NAME_PATTERN='P-R' E2E_SUITE_DIR=e2e/plugin \
+  E2E_APK=example/android/app/build/outputs/apk/debug/app-debug.apk .github/scripts/run-e2e.sh
+```
+
+Results of the round-3 run: [DECISIONS.md](DECISIONS.md), R3.4.
+
 ---
 
 ## 7. Triage of a failed scenario
@@ -940,7 +992,7 @@ crash and events buffers), `test-output.txt`, `device.txt`, `getprop.txt` and `c
 
 ---
 
-## 8. Manual procedures M-01 … M-08
+## 8. Manual procedures M-01 … M-12
 
 ### 8.0 Common setup for a real phone
 
@@ -1682,6 +1734,171 @@ heartbeats), the night is not valid; repeat it (make sure the phone is unplugged
 
 ---
 
+### M-09 Location request errors on a Huawei phone (round 3: 3a, 3b, 3c)
+
+**Goal.** With HMS, a delivered fix counts as a successful registration even when Huawei's success callback comes
+late or never (3b). A registration that fails emits `locationerror` and is made again after 10 s, 20 s, 40 s … up to
+5 minutes, without stopping tracking (3a). `getCurrentPosition()` rejects at once when the request is refused, instead
+of waiting for its whole timeout (3c).
+
+**Device and setup.**
+
+- The Huawei phone of [M-01](#m-01-hms-on-a-huawei-phone), outdoors or near a window (fixes must arrive).
+- Run A: the example APK **with** AppGallery Connect (M-01 steps 1–2). Run B: the plain `gms,hms` example APK
+  **without** `agconnect-services.json` and without the AppGallery Connect Gradle plugin.
+- A JS helper, run from `e2e/plugin` (the kit drives the app's WebView over adb):
+
+  ```bash
+  cat > /tmp/lt-js.mjs <<'JS'
+  import { Adb, WebViewDriver } from '@bricks-soft/e2e-kit';
+  const web = await WebViewDriver.connect(new Adb(), 'com.brickssoft.locationtracking.example');
+  const [method, args] = [process.argv[2], process.argv[3] ? JSON.parse(process.argv[3]) : undefined];
+  const t = Date.now();
+  try { console.log(JSON.stringify(await web.callPlugin('LocationTracking', method, args, { timeoutMs: 120000 }))); }
+  catch (e) { console.log(`rejected after ${Date.now() - t} ms: ${e.code} ${e.message}`); }
+  await web.close();
+  JS
+  cp /tmp/lt-js.mjs ./lt-js.mjs   # must sit next to node_modules; delete it afterwards
+  ```
+
+**Steps (each run).**
+
+1. **[auto]** Common setup ([8.0](#80-common-setup-for-a-real-phone)) with the run's APK. Launch the app.
+2. **[auto]** `adb logcat -c`, then `node lt-js.mjs ready '{"config":{"locationProvider":"hms","http":{"url":"https://<tunnel>/locations"}},"reset":true}'`
+   and `node lt-js.mjs start`. Note the time.
+3. **[auto]** After 2 minutes: `adb logcat -d | grep -E 'LT\.(Hms|Engine|Location)' > m09-<run>.txt` and
+   `curl -s 'localhost:8787/__records?event=location,motionchange' > m09-<run>.json`.
+4. **[auto]** `node lt-js.mjs getCurrentPosition '{"timeout":60000,"persist":false}'` and note how long it took.
+5. **[auto]** `node lt-js.mjs stop`; `rm lt-js.mjs`.
+
+**Expected results.**
+
+| Check | Run A (AppGallery Connect set up) | Run B (no AppGallery Connect) |
+|---|---|---|
+| Backend in the records | `hms` | `hms` |
+| Fixes | location or motionchange records with coords within 1 minute | Either the same as run A (Huawei answers without the setup), or none |
+| Log after the first fix | the HMS registration counts as successful; no `locationerror` | When fixes arrive: as run A. When they do not: `locationerror` lines with `retryInMs` 10000, 20000, 40000 …, and a new `location updates requested` line after each wait |
+| Tracking | stays on (`getState().enabled` true) | stays on |
+| `getCurrentPosition` (step 4) | resolves with a fix | resolves with a fix when fixes arrive; otherwise rejects within about 2 s with the HMS error, not `TIMEOUT` after 60 s |
+
+**Pass / fail.** Pass when every cell of the row holds for the run. A `TIMEOUT` after the whole timeout in run B, a
+registration error followed by no new request, or tracking turning off, is a fail.
+
+**Result template.**
+
+| Field | Run A | Run B |
+|---|---|---|
+| Date, phone, EMUI/HarmonyOS, HMS Core version | | |
+| First fix after start (s) | | |
+| `locationerror` events (count, `retryInMs` values) | | |
+| `getCurrentPosition` result and duration | | |
+| Verdict | | |
+
+---
+
+### M-10 Encrypted tokens on a real phone (round 3: 8a)
+
+**Goal.** The tokens are encrypted with a key in the phone's hardware-backed Android Keystore. They survive an app
+restart and a reboot. A damaged secrets file gives an `authorization` event with an error and holds normal records;
+new tokens from `setConfig` end the wait. P-R07 checks the same on the emulator, whose Keystore is software only.
+
+**Device and setup.** Any phone with Android 9 or newer and Google Play services, no screen lock, the plugin example
+debug APK, the back office with a tunnel ([4.3](#43-reaching-it-from-a-real-phone)), `lt-js.mjs` of
+[M-09](#m-09-location-request-errors-on-a-huawei-phone-round-3-3a-3b-3c). `APP=com.brickssoft.locationtracking.example`.
+
+**Steps.**
+
+1. **[auto]** Common setup; launch the app. `node lt-js.mjs ready '{"config":{"http":{"url":"https://<tunnel>/locations","authorization":{"accessToken":"m10-access","refreshToken":"m10-refresh","refreshUrl":"https://<tunnel>/auth/refresh","refreshPayload":{"refresh_token":"{refreshToken}"}}}},"reset":true}'`.
+2. **[auto]** `adb shell run-as $APP ls no_backup` lists `location_tracking_secrets.bin`;
+   `adb shell run-as $APP cat shared_prefs/location_tracking_prefs.xml | grep -c m10-` prints `0`.
+3. **[auto]** `node lt-js.mjs insertLocation '{"location":{"coords":{"latitude":24.7,"longitude":46.6}}}'`: the back office
+   request log (`curl -s 'localhost:8787/__requests?path=/locations'`) shows `authorization: Bearer m10-access`.
+4. **[auto]** `adb shell am force-stop $APP`, launch the app, `node lt-js.mjs ready '{"reset":false}'`, repeat step 3. Then `adb reboot`,
+   wait for the boot, unlock, launch the app, `node lt-js.mjs ready '{"reset":false}'`, repeat step 3.
+5. **[auto]** Damage the file: `adb shell am force-stop $APP`,
+   `adb shell "run-as $APP sh -c 'echo broken > no_backup/location_tracking_secrets.bin'"`. Launch the app,
+   `adb logcat -c`, `node lt-js.mjs ready '{"reset":false}'`, step 3 again. Then
+   `adb logcat -d | grep -E 'event authorization|Capacitor/Console.*"success":false'`: one `authorization` event with
+   `"success":false` and an `error`. The back office gets no request for the record.
+6. **[auto]** `node lt-js.mjs setConfig '{"config":{"http":{"authorization":{"accessToken":"m10-new","refreshToken":"m10-new-refresh"}}}}'`:
+   within 30 s the held record arrives with `authorization: Bearer m10-new`.
+7. **[auto]** Write down the Keystore of the phone: `adb shell getprop ro.hardware.keystore` and whether
+   `adb shell pm list features | grep -i strongbox` prints a line.
+
+**Pass / fail.** Pass when steps 2–6 hold. A token in the prefs file, an upload without the token after the restart
+or the reboot, or a damaged file that crashes the app or uploads without an `authorization` event, is a fail.
+
+**Result template.** Date, phone, Android version, Keystore type, StrongBox (yes/no), steps 2–6 results, verdict.
+
+---
+
+### M-11 Platform backend outdoors and indoors on a real phone (round 3: 12a, 12b)
+
+**Goal.** With `locationProvider: 'android'`, HIGH accuracy uses the `gps` and `network` providers together:
+indoors (no satellites) network fixes arrive; outdoors GPS fixes arrive and network fixes are dropped while a GPS fix is
+recent; `getCurrentPosition` returns the more accurate of the two. P-R08 checks this on the emulator with test
+providers.
+
+**Device and setup.** A phone with Android 9 or newer whose network location works (Wi-Fi on, location accuracy on);
+the plugin example debug APK; the back office with a tunnel; `lt-js.mjs`. A building, and an open place 200 m from it.
+
+**Steps.**
+
+1. **[auto]** Common setup. `node lt-js.mjs ready '{"config":{"locationProvider":"android","geolocation":{"desiredAccuracy":"high","distanceFilter":10},"http":{"url":"https://<tunnel>/locations"}},"reset":true}'`,
+   `node lt-js.mjs start`, `node lt-js.mjs changePace '{"isMoving":true}'`.
+2. **[person]** Stay inside the building, away from windows, for 5 minutes, then walk outside and walk for 5 minutes
+   in the open.
+3. **[auto]** `curl -s 'localhost:8787/__records?event=location,motionchange' > m11.json`. Inside: records with
+   accuracy about 20–100 m (network). Outside: records with accuracy under 20 m (GPS), and no record with a network
+   accuracy while GPS fixes arrive every few seconds.
+4. **[auto]** Outside: `node lt-js.mjs getCurrentPosition '{"timeout":30000,"persist":false,"maximumAge":0}'`: the
+   accuracy is the GPS one.
+
+**Result template.** Date, phone, Android version, accuracies inside (min/median/max), accuracies outside, records
+with network accuracy while outside (count), `getCurrentPosition` accuracy, verdict.
+
+---
+
+### M-12 Android 11–13 restore without background location on a real phone (round 3: 5a, 6b)
+
+**Goal.** On real Android 11, 12 and 13 phones with only "Allow only while using the app" location, a restore from the
+background (reboot, and a killed process restored by the system or the heartbeat alarm) records `tracking_stop` with
+reason `service_start_failed` and posts the resume notification; a tap on it resumes with reason
+`resume_notification`, and fixes arrive. P-R01 checks this on API 30, 31 and 33 emulators. Also find out how Android
+11 and 12 record an app update in `ApplicationExitInfo` (the reason boot and update restores are not checked for a
+user stop, DECISIONS R3.4).
+
+**Device and setup.** One phone each with Android 11, 12 and 13 (also a Samsung or Xiaomi phone if available), Google
+Play services, no screen lock, the plugin example debug APK, the back office with a tunnel, `lt-js.mjs` of
+[M-09](#m-09-location-request-errors-on-a-huawei-phone-round-3-3a-3b-3c).
+
+**Steps.**
+
+1. **[auto]** Common setup. Grant only while-in-use location as in [M-06](#m-06-android-14-real-boot-with-only-while-in-use-location)
+   step 2 (with the plugin example's package), and `adb shell dumpsys deviceidle whitelist +com.brickssoft.locationtracking.example`.
+2. **[auto]** Launch the app. `node lt-js.mjs ready '{"config":{"app":{"startOnBoot":true},"notification":{"resume":{"enabled":true}},"heartbeat":{"enabled":true,"minInterval":60,"maxInterval":120},"http":{"url":"https://<tunnel>/locations"}},"reset":true}'`,
+   then `node lt-js.mjs start`. Within 30 s: `tracking_start` reason `start`.
+3. **[auto]** `adb reboot`; wait for the boot; unlock (`adb shell input keyevent KEYCODE_WAKEUP && adb shell wm dismiss-keyguard`).
+   Within 2 minutes of the unlock: `tracking_stop` reason `service_start_failed`, and the notification "Location
+   tracking is paused. Tap to resume." (`adb shell dumpsys notification --noredact | grep location_tracking_resume`).
+4. **[agent]** Open the notification shade and tap that notification ([5.5](#55-ui-actions-the-agent-performs-itself)).
+   Within 30 s: `tracking_start` reason `resume_notification`. **[person]** walks 200 m: location records follow.
+5. **[auto]** Kill the process without root: `adb shell am crash com.brickssoft.locationtracking.example` (Android
+   11+; the crash is expected). Within `maxInterval` + 1 minute: `tracking_stop` reason `service_start_failed` again,
+   and the notification again. Tap it again (step 4).
+6. **[auto]** Update question (Android 11 and 12 only): with tracking on, `adb install -r <same apk>`, then
+   `adb shell dumpsys activity exit-info com.brickssoft.locationtracking.example | head -20`; write down the reason and
+   subreason of the newest exit.
+
+**Expected results.** Steps 3 and 5: `tracking_stop` reason `service_start_failed`, the resume notification, no
+heartbeat until the tap. Step 4: `tracking_start` reason `resume_notification` and location records while walking.
+Step 6 is a finding, not pass/fail: reason `USER_REQUESTED` (13) confirms the reading of the AOSP source.
+
+**Result template.** Per phone: date, phone, Android version, step 3, 4, 5 results, records while walking, exit-info
+reason after the update, verdict.
+
+---
+
 ## 9. Report template for a full run
 
 The agent fills in this report at the end of a run and attaches the per-procedure tables from section 8.
@@ -1726,6 +1943,10 @@ The agent fills in this report at the end of a run and attaches the per-procedur
 | M-06 | | | | records after unlock, crashes | |
 | M-07 | | | | zipalign result, failing libraries | |
 | M-08 | | | | gap p95/max per night | |
+| M-09 | | | | first fix, locationerror waits, getCurrentPosition time | |
+| M-10 | | | | Keystore type, token after restart/reboot, damaged-file result | |
+| M-11 | | | | accuracies inside/outside, network fixes while GPS | |
+| M-12 | | | | per Android version: reboot/kill/tap result, exit-info after update | |
 
 ## Open issues found in this run
 

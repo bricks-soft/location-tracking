@@ -64,6 +64,8 @@ export interface RequestLogEntry {
   body: string;
   /** set when a fault answered the request */
   fault?: 'status' | 'drop' | 'delay';
+  /** host epoch ms when the answer was written (or the connection dropped) */
+  answeredAt?: number;
 }
 
 /**
@@ -638,6 +640,9 @@ export class MockBackOffice {
   }
 
   private writeLog(entry: RequestLogEntry, note: string): void {
+    entry.answeredAt = Date.now();
+    const answerMs = entry.answeredAt - entry.receivedAt;
+    if (answerMs >= 1_000) note = [note, `answered after ${answerMs} ms`].filter((part) => part).join('; ');
     const auth = entry.headers['authorization'];
     const line =
       `${new Date(entry.receivedAt).toISOString()} #${entry.id} ${entry.method} ${entry.path}${entry.query ? `?${entry.query}` : ''}` +

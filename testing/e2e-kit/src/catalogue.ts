@@ -5,6 +5,7 @@ export type CatalogueSuite =
   | 'plugin-lifecycle'
   | 'plugin-heartbeat'
   | 'plugin-permissions'
+  | 'plugin-round3'
   | 'field-force'
   | 'manual';
 
@@ -59,6 +60,21 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['P-P10', 'circular geofence ENTER / EXIT / DWELL via geo fix'],
     ['P-P11', 'geofences re-registered after reboot'],
   ]),
+  ...entries('plugin-round3', [
+    ['P-R01', 'Android 11-13 with "while in use" only: boot and kill restores record service_start_failed and offer the resume notification; a tap resumes'],
+    ['P-R02', 'Android 10 with "while in use" only: a boot restore still starts tracking and gets locations'],
+    ['P-R03', 'upload job: queued records upload after the process died; expedited at once, a regular job at the next-try time'],
+    ['P-R04', 'Task Manager stop (am stop-app): one tracking_stop user_stopped at the next heartbeat alarm, no heartbeat; ready() restores'],
+    ['P-R05', 'update from the previous version: records upload with the tokens; database and logs in no_backup; tokens encrypted'],
+    ['P-R06', 'backup restored onto a new installation: tracking off, no tokens, the rest of the config kept'],
+    ['P-R07', 'encrypted tokens across restart and reboot; a damaged secrets file gives an authorization error until new tokens'],
+    ['P-R08', "platform backend ('android'): network fixes indoors, GPS outdoors with network fixes dropped, the more accurate current position"],
+    ['P-R09', 'deep Doze: each heartbeat uploaded at once under the heartbeat-upload wake lock, released after the upload'],
+    ['P-R10', 'upload rules: 503 Retry-After, 429, 413 for big batches, 302 not followed, at most 16 KB of an answer'],
+    ['P-R11', 'token races: new tokens during an upload stop it and a new upload follows 10 s later; a late refresh does not overwrite them'],
+    ['P-R12', 'storage full: a record that cannot be stored gives a storagefull event'],
+    ['P-R13', 'every uploaded record carries device.device_id, the app ANDROID_ID'],
+  ]),
   ...entries('field-force', [
     ['F-01', 'app launch auto-starts tracking: tracking_start + motionchange, device details in params, battery'],
     ['F-02', '02:00 stop: stop time computed from the device clock, tracking_stop reason stop_after_elapsed'],
@@ -82,6 +98,10 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['M-06', 'Android 14+ real boot with only while-in-use location permission'],
     ['M-07', 'Play build (gms only): 16 KB page-size alignment'],
     ['M-08', 'real overnight Doze heartbeat spacing'],
+    ['M-09', 'location request errors on a Huawei phone, with and without AppGallery Connect'],
+    ['M-10', 'encrypted tokens with the hardware Keystore of a real phone'],
+    ['M-11', 'platform backend indoors and outdoors on a real phone'],
+    ['M-12', 'Android 11-13 restore without background location on real phones'],
   ]),
 ];
 

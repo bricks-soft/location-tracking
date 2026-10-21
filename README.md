@@ -1230,7 +1230,7 @@ form of the Google Play Console (collected, together with the purpose, for examp
   to audit tracking gaps on the server.
 - [docs/device-test-checklist.md](docs/device-test-checklist.md) is a manual test plan for real GMS, HMS and
   non-GMS phones; [docs/e2e-runbook.md](docs/e2e-runbook.md) covers the emulator tests and the real-phone procedures
-  M-01 … M-08.
+  M-01 … M-12.
 
 In short, store records idempotently by `uuid` and answer `2xx` quickly (also for records you will never accept, or
 they are retried until pruned). While tracking is on, expect some record at least every `maxInterval` seconds (about
@@ -1337,7 +1337,7 @@ The plugin is tested end to end on an Android emulator (AVD), in GitHub Actions 
 
 | Part | Where | What |
 |---|---|---|
-| Plugin suite | [`e2e/plugin/`](e2e/plugin/) | 34 scenarios against the plugin's [example app](#example-app): lifecycle (foreground-service start crashes, kills, reboots, updates), heartbeat and power (stationary GPS off, Doze, clock changes, offline, server errors, `syncInterval`), permissions, providers and geofences. |
+| Plugin suite | [`e2e/plugin/`](e2e/plugin/) | 47 scenarios against the plugin's [example app](#example-app): lifecycle (foreground-service start crashes, kills, reboots, updates), heartbeat and power (stationary GPS off, Doze, clock changes, offline, server errors, `syncInterval`), permissions, providers and geofences, and the round-3 behavior (restores without background location, the upload job, user stop, data migration and backup, encrypted tokens, upload rules, token races). |
 | Field-force suite | [`examples/field-force/e2e/`](examples/field-force/e2e/) | 12 scenarios against the [field-force example](#field-force-example): auto start, 02:00 stop, live location, route and odometer, online/offline audit, and PremiseMonitor receiving every record natively (also after a kill and a reboot). |
 | Test kit | [`testing/e2e-kit/`](testing/e2e-kit/) | adb, WebView and debug-command helpers, a mock back office, fixtures and assertions, on Node 22 without runtime dependencies. |
 | Manual procedures | [docs/e2e-runbook.md](docs/e2e-runbook.md) | M-01 … M-08: HMS on a Huawei phone, phone makers' task killers, a real drive, a 12-hour battery measurement, a real 02:00 stop, a real Android 14 boot, 16 KB alignment, real overnight Doze. |

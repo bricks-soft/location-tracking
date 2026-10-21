@@ -649,6 +649,24 @@ tighten it). Default timeout 10 minutes.
 | P-P10 | circular geofence ENTER / EXIT / DWELL via geo fixes | |
 | P-P11 | geofences re-registered after a reboot (a geofence fires after boot) | |
 
+*D. Round 3 — `round3.test.ts` (docs/DECISIONS.md, "Round 3")*
+
+| Id | Scenario | Needs |
+|---|---|---|
+| P-R01 | Android 11–13, "while in use" only, `startOnBoot`, `notification.resume`: reboot → `tracking_stop: service_start_failed` + resume notification; tap (uiautomator) → `tracking_start: resume_notification`; root `kill -9` → refused again (5a) | root, API 30–33 |
+| P-R02 | Android 10, "while in use" only: reboot → `tracking_start: boot`, location records after a geo-fix route (5a keeps API 29) | API 29 |
+| P-R03 | tracking off, offline: `insertLocation` → upload job `0x4C540001` (network, expedited on API 31+); `am kill`; network on → uploaded without opening the app; after 4 failed tries a regular job with the next-try delay runs the upload (10a–10c) | |
+| P-R04 | `am stop-app` (Task Manager stop): next heartbeat alarm → one `tracking_stop: user_stopped` with `stopped_at`, alarms cancelled, no heartbeat; `ready()` → `tracking_start: restore` (6a, 6b) | API 34 |
+| P-R05 | `E2E_OLD_APK` (previous version) with JWT, records queued offline → `install -r` of `E2E_APK` → records upload with the token; database and logs in `no_backup/`; no token in the prefs; `location_tracking_secrets.bin` (7a, 8a) | `E2E_OLD_APK` |
+| P-R06 | `bmgr` local transport: back up, uninstall, install, restore → `enabled` false, no tokens, URL and heartbeat kept, nothing starts (7b) | |
+| P-R07 | tokens across `force-stop` and reboot; a damaged `location_tracking_secrets.bin` → `authorization` event with an error, normal records held; new tokens → uploaded (8a) | |
+| P-R08 | `locationProvider: 'android'` with `gps` and `network` test providers: network fixes indoors; GPS fixes with far network fixes dropped; `getCurrentPosition` returns the GPS fix (12a, 12b) | API 31 |
+| P-R09 | deep Doze, battery-exempt, back office answers 4 s late: heartbeats reach it within a few seconds; `dumpsys power` shows `LocationTracking:heartbeat-upload` during an upload and not after (11d) | |
+| P-R10 | faults: 503 `Retry-After: 120` → no normal upload for 120 s; 429 ×4 → next upload ≥ 24 s later; 413 for ≥ 5 records → batches of ≤ 4; 302 → not followed, record kept; 20 KB answer → `http` event ≤ 16 KB (1a, 1b, 11a–11c, 13a) | |
+| P-R11 | 503 answered 8 s late while the app sets new tokens → no retry with the old token, new upload with the new token about 10 s later (2a, R3-Q8); `/auth/refresh` answered 8 s late while the app sets new tokens → the app's tokens kept (2b) | |
+| P-R12 | `/data` filled with one file → `storagefull` event (16g, best effort) | root |
+| P-R13 | every record of a session (`tracking_start`, `motionchange`, `location`, `heartbeat`, `tracking_stop`) has `device.device_id` = the app's `ANDROID_ID`, no `android_id` (A1, R3-Q7) | |
+
 **Field-force suite** (`examples/field-force/e2e/field-force.test.ts`, unit 14; app contract in §10).
 
 | Id | Scenario | Needs |
@@ -678,6 +696,10 @@ tighten it). Default timeout 10 minutes.
 | M-06 | Android 14+ real boot with only while-in-use location permission |
 | M-07 | Play build (gms only): 16 KB page-size alignment |
 | M-08 | real overnight Doze heartbeat spacing |
+| M-09 | location request errors on a Huawei phone, with and without AppGallery Connect (round 3: 3a–3c) |
+| M-10 | encrypted tokens with the hardware Keystore of a real phone (round 3: 8a) |
+| M-11 | platform backend indoors and outdoors on a real phone (round 3: 12a, 12b) |
+| M-12 | Android 11–13 restore without background location on real phones; how Android 11/12 record an update (round 3: 5a, 6b) |
 
 **Split.** Plugin behavior (lifecycle, heartbeat, permissions, providers, geofences) is tested against the plugin's
 example app, so it does not depend on the field-force app. The field-force suite tests the product setup (auto start,

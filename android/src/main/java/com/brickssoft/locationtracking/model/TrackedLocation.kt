@@ -26,13 +26,23 @@ data class TrackedLocation(
     val isMock: Boolean = false,
 ) {
     companion object {
-        /** Converts an Android [android.location.Location], keeping only the fields it actually has. */
+        /**
+         * The accuracy of a fix that has none (`Location.hasAccuracy()` false; some platform providers): 1,000 km,
+         * so the accuracy filters (`trackingAccuracyThreshold`, default 100 m) reject it. Before, it was stored as
+         * 0 m, which passes every accuracy filter (recommendation 12).
+         */
+        const val UNKNOWN_ACCURACY_M = 1_000_000f
+
+        /**
+         * Converts an Android [android.location.Location], keeping only the fields it actually has. A missing
+         * horizontal accuracy becomes [UNKNOWN_ACCURACY_M].
+         */
         fun from(l: android.location.Location): TrackedLocation {
             val api26 = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
             return TrackedLocation(
                 latitude = l.latitude,
                 longitude = l.longitude,
-                accuracy = l.accuracy,
+                accuracy = if (l.hasAccuracy()) l.accuracy else UNKNOWN_ACCURACY_M,
                 altitude = if (l.hasAltitude()) l.altitude else null,
                 altitudeAccuracy = if (api26 && l.hasVerticalAccuracy()) l.verticalAccuracyMeters else null,
                 speed = if (l.hasSpeed()) l.speed else null,

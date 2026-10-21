@@ -1,5 +1,6 @@
 package com.brickssoft.locationtracking.provider.hms
 
+import com.brickssoft.locationtracking.core.TrackingException
 import android.os.Bundle
 import android.os.Looper
 import com.brickssoft.locationtracking.core.ErrorCode
@@ -201,7 +202,7 @@ class HmsLocationBackendTest {
     }
 
     @Test
-    fun `synchronous request failure is logged and the listener forgotten`() {
+    fun `synchronous request failure reaches the listener and the listener is forgotten`() {
         every { client.requestLocationUpdates(any<LocationRequest>(), any<LocationCallback>(), any<Looper>()) } throws
             SecurityException("no permission")
         val listener = RecordingListener()
@@ -209,21 +210,45 @@ class HmsLocationBackendTest {
         backend.requestUpdates(spec, listener)
 
         assertEquals(0, backend.activeListenerCount)
+        assertEquals(listOf(ErrorCode.PERMISSION_DENIED), listener.errors.map { it.code })
+        val cleanup = removed.size // the half-made registration is removed once
         backend.removeUpdates(listener)
-        assertTrue(removed.isEmpty())
+        assertEquals(cleanup, removed.size)
     }
 
     @Test
-    fun `asynchronous request failure forgets the listener`() {
+    fun `asynchronous request failure forgets the listener and reports the error once`() {
         val pending = TaskCompletionSource<Void>()
         every { client.requestLocationUpdates(any<LocationRequest>(), any<LocationCallback>(), any<Looper>()) } returns
             pending.task
-        backend.requestUpdates(spec, RecordingListener())
+        val listener = RecordingListener()
+        backend.requestUpdates(spec, listener)
         assertEquals(1, backend.activeListenerCount)
 
         pending.setException(Hms.apiException(HmsStatusCodes.PERMISSION_DENIED))
 
         assertEquals(0, backend.activeListenerCount)
+        assertEquals(1, listener.errors.size)
+    }
+
+    @Test
+    fun `a delivered fix counts as a registration, so a late failure report is ignored`() {
+        val pending = TaskCompletionSource<Void>()
+        val callbacks = CopyOnWriteArrayList<LocationCallback>()
+        every { client.requestLocationUpdates(any<LocationRequest>(), any<LocationCallback>(), any<Looper>()) } answers {
+            callbacks += secondArg<LocationCallback>()
+            pending.task
+        }
+        val listener = RecordingListener()
+        backend.requestUpdates(spec, listener)
+
+        // Without AppGallery Connect setup HMS may deliver fixes and never confirm the registration.
+        callbacks.single().onLocationResult(Hms.result(Hms.location(latitude = 1.0)))
+        pending.setException(Hms.apiException(HmsStatusCodes.PERMISSION_DENIED))
+
+        assertEquals(1, listener.batches.size)
+        assertTrue(listener.errors.isEmpty())
+        assertEquals(1, backend.activeListenerCount)
     }
 
     @Test
@@ -241,7 +266,7 @@ class HmsLocationBackendTest {
     }
 
     @Test
-    fun `a concurrent removeUpdates waits until the request is registered`() {
+    fun `a removeUpdates during the registration also removes the registration once it exists`() {
         val events = CopyOnWriteArrayList<String>()
         val listener = RecordingListener()
         lateinit var remover: Thread
@@ -259,7 +284,9 @@ class HmsLocationBackendTest {
         backend.requestUpdates(spec, listener)
         remover.join(5_000)
 
-        assertEquals(listOf("registered", "removed"), events)
+        // Removed at once (best effort) and again after the registration completed, so it cannot keep running.
+        assertEquals("removed", events.last())
+        assertTrue(events.lastIndexOf("registered") < events.lastIndexOf("removed"))
         assertEquals(0, backend.activeListenerCount)
     }
 
@@ -456,9 +483,14 @@ class HmsLocationBackendTest {
 
     private class RecordingListener : LocationListener {
         val batches = CopyOnWriteArrayList<List<TrackedLocation>>()
+        val errors = CopyOnWriteArrayList<TrackingException>()
 
         override fun onLocations(locations: List<TrackedLocation>) {
             batches += locations
+        }
+
+        override fun onError(error: TrackingException) {
+            errors += error
         }
     }
 }

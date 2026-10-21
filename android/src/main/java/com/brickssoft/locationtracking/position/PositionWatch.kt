@@ -38,7 +38,11 @@ internal class PositionWatch(
     /** Guards [started], [stopped], [registered] and every [callback] invocation. */
     private val lock = Any()
     private val fixes = Channel<TrackedLocation>(BUFFER, BufferOverflow.DROP_OLDEST)
-    private val listener = LocationListener { batch -> batch.forEach { fixes.trySend(it) } }
+    private val listener = object : LocationListener {
+        override fun onLocations(locations: List<TrackedLocation>) = locations.forEach { fixes.trySend(it) }
+
+        override fun onError(error: TrackingException) = onRequestFailed(error)
+    }
 
     @Volatile
     private var stopped = false
@@ -67,6 +71,25 @@ internal class PositionWatch(
                 return DefaultPositionService.backendError(e)
             }
         }
+    }
+
+    /**
+     * The backend refused the request after [start] returned (recommendation 3): [callback] gets the error once and the
+     * watch ends (the backend no longer has the listener).
+     */
+    private fun onRequestFailed(error: TrackingException) {
+        synchronized(lock) {
+            if (stopped) return
+            try {
+                callback(null, error)
+            } catch (e: Exception) {
+                Logger.e(DefaultPositionService.TAG, "watch $id callback failed", e)
+            }
+            stopped = true
+            registered = false
+        }
+        fixes.close()
+        Logger.w(DefaultPositionService.TAG, "watch $id ended: ${error.code} ${error.message}")
     }
 
     /** Removes the backend listener and ends deliveries. */

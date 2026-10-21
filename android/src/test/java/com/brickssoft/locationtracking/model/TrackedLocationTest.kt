@@ -69,4 +69,19 @@ class TrackedLocationTest {
         assertNull(t.headingAccuracy)
         assertFalse(t.isMock)
     }
+
+    @Test
+    fun `a fix without accuracy gets an accuracy so large that the accuracy filter rejects it`() {
+        val l = Location("network").apply {
+            latitude = 1.0
+            longitude = 2.0
+            time = 1_000L
+        }
+
+        val t = TrackedLocation.from(l)
+
+        assertFalse(l.hasAccuracy())
+        assertEquals(TrackedLocation.UNKNOWN_ACCURACY_M, t.accuracy)
+        assertEquals(1_000_000f, t.accuracy)
+    }
 }

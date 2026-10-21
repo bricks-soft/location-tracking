@@ -8,11 +8,13 @@ import com.brickssoft.locationtracking.core.Constants
 import com.brickssoft.locationtracking.core.Logger
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import java.io.File
 
 @RunWith(RobolectricTestRunner::class)
 class TrackingDatabaseTest {
@@ -29,7 +31,25 @@ class TrackingDatabaseTest {
     fun tearDown() {
         opened.forEach { it.close() }
         context.deleteDatabase(Constants.DATABASE_NAME)
+        noBackupFiles().forEach { it.delete() }
         Logger.sink = null
+    }
+
+    private fun noBackupDatabase() = File(context.noBackupFilesDir, Constants.DATABASE_NAME)
+
+    private fun noBackupFiles() = listOf("", "-wal", "-shm", "-journal").map { File(noBackupDatabase().path + it) }
+
+    private fun insertRecord(database: TrackingDatabase, uuid: String) {
+        database.writableDatabase.insertOrThrow(
+            "records",
+            null,
+            ContentValues().apply {
+                put("uuid", uuid)
+                put("event", "location")
+                put("recorded_at", 1L)
+                put("json", "{}")
+            },
+        )
     }
 
     private fun open() = TrackingDatabase(context).also { opened += it }
@@ -130,6 +150,38 @@ class TrackingDatabaseTest {
         assertTrue(db.isWriteAheadLoggingEnabled)
         val mode = db.rawQuery("PRAGMA journal_mode", null).use { c -> c.moveToFirst(); c.getString(0) }
         assertEquals("wal", mode.lowercase())
+    }
+
+    @Test
+    fun `a fresh install uses noBackupFilesDir`() {
+        assertEquals(noBackupDatabase().path, TrackingDatabase.location(context))
+    }
+
+    @Test
+    fun `a database of an older version moves to noBackupFilesDir with every row, including rows still in the WAL`() {
+        val old = open() // databases/location_tracking.db, as written by an older version
+        insertRecord(old, "u1")
+        insertRecord(old, "u2")
+        // Left open, as a killed process leaves it: the rows may be only in the -wal file.
+
+        val path = TrackingDatabase.location(context)
+        old.close()
+
+        assertEquals(noBackupDatabase().path, path)
+        assertFalse(context.getDatabasePath(Constants.DATABASE_NAME).exists())
+        assertFalse(File(context.getDatabasePath(Constants.DATABASE_NAME).path + "-wal").exists())
+        val moved = TrackingDatabase(context, path).also { opened += it }
+        assertEquals(2L, DatabaseUtils.queryNumEntries(moved.readableDatabase, "records"))
+        assertEquals(path, TrackingDatabase.location(context)) // nothing left to move
+    }
+
+    @Test
+    fun `when both databases exist the noBackupFilesDir one is used and the old one is kept`() {
+        TrackingDatabase(context, noBackupDatabase().path).also { opened += it }.writableDatabase
+        open().writableDatabase
+
+        assertEquals(noBackupDatabase().path, TrackingDatabase.location(context))
+        assertTrue(context.getDatabasePath(Constants.DATABASE_NAME).exists())
     }
 
     @Test

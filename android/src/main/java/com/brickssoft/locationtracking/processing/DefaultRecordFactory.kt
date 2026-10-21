@@ -6,8 +6,10 @@ import com.brickssoft.locationtracking.core.ErrorCode
 import com.brickssoft.locationtracking.core.Iso8601
 import com.brickssoft.locationtracking.core.Logger
 import com.brickssoft.locationtracking.core.TrackingException
+import com.brickssoft.locationtracking.device.DeviceDetails
 import com.brickssoft.locationtracking.device.DeviceMonitor
 import com.brickssoft.locationtracking.model.BatterySnapshot
+import com.brickssoft.locationtracking.model.ConnectivityType
 import com.brickssoft.locationtracking.model.GeofenceHit
 import com.brickssoft.locationtracking.model.JsonUtil
 import com.brickssoft.locationtracking.model.ProviderKind
@@ -20,16 +22,19 @@ import org.json.JSONObject
 import java.util.UUID
 
 /**
- * Builds records: uuid v4, clock and boot metadata, runtime state (isMoving, odometer, activity), battery and
- * the current provider state (unless the caller passes one, as `providerchange` does) from [device], backend from
- * [providers], and `extras` = `persistence.extras` merged with the per-call extras (per-call keys win; null when
- * both are empty).
+ * Builds records: uuid v4, clock and boot metadata, runtime state (isMoving, odometer, activity), battery, the
+ * connection type and the current provider state (unless the caller passes one, as `providerchange` does) from
+ * [device], backend from [providers], and `extras` = `persistence.extras` merged with the per-call extras (per-call keys
+ * win; null when both are empty). Heartbeat records also get the device and battery readings of [details], and
+ * `tracking_start` records the phone's model, Android version, `ANDROID_ID` and memory.
  */
 class DefaultRecordFactory(
     private val configStore: ConfigStore,
     private val device: DeviceMonitor,
     private val providers: ProviderFactory,
     private val clock: Clock,
+    /** Device readings for heartbeat and `tracking_start` records (device-information parts d1 to d7). */
+    private val details: DeviceDetails = DeviceDetails.NONE,
 ) : RecordFactory {
     override fun create(
         event: RecordEvent,
@@ -56,7 +61,21 @@ class DefaultRecordFactory(
             geofence = geofence,
             provider = provider ?: providerState(),
             reason = reason,
+            network = network(),
+            device = when (event) {
+                RecordEvent.HEARTBEAT -> details.forHeartbeat()
+                RecordEvent.TRACKING_START -> details.forTrackingStart()
+                else -> null
+            },
+            batteryDetails = if (event == RecordEvent.HEARTBEAT) details.batteryDetails() else null,
         )
+    }
+
+    private fun network(): ConnectivityType? = try {
+        device.connectivity().type
+    } catch (e: Exception) {
+        Logger.w(TAG, "connectivity unavailable", e)
+        null
     }
 
     /**

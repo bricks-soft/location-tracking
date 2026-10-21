@@ -1702,9 +1702,10 @@ scenario(
     });
     assert.equal(headerValue(next, 'authorization'), 'Bearer e2e-access-1', `later uploads keep the refreshed token: ${describeRequest(next)}`);
     assert.equal(sortedRequests(office, '/auth/refresh', phase2Since).length, 1, 'no second refresh while the token is valid');
+    // The State masks the tokens (round 3, recommendation 16): "***" plus the last 4 characters.
     const state = await ctx.commands.state();
-    assert.equal(valueAt(state.config, ['http', 'authorization', 'accessToken']), 'e2e-access-1', 'the refreshed access token is saved in the config');
-    assert.equal(valueAt(state.config, ['http', 'authorization', 'refreshToken']), 'e2e-refresh-1', 'the refreshed refresh token is saved in the config');
+    assert.equal(valueAt(state.config, ['http', 'authorization', 'accessToken']), '***ss-1', 'the refreshed access token is saved in the config');
+    assert.equal(valueAt(state.config, ['http', 'authorization', 'refreshToken']), '***sh-1', 'the refreshed refresh token is saved in the config');
   },
   { timeoutMs: 10 * 60_000 },
 );

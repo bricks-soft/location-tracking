@@ -97,11 +97,13 @@ class DefaultTrackingEngineTest {
         providerFactory: ProviderFactory = providers,
         store: ConfigStore = configStore,
         forceStopProbe: ForceStopProbe = ForceStopProbe.NEVER,
+        sdkInt: Int = 34,
     ): DefaultTrackingEngine {
         clock = FakeClock(scheduler = testScheduler)
         return DefaultTrackingEngine(
             store, providerFactory, processor, odometer, FakeRecordFactory(clock, configStore), recordSink,
             heartbeat, geofences, service, device, syncer, permissions, events, clock, backgroundScope, forceStopProbe,
+            sdkInt,
         )
     }
 
@@ -157,7 +159,7 @@ class DefaultTrackingEngineTest {
         assertEquals(listOf("tracking_start:start", "motionchange:false"), records())
         assertNull(recordSink.records[0].location) // nothing was known before the initial fix
         assertSame(origin, recordSink.records[1].location)
-        assertEquals(listOf(TrackingEvent.EnabledChange(true)), events.events)
+        assertEquals(listOf(TrackingEvent.EnabledChange(true, "start")), events.events)
         assertEquals(stationarySpec, activeSpec())
         assertEquals(DesiredAccuracy.PASSIVE, activeSpec()?.accuracy)
         assertEquals(listOf(DesiredAccuracy.HIGH to 30_000L), locationBackend.currentLocationCalls)
@@ -218,9 +220,9 @@ class DefaultTrackingEngineTest {
         )
         assertEquals(
             listOf(
-                TrackingEvent.EnabledChange(true),
+                TrackingEvent.EnabledChange(true, "start"),
                 TrackingEvent.ActivityChange(ActivitySample(ActivityType.IN_VEHICLE, 90)),
-                TrackingEvent.EnabledChange(false),
+                TrackingEvent.EnabledChange(false, "stop"),
             ),
             events.events,
         )
@@ -311,7 +313,7 @@ class DefaultTrackingEngineTest {
 
         assertEquals(listOf("tracking_start:start", "motionchange:false"), records())
         assertEquals(1, service.startCalls)
-        assertEquals(listOf(TrackingEvent.EnabledChange(true)), events.events)
+        assertEquals(listOf(TrackingEvent.EnabledChange(true, "start")), events.events)
     }
 
     @Test
@@ -628,9 +630,12 @@ class DefaultTrackingEngineTest {
         val engine = newEngine(forceStopProbe = ForceStopProbe { true })
 
         engine.onActivitySamples(listOf(ActivitySample(ActivityType.IN_VEHICLE, 90)))
+        engine.onActivitySamples(listOf(ActivitySample(ActivityType.WALKING, 90)))
         runCurrent()
 
-        assertEquals(emptyList<String>(), records())
+        // Recommendation 6: the user stop is recorded once, with the time of the stop.
+        assertEquals(listOf("tracking_stop:user_stopped"), records())
+        assertEquals("user_stopped", configStore.runtime.value.lastStopReason)
         assertEquals(0, service.startCalls)
         assertTrue(events.events.isEmpty())
         // The leftover activity registration is released, so it stops waking the app; opening the app still restores.
@@ -649,8 +654,49 @@ class DefaultTrackingEngineTest {
         engine.ready(null, reset = false)
         runCurrent()
 
-        assertEquals("tracking_start:restore", records().first())
+        assertEquals(listOf("tracking_stop:user_stopped", "tracking_start:restore"), records().take(2))
         assertEquals(1, service.startCalls)
+    }
+
+    @Test
+    fun `a heartbeat alarm after a Task Manager stop records user_stopped with the stop time once per stop`() = runTest {
+        val stoppedAt = FakeClock.DEFAULT_NOW - 60_000L
+        configStore.runtimeFlow.value = RuntimeState(enabled = true, lastLocation = origin)
+        val probe = object : ForceStopProbe {
+            override fun startedAfterForceStop() = true
+
+            override fun forceStopTime() = stoppedAt
+        }
+        val engine = newEngine(forceStopProbe = probe)
+
+        assertTrue(engine.startedAfterUserStop())
+        engine.restore("restore")
+        runCurrent()
+
+        assertEquals(listOf("tracking_stop:user_stopped"), records())
+        assertEquals(stoppedAt, recordSink.records.single().stoppedAt)
+        assertEquals(stoppedAt, configStore.runtime.value.lastStopAt)
+        assertEquals(stoppedAt, configStore.runtime.value.userStopRecordedFor)
+        assertEquals(1, heartbeat.stopCalls)
+        assertEquals(0, service.startCalls)
+        assertTrue(configStore.runtime.value.enabled)
+
+        // The next process after the same stop (the record survives in the runtime state) writes no second record.
+        val next = newEngine(forceStopProbe = probe)
+        next.restore("restore")
+        runCurrent()
+        assertEquals(1, recordSink.records.size)
+    }
+
+    @Test
+    fun `boot restores are not checked for a user stop`() = runTest {
+        configStore.runtimeFlow.value = RuntimeState(enabled = true, lastLocation = origin)
+        val engine = newEngine(forceStopProbe = ForceStopProbe { true })
+
+        engine.restore("boot")
+        runCurrent()
+
+        assertEquals("tracking_start:boot", records().first())
     }
 
     @Test
@@ -678,7 +724,7 @@ class DefaultTrackingEngineTest {
             records(),
         )
         assertFalse(configStore.runtime.value.enabled)
-        assertEquals(TrackingEvent.EnabledChange(false), events.events.last())
+        assertEquals(TrackingEvent.EnabledChange(false, "stop_on_stationary"), events.events.last())
         assertEquals(1, service.stopCalls)
     }
 
@@ -762,7 +808,7 @@ class DefaultTrackingEngineTest {
         assertFalse(configStore.runtime.value.enabled)
         assertEquals(listOf("tracking_stop:service_start_failed"), records())
         assertSame(origin, recordSink.records.single().location)
-        assertEquals(listOf(TrackingEvent.EnabledChange(false)), events.events)
+        assertEquals(listOf(TrackingEvent.EnabledChange(false, "service_start_failed")), events.events)
         assertFalse(locationBackend.isRequesting)
         assertEquals(1, heartbeat.stopCalls)
 
@@ -784,6 +830,198 @@ class DefaultTrackingEngineTest {
         assertEquals(0, service.startCalls)
         assertTrue(configStore.runtime.value.enabled)
         assertEquals("tracking_start:restore", records().first())
+    }
+
+    // ------------------------------------------------------------------ round 3 recommendations
+
+    @Test
+    fun `ready starts the uploader also while tracking is off`() = runTest {
+        val engine = newEngine()
+
+        engine.ready(null, reset = false)
+
+        assertFalse(configStore.runtime.value.enabled)
+        assertEquals(1, syncer.startCalls)
+    }
+
+    @Test
+    fun `a failed location request emits locationerror and is requested again after a growing wait`() = runTest {
+        val engine = newEngine()
+        started(engine)
+        val requestsBefore = locationBackend.requests.size
+        events.clear()
+
+        locationBackend.fail(TrackingException(ErrorCode.PERMISSION_DENIED, "denied by the OS"))
+        runCurrent()
+
+        assertEquals(
+            listOf(TrackingEvent.LocationError(ErrorCode.PERMISSION_DENIED, "denied by the OS", ProviderKind.GMS, 10_000L)),
+            events.events,
+        )
+        assertFalse(locationBackend.isRequesting)
+        advance(9_999)
+        assertFalse(locationBackend.isRequesting)
+        advance(1)
+        assertTrue(locationBackend.isRequesting)
+        assertEquals(requestsBefore + 1, locationBackend.requests.size)
+
+        locationBackend.fail(TrackingException(ErrorCode.UNAVAILABLE, "still failing"))
+        runCurrent()
+        assertEquals(20_000L, events.ofType<TrackingEvent.LocationError>().last().retryInMs)
+
+        advance(20_000)
+        emit(origin.copy(time = clock.now())) // a delivered fix resets the wait
+        locationBackend.fail(TrackingException(ErrorCode.UNAVAILABLE, "again"))
+        runCurrent()
+        assertEquals(10_000L, events.ofType<TrackingEvent.LocationError>().last().retryInMs)
+        assertTrue(configStore.runtime.value.enabled)
+    }
+
+    @Test
+    fun `stop removes a pending request retry`() = runTest {
+        val engine = newEngine()
+        started(engine)
+        locationBackend.fail(TrackingException(ErrorCode.UNAVAILABLE, "failed"))
+        runCurrent()
+
+        engine.stop()
+        advance(60_000)
+
+        assertFalse(locationBackend.isRequesting)
+    }
+
+    @Test
+    fun `on Android 11 to 13 a background restore without background location stops and offers to resume`() = runTest {
+        for (sdk in 30..33) {
+            recordSink.records.clear()
+            service.resumeNotifications.clear()
+            val engine = newEngine(sdkInt = sdk)
+            enableResume()
+            permissions.set(PermissionType.BACKGROUND_LOCATION, PermissionState.DENIED)
+            configStore.runtimeFlow.value = RuntimeState(enabled = true, lastLocation = origin)
+
+            engine.restore("boot")
+            runCurrent()
+
+            assertEquals("sdk $sdk", listOf("tracking_stop:service_start_failed"), records())
+            assertFalse(configStore.runtime.value.enabled)
+            assertEquals(1, service.resumeNotifications.size)
+        }
+        assertEquals(0, service.startCalls)
+    }
+
+    @Test
+    fun `background restores on Android 10 and 14, or with background location, are not refused by the engine`() = runTest {
+        val cases = listOf(29 to false, 34 to false, 31 to true)
+        for ((sdk, background) in cases) {
+            recordSink.records.clear()
+            permissions.set(
+                PermissionType.BACKGROUND_LOCATION,
+                if (background) PermissionState.GRANTED else PermissionState.DENIED,
+            )
+            configStore.runtimeFlow.value = RuntimeState(enabled = true, lastLocation = origin)
+            val engine = newEngine(sdkInt = sdk)
+
+            engine.restore("boot")
+            runCurrent()
+
+            assertEquals("sdk $sdk", "tracking_start:boot", records().first())
+            engine.stop()
+            runCurrent()
+        }
+    }
+
+    @Test
+    fun `opening the app restores on Android 11 to 13 without background location`() = runTest {
+        permissions.set(PermissionType.BACKGROUND_LOCATION, PermissionState.DENIED)
+        configStore.runtimeFlow.value = RuntimeState(enabled = true, lastLocation = origin)
+        val engine = newEngine(sdkInt = 31)
+
+        engine.ready(null, reset = false)
+        runCurrent()
+
+        assertEquals("tracking_start:restore", records().first())
+    }
+
+    @Test
+    fun `the last stop reason and time are kept in the runtime state`() = runTest {
+        val engine = newEngine()
+        started(engine)
+        advance(5_000)
+        val stoppedAt = clock.now()
+
+        engine.stop()
+
+        assertEquals("stop", configStore.runtime.value.lastStopReason)
+        assertEquals(stoppedAt, configStore.runtime.value.lastStopAt)
+        assertEquals(TrackingEvent.EnabledChange(false, "stop"), events.events.last())
+    }
+
+    @Test
+    fun `with locationProvider auto a better backend found on a heartbeat replaces the current one`() = runTest {
+        providers.kind = ProviderKind.HMS
+        val engine = newEngine()
+        started(engine)
+        assertEquals(0, providers.reselectCalls)
+
+        providers.best = ProviderKind.GMS
+        events.emit(TrackingEvent.Heartbeat(Fixtures.record(event = RecordEvent.HEARTBEAT)))
+        runCurrent()
+
+        assertEquals(1, providers.reselectCalls)
+        assertTrue(locationBackend.isRequesting) // registered again on the selected backend
+    }
+
+    @Test
+    fun `a worse or equal backend, or a fixed locationProvider, is never switched to`() = runTest {
+        providers.kind = ProviderKind.HMS
+        providers.best = ProviderKind.ANDROID
+        val engine = newEngine()
+        started(engine)
+        events.emit(TrackingEvent.Heartbeat(Fixtures.record(event = RecordEvent.HEARTBEAT)))
+        runCurrent()
+        assertEquals(0, providers.reselectCalls)
+
+        configStore.update { it.copy(locationProvider = LocationProviderSetting.HMS) }
+        runCurrent()
+        val afterConfig = providers.reselectCalls
+        providers.best = ProviderKind.GMS
+        events.emit(TrackingEvent.Heartbeat(Fixtures.record(event = RecordEvent.HEARTBEAT)))
+        runCurrent()
+        assertEquals(afterConfig, providers.reselectCalls)
+    }
+
+    @Test
+    fun `stopAfterElapsedMinutes counts elapsed time, so a wall clock change does not move it`() = runTest {
+        configure { it.copy(stopAfterElapsedMinutes = 60) }
+        val engine = newEngine()
+        started(engine)
+
+        clock.nowMs -= 3 * 60 * MINUTE // the user sets the clock back three hours
+        advance(59 * MINUTE)
+        assertTrue(configStore.runtime.value.enabled)
+        advance(MINUTE)
+
+        assertEquals("tracking_stop:stop_after_elapsed", records().last())
+        assertFalse(configStore.runtime.value.enabled)
+    }
+
+    @Test
+    fun `after a reboot stopAfterElapsedMinutes falls back to the wall clock`() = runTest {
+        val engine = newEngine()
+        configure { it.copy(stopAfterElapsedMinutes = 60) }
+        configStore.runtimeFlow.value = RuntimeState(
+            enabled = true,
+            lastLocation = origin,
+            trackingStartedAt = clock.now() - 61 * MINUTE,
+            trackingStartedElapsed = clock.elapsedRealtime() - MINUTE, // from the previous boot
+            trackingStartedBootCount = clock.bootCount() - 1,
+        )
+
+        engine.restore("boot")
+        runCurrent()
+
+        assertEquals(listOf("tracking_stop:stop_after_elapsed"), records())
     }
 
     private fun enableResume(stopAfterElapsedMinutes: Int = 0) = configStore.update {
@@ -873,7 +1111,7 @@ class DefaultTrackingEngineTest {
         assertEquals(startedAt, configStore.runtime.value.trackingStartedAt)
         assertTrue(locationBackend.isRequesting)
         assertEquals(1, service.startCalls) // only the refused one: the tap itself started the service
-        assertTrue(TrackingEvent.EnabledChange(true) in events.events)
+        assertTrue(TrackingEvent.EnabledChange(true, "resume_notification") in events.events)
         assertTrue(service.cancelResumeCalls > 0)
     }
 
@@ -914,7 +1152,7 @@ class DefaultTrackingEngineTest {
         assertEquals(listOf("tracking_stop:reboot"), records())
         assertSame(origin, recordSink.records.single().location)
         assertFalse(configStore.runtime.value.enabled)
-        assertEquals(listOf(TrackingEvent.EnabledChange(false)), events.events)
+        assertEquals(listOf(TrackingEvent.EnabledChange(false, "reboot")), events.events)
     }
 
     @Test
@@ -953,7 +1191,7 @@ class DefaultTrackingEngineTest {
         assertEquals("tracking_stop:service_start_failed", records().last())
         assertFalse(configStore.runtime.value.enabled)
         assertFalse(locationBackend.isRequesting)
-        assertEquals(TrackingEvent.EnabledChange(false), events.events.last())
+        assertEquals(TrackingEvent.EnabledChange(false, "service_start_failed"), events.events.last())
     }
 
     @Test
@@ -1020,7 +1258,7 @@ class DefaultTrackingEngineTest {
         assertEquals(listOf("tracking_stop:permission_denied"), records())
         assertSame(origin, recordSink.records.single().location)
         assertFalse(configStore.runtime.value.enabled)
-        assertEquals(listOf(TrackingEvent.EnabledChange(false)), events.events)
+        assertEquals(listOf(TrackingEvent.EnabledChange(false, "permission_denied")), events.events)
         assertEquals(0, service.startCalls)
         assertEquals(1, heartbeat.stopCalls)
         assertEquals(1, geofences.stoppedCalls)
@@ -1089,7 +1327,7 @@ class DefaultTrackingEngineTest {
         runCurrent()
 
         assertEquals(listOf("tracking_start:start_geofences"), records())
-        assertEquals(listOf(TrackingEvent.EnabledChange(true)), events.events)
+        assertEquals(listOf(TrackingEvent.EnabledChange(true, "start_geofences")), events.events)
         assertEquals(TrackingMode.GEOFENCES, configStore.runtime.value.trackingMode)
         assertEquals(listOf(TrackingMode.GEOFENCES), geofences.startedModes)
         assertFalse(locationBackend.isRequesting)
@@ -1174,7 +1412,7 @@ class DefaultTrackingEngineTest {
         assertEquals(stationarySpec, activeSpec())
         assertEquals(2, activityBackend.startCalls.size)
         assertEquals(1, service.startCalls)
-        assertEquals(listOf(TrackingEvent.EnabledChange(true)), events.events)
+        assertEquals(listOf(TrackingEvent.EnabledChange(true, "start")), events.events)
     }
 
     // ------------------------------------------------------------------ config

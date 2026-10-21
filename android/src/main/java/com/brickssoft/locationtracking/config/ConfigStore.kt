@@ -28,4 +28,10 @@ interface ConfigStore {
     fun update(transform: (Config) -> Config): Config
 
     fun updateRuntime(transform: (RuntimeState) -> RuntimeState): RuntimeState
+
+    /**
+     * True when the stored tokens (`accessToken`, `refreshToken`, `refreshPayload`, `refreshHeaders`) could not be
+     * decrypted at load: they read as unset, and uploads that need them are not sent until the app sets new ones.
+     */
+    val secretsUnavailable: Boolean get() = false
 }

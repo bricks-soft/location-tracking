@@ -1,5 +1,6 @@
 package com.brickssoft.locationtracking.model
 
+import com.brickssoft.locationtracking.core.ErrorCode
 import com.brickssoft.locationtracking.core.TrackingEvent
 import com.brickssoft.locationtracking.testing.Fixtures
 import org.junit.Assert.assertEquals
@@ -50,7 +51,13 @@ class EventJsonTest {
                 setOf("connected", "type"),
             ),
             Triple(TrackingEvent.PowerSaveChange(true), "powersavechange", setOf("isPowerSaveMode")),
-            Triple(TrackingEvent.EnabledChange(false), "enabledchange", setOf("enabled")),
+            Triple(TrackingEvent.EnabledChange(false, "user_stopped"), "enabledchange", setOf("enabled", "reason")),
+            Triple(
+                TrackingEvent.LocationError(ErrorCode.PERMISSION_DENIED, "no permission", ProviderKind.GMS, 10_000L),
+                "locationerror",
+                setOf("code", "message", "backend", "retryInMs"),
+            ),
+            Triple(TrackingEvent.StorageFull("u1", RecordEvent.LOCATION, 1024L), "storagefull", setOf("uuid", "event", "diskFreeBytes")),
             Triple(TrackingEvent.NotificationAction("pause"), "notificationaction", setOf("id")),
             Triple(
                 TrackingEvent.Authorization(true, 200, "none", """{"accessToken":"t"}"""),
@@ -59,7 +66,7 @@ class EventJsonTest {
             ),
         )
 
-        assertEquals(13, cases.map { it.second }.toSet().size)
+        assertEquals(15, cases.map { it.second }.toSet().size)
         for ((event, name, expectedKeys) in cases) {
             assertEquals(name, EventJson.name(event))
             assertEquals(name, expectedKeys, keys(event))

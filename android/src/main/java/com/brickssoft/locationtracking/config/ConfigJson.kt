@@ -69,12 +69,16 @@ object ConfigJson {
         return result
     }
 
-    /** The full TS `Config`: every key present, defaults filled, unset optional values as JSON null. */
-    fun toJson(c: Config): JSONObject = JSONObject()
+    /**
+     * The full TS `Config`: every key present, defaults filled, unset optional values as JSON null. With [maskSecrets],
+     * the authorization secrets are masked ([maskSecret]): results returned to the app (`getState()`, `setConfig()`,
+     * `ready()`, …) never carry the tokens (recommendation 16); the `authorization` event still does.
+     */
+    fun toJson(c: Config, maskSecrets: Boolean = false): JSONObject = JSONObject()
         .put("geolocation", geolocationToJson(c.geolocation))
         .put("activity", activityToJson(c.activity))
         .put("heartbeat", heartbeatToJson(c.heartbeat))
-        .put("http", httpToJson(c.http))
+        .put("http", httpToJson(c.http, maskSecrets))
         .put("persistence", persistenceToJson(c.persistence))
         .put("app", JSONObject().put("stopOnTerminate", c.app.stopOnTerminate).put("startOnBoot", c.app.startOnBoot))
         .put("notification", notificationToJson(c.notification))
@@ -91,7 +95,9 @@ object ConfigJson {
         .put("odometer", finiteOr(s.runtime.odometer, 0.0))
         .put("backend", s.backend.wire)
         .put("lastRecordAt", JsonUtil.orNull(Iso8601.formatOrNull(s.runtime.lastRecordAt)))
-        .put("config", toJson(s.config))
+        .put("lastStopReason", JsonUtil.orNull(s.runtime.lastStopReason))
+        .put("lastStopAt", JsonUtil.orNull(Iso8601.formatOrNull(s.runtime.lastStopAt)))
+        .put("config", toJson(s.config, maskSecrets = true))
 
     // ---- parse
 
@@ -184,6 +190,7 @@ object ConfigJson {
             enabled = r.boolean("enabled", c.enabled, d.enabled),
             minInterval = r.int("minInterval", c.minInterval, d.minInterval),
             maxInterval = r.int("maxInterval", c.maxInterval, d.maxInterval),
+            uploadKeepAwake = r.int("uploadKeepAwake", c.uploadKeepAwake, d.uploadKeepAwake),
         )
     }
 
@@ -214,6 +221,7 @@ object ConfigJson {
             locationTemplate = r.nullableString("locationTemplate", c.locationTemplate, d.locationTemplate),
             geofenceTemplate = r.nullableString("geofenceTemplate", c.geofenceTemplate, d.geofenceTemplate),
             timeout = r.long("timeout", c.timeout, d.timeout),
+            maxRetryAfter = r.int("maxRetryAfter", c.maxRetryAfter, d.maxRetryAfter),
             authorization = r.group<AuthorizationConfig?>("authorization", c.authorization, d.authorization) { ar, a ->
                 parseAuthorization(ar, a ?: AuthorizationConfig())
             },
@@ -226,11 +234,11 @@ object ConfigJson {
             strategy = r.enumValue("strategy", c.strategy, d.strategy, listOf(d.strategy)) { value ->
                 d.strategy.takeIf { it.equals(value, ignoreCase = true) }
             },
-            accessToken = r.nullableString("accessToken", c.accessToken, d.accessToken),
-            refreshToken = r.nullableString("refreshToken", c.refreshToken, d.refreshToken),
+            accessToken = unmasked(r.nullableString("accessToken", c.accessToken, d.accessToken), c.accessToken),
+            refreshToken = unmasked(r.nullableString("refreshToken", c.refreshToken, d.refreshToken), c.refreshToken),
             refreshUrl = r.nullableString("refreshUrl", c.refreshUrl, d.refreshUrl),
-            refreshPayload = r.objectText("refreshPayload", c.refreshPayload, d.refreshPayload),
-            refreshHeaders = r.stringMap("refreshHeaders", c.refreshHeaders, d.refreshHeaders),
+            refreshPayload = unmaskedPayload(r.objectText("refreshPayload", c.refreshPayload, d.refreshPayload), c.refreshPayload),
+            refreshHeaders = unmaskedHeaders(r.stringMap("refreshHeaders", c.refreshHeaders, d.refreshHeaders), c.refreshHeaders),
             refreshPayloadEncoding = r.enumValue(
                 "refreshPayloadEncoding",
                 c.refreshPayloadEncoding,
@@ -371,8 +379,9 @@ object ConfigJson {
         .put("enabled", h.enabled)
         .put("minInterval", h.minInterval)
         .put("maxInterval", h.maxInterval)
+        .put("uploadKeepAwake", h.uploadKeepAwake)
 
-    private fun httpToJson(h: HttpConfig): JSONObject = JSONObject()
+    private fun httpToJson(h: HttpConfig, maskSecrets: Boolean): JSONObject = JSONObject()
         .put("url", JsonUtil.orNull(h.url))
         .put("method", h.method.wire)
         .put("headers", JsonUtil.fromStringMap(h.headers))
@@ -387,15 +396,19 @@ object ConfigJson {
         .put("locationTemplate", JsonUtil.orNull(h.locationTemplate))
         .put("geofenceTemplate", JsonUtil.orNull(h.geofenceTemplate))
         .put("timeout", h.timeout)
-        .put("authorization", h.authorization?.let { authorizationToJson(it) } ?: JSONObject.NULL)
+        .put("maxRetryAfter", h.maxRetryAfter)
+        .put("authorization", h.authorization?.let { authorizationToJson(it, maskSecrets) } ?: JSONObject.NULL)
 
-    private fun authorizationToJson(a: AuthorizationConfig): JSONObject = JSONObject()
+    private fun authorizationToJson(a: AuthorizationConfig, mask: Boolean): JSONObject = JSONObject()
         .put("strategy", a.strategy)
-        .put("accessToken", JsonUtil.orNull(a.accessToken))
-        .put("refreshToken", JsonUtil.orNull(a.refreshToken))
+        .put("accessToken", JsonUtil.orNull(if (mask) a.accessToken?.let(::maskSecret) else a.accessToken))
+        .put("refreshToken", JsonUtil.orNull(if (mask) a.refreshToken?.let(::maskSecret) else a.refreshToken))
         .put("refreshUrl", JsonUtil.orNull(a.refreshUrl))
-        .put("refreshPayload", objectOrEmpty(a.refreshPayload, "http.authorization.refreshPayload"))
-        .put("refreshHeaders", JsonUtil.fromStringMap(a.refreshHeaders))
+        .put(
+            "refreshPayload",
+            objectOrEmpty(if (mask) maskedPayload(a.refreshPayload) else a.refreshPayload, "http.authorization.refreshPayload"),
+        )
+        .put("refreshHeaders", JsonUtil.fromStringMap(if (mask) a.refreshHeaders.mapValues { maskSecret(it.value) } else a.refreshHeaders))
         .put("refreshPayloadEncoding", a.refreshPayloadEncoding.wire)
         .put("expires", a.expires)
 
@@ -432,6 +445,48 @@ object ConfigJson {
         .put("message", JsonUtil.orNull(b.message))
         .put("positiveAction", JsonUtil.orNull(b.positiveAction))
         .put("negativeAction", JsonUtil.orNull(b.negativeAction))
+
+    /** Prefix of a masked secret in results: `***` and the last 4 characters (all hidden when 8 or fewer). */
+    const val MASK_PREFIX = "***"
+
+    /** [value] masked for results (see [toJson]). */
+    fun maskSecret(value: String): String =
+        if (value.length <= MASK_VISIBLE * 2) MASK_PREFIX else MASK_PREFIX + value.takeLast(MASK_VISIBLE)
+
+    private const val MASK_VISIBLE = 4
+
+    /**
+     * `refreshPayload` with every string value masked, except values that only use the `{refreshToken}` placeholder
+     * (they hold no secret themselves).
+     */
+    private fun maskedPayload(text: String): String {
+        val payload = JsonUtil.parseObject(text) ?: return text
+        val masked = JSONObject()
+        val keys = payload.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val value = payload.get(key)
+            masked.put(key, if (value is String && !value.contains("{refreshToken}")) maskSecret(value) else value)
+        }
+        return masked.toString()
+    }
+
+    /**
+     * A secret given back unchanged from a result (`setConfig({config: (await getState()).config})`) keeps the stored
+     * value instead of replacing it with the masked text.
+     */
+    private fun unmasked(given: String?, current: String?): String? =
+        if (given != null && current != null && given.startsWith(MASK_PREFIX) && given == maskSecret(current)) current else given
+
+    private fun unmaskedPayload(given: String, current: String): String =
+        if (given != current && JsonUtil.parseObject(given)?.toString() == JsonUtil.parseObject(maskedPayload(current))?.toString()) {
+            current
+        } else {
+            given
+        }
+
+    private fun unmaskedHeaders(given: Map<String, String>, current: Map<String, String>): Map<String, String> =
+        if (given != current && given == current.mapValues { maskSecret(it.value) }) current else given
 
     /** Parses stored JSON object text; invalid text (only possible through `update{}`) becomes `{}`. */
     private fun objectOrEmpty(text: String, path: String): JSONObject {

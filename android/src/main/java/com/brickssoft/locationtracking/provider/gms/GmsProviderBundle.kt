@@ -40,15 +40,23 @@ class GmsProviderBundle @JvmOverloads constructor(
     private val activityBackend by lazy { GmsActivityBackend(appContext, activityClient(appContext)) }
     private val geofenceBackend by lazy { GmsGeofenceBackend(appContext, geofencingClient(appContext)) }
 
+    @Volatile
+    private var lastStatus: Int? = null
+
     /** True if `GoogleApiAvailability` reports SUCCESS; false on any other result or failure. */
     override fun isAvailable(): Boolean = try {
         val status = availabilityCheck(appContext)
+        lastStatus = status
         if (status != ConnectionResult.SUCCESS) Logger.d(TAG, "Google Play services unavailable: status $status")
         status == ConnectionResult.SUCCESS
     } catch (t: Throwable) {
+        lastStatus = null
         Logger.w(TAG, "Google Play services availability check failed", t)
         false
     }
+
+    /** The `GoogleApiAvailability` result of the last [isAvailable] (`ConnectionResult` code), or null. */
+    override fun availabilityStatus(): Int? = lastStatus
 
     override fun location(): LocationBackend = locationBackend
 

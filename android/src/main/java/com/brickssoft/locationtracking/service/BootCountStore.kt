@@ -37,6 +37,13 @@ internal class BootCountStore(context: Context) {
     private fun read(key: String): Int? = if (prefs.contains(key)) prefs.getInt(key, -1) else null
 
     companion object {
+        /** Forgets every stored boot count (the state was restored onto another installation). */
+        @SuppressLint("ApplySharedPref")
+        fun clear(context: Context) {
+            (context.applicationContext ?: context).getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit().clear().commit()
+        }
+
         const val PREFS_NAME = "location_tracking_boot"
         private const val KEY_LAST_HANDLED = "last_handled_boot_count"
         private const val KEY_LAST_SERVICE_START = "last_service_start_boot_count"

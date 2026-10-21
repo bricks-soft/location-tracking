@@ -11,6 +11,8 @@ import com.brickssoft.locationtracking.core.Logger
 import com.brickssoft.locationtracking.core.Subscription
 import com.brickssoft.locationtracking.core.TrackingException
 import com.brickssoft.locationtracking.model.BatteryOptimizationStatus
+import com.brickssoft.locationtracking.http.ConfigChecks
+import com.brickssoft.locationtracking.logging.LogRedaction
 import com.brickssoft.locationtracking.model.BatteryOptimizationStatusJson
 import com.brickssoft.locationtracking.model.DeviceInfoJson
 import com.brickssoft.locationtracking.model.EventJson
@@ -71,20 +73,24 @@ internal class PluginHandlers(
         val reset = OptionParsers.optBoolean(options, "reset") ?: true
         val state = services.engine.ready(config, reset)
         readyFlag.set(true)
-        return stateJson(state)
+        return configResultJson(state)
     }
 
     /** `setConfig({config})` -> State. */
     suspend fun setConfig(options: JSONObject): JSONObject {
         gate("setConfig")
-        return stateJson(services.engine.setConfig(OptionParsers.requireObject(options, "config")))
+        return configResultJson(services.engine.setConfig(OptionParsers.requireObject(options, "config")))
     }
 
     /** `reset({config?})` -> State. */
     suspend fun reset(options: JSONObject): JSONObject {
         gate("reset")
-        return stateJson(services.engine.reset(OptionParsers.optObject(options, "config")))
+        return configResultJson(services.engine.reset(OptionParsers.optObject(options, "config")))
     }
+
+    /** The State of a call that applied a config, with `warnings`: what was accepted but probably wrong (rec. 14). */
+    private fun configResultJson(state: State): JSONObject =
+        stateJson(state).put("warnings", JSONArray(ConfigChecks.warnings(state.config)))
 
     fun getState(): JSONObject {
         gate("getState")
@@ -419,12 +425,15 @@ internal class PluginHandlers(
 
     // ---- log
 
-    /** `log({level, message})` -> void; written through [Logger] (logcat and the log file). */
+    /**
+     * `log({level, message})` -> void; written through [Logger] (logcat and the log file), with bearer tokens, JWTs,
+     * credential fields and URLs removed ([LogRedaction]).
+     */
     fun log(options: JSONObject): JSONObject? {
         gate("log")
         val level = OptionParsers.logLevel(options)
         val message = OptionParsers.optString(options, "message") ?: OptionParsers.invalid("'message' is required")
-        Logger.log(level, JS_TAG, message)
+        Logger.log(level, JS_TAG, LogRedaction.redact(message))
         return null
     }
 

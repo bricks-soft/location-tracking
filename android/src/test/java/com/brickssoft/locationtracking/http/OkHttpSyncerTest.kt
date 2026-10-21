@@ -106,13 +106,38 @@ class OkHttpSyncerTest {
      * A syncer whose worker runs on the test scheduler. Not `backgroundScope`: `advanceUntilIdle()` does not wait for
      * background work, and the worker never completes, so it cannot be a child of the test scope either.
      */
-    private fun TestScope.syncer(store: LocationStore = this@OkHttpSyncerTest.store): OkHttpSyncer {
+    private fun TestScope.syncer(
+        store: LocationStore = this@OkHttpSyncerTest.store,
+        client: OkHttpClient = OkHttpClient(),
+        random: () -> Double = { 0.5 },
+    ): OkHttpSyncer {
         val workerScope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
         workerScopes += workerScope
+        // random 0.5: the retry waits without jitter (exactly 2, 4 and 8 s; 30 s after the first failed upload).
         return OkHttpSyncer(
-            configStore, store, device, events, clock, OkHttpClient(), testDispatchers(testScheduler), workerScope,
+            configStore, store, device, events, clock, client, testDispatchers(testScheduler), workerScope,
+            nextTryStore, uploadScheduler, random,
         )
     }
+
+    private val nextTryStore = NextTryStore.inMemory()
+    private val uploadScheduler = RecordingUploadScheduler()
+
+    /** Records what the syncer asks of the upload job. */
+    private class RecordingUploadScheduler : UploadScheduler {
+        val calls = CopyOnWriteArrayList<String>()
+
+        override fun schedule(delayMs: Long, unmetered: Boolean) {
+            calls += "schedule(${delayMs / 1_000} s${if (unmetered) ", unmetered" else ""})"
+        }
+
+        override fun cancel() {
+            calls += "cancel"
+        }
+    }
+
+    /** Moves wall and elapsed time past every stored wait (the longest is 15 minutes plus 20 %). */
+    private fun passStoredWait() = clock.advance(20 * 60_000L)
 
     /** What DefaultRecordSink does: insert, then notify the syncer. */
     private suspend fun OkHttpSyncer.insert(record: Record) {
@@ -508,6 +533,7 @@ class OkHttpSyncerTest {
         for (i in 1..3) {
             syncer.insert(rec(i))
             advanceUntilIdle()
+            passStoredWait()
         }
 
         assertEquals(3, server.requestCount) // one request per insert, each for the oldest record
@@ -541,19 +567,272 @@ class OkHttpSyncerTest {
     }
 
     @Test
-    fun `failed upload is retried on the next insert`() = runTest {
+    fun `a failed upload waits for the stored next-try time, not the next insert`() = runTest {
         repeat(4) { server.enqueue(MockResponse().setResponseCode(500)) }
-        repeat(2) { server.enqueue(ok()) }
+        repeat(3) { server.enqueue(ok()) }
         val syncer = syncer()
 
         syncer.insert(rec(1))
         advanceUntilIdle()
+        repeat(4) { takeRequest() }
+        assertEquals(listOf("schedule(30 s)"), uploadScheduler.calls)
+
+        clock.advance(29_000)
         syncer.insert(rec(2))
         advanceUntilIdle()
+        assertEquals(4, server.requestCount)
 
-        repeat(4) { takeRequest() }
+        clock.advance(1_000)
+        syncer.insert(rec(3))
+        advanceUntilIdle()
+        assertEquals(listOf(listOf("r1"), listOf("r2"), listOf("r3")), takeUuids(3))
+        assertTrue(store.all.isEmpty())
+        assertEquals(listOf("schedule(30 s)"), uploadScheduler.calls.take(1))
+        assertNull(nextTryStore.load())
+    }
+
+    @Test
+    fun `the stored wait doubles from 30 s up to 15 minutes, with up to 20 % jitter`() = runTest {
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) = MockResponse().setResponseCode(400)
+        }
+        val syncer = syncer(random = { 0.0 }) // the largest downward jitter: 80 % of each wait
+        syncer.insert(rec(1))
+        advanceUntilIdle()
+        for (i in 2..8) {
+            passStoredWait()
+            syncer.insert(rec(i))
+            advanceUntilIdle()
+        }
+
+        assertEquals(
+            listOf(24, 48, 96, 192, 384, 720, 720, 720).map { "schedule($it s)" },
+            uploadScheduler.calls.filter { it.startsWith("schedule") },
+        )
+        assertEquals(8, nextTryStore.load()!!.failures)
+    }
+
+    @Test
+    fun `Retry-After of a 503 is honored up to http maxRetryAfter`() = runTest {
+        http { it.copy(maxRetryAfter = 600) }
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest) =
+                MockResponse().setResponseCode(503).setHeader("Retry-After", "3600")
+        }
+        val syncer = syncer()
+
+        syncer.insert(rec(1))
+        advanceUntilIdle()
+
+        // Retry-After asks for longer than the next in-upload retry: the upload ends after its first try.
+        assertEquals(1, server.requestCount)
+        assertEquals(listOf("schedule(600 s)"), uploadScheduler.calls)
+        clock.advance(599_000)
+        syncer.insert(rec(2))
+        advanceUntilIdle()
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun `Retry-After as an HTTP date and shorter than the backoff`() {
+        val now = Iso8601.parse("2026-09-26T10:00:00.000Z")!!
+        assertEquals(90_000L, UploadBackoff.retryAfterMs("Sat, 26 Sep 2026 10:01:30 GMT", now, 3600))
+        assertEquals(0L, UploadBackoff.retryAfterMs("Sat, 26 Sep 2026 09:00:00 GMT", now, 3600))
+        assertEquals(120_000L, UploadBackoff.retryAfterMs(" 120 ", now, 3600))
+        assertEquals(60_000L, UploadBackoff.retryAfterMs("120", now, 60))
+        assertNull(UploadBackoff.retryAfterMs("soon", now, 3600))
+        assertNull(UploadBackoff.retryAfterMs(null, now, 3600))
+        assertEquals(30_000L, UploadBackoff.serverWaitMs(1, 0.5, retryAfterMs = 5_000L, minimumMs = 0))
+        assertEquals(90_000L, UploadBackoff.serverWaitMs(1, 0.5, retryAfterMs = 90_000L, minimumMs = 0))
+        assertTrue(UploadBackoff.serverWaitMs(1, 0.9999999, retryAfterMs = null, minimumMs = 0) in 35_990L..36_000L)
+        assertEquals(24_000L, UploadBackoff.serverWaitMs(1, 0.0, retryAfterMs = null, minimumMs = 0))
+        assertEquals(120_000L, UploadBackoff.serverWaitMs(1, 0.0, retryAfterMs = null, minimumMs = 120_000L))
+    }
+
+    @Test
+    fun `audit records and sync do not wait for the stored next-try time`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(400))
+        repeat(2) { server.enqueue(ok()) }
+        val syncer = syncer()
+        syncer.insert(rec(1))
+        advanceUntilIdle()
+        assertEquals(1, server.requestCount)
+
+        syncer.insert(rec(2, RecordEvent.HEARTBEAT))
+        advanceUntilIdle()
+        assertEquals(listOf(listOf("r1"), listOf("r1"), listOf("r2")), takeUuids(3))
+        assertTrue(store.all.isEmpty())
+        // A success ends the wait.
+        assertNull(nextTryStore.load())
+        server.enqueue(ok())
+        syncer.insert(rec(3))
+        advanceUntilIdle()
+        assertEquals(listOf(listOf("r3")), takeUuids(1))
+    }
+
+    @Test
+    fun `connectivity regained ends a server wait at once`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(400))
+        server.enqueue(ok())
+        val syncer = syncer()
+        syncer.start()
+        syncer.insert(rec(1))
+        advanceUntilIdle()
+        takeRequest()
+
+        events.emit(TrackingEvent.ConnectivityChange(Connectivity(connected = true, type = ConnectivityType.WIFI)))
+        advanceUntilIdle()
+
+        assertEquals(listOf(listOf("r1")), takeUuids(1))
+        assertTrue(store.all.isEmpty())
+    }
+
+    @Test
+    fun `the stored wait survives a new syncer, also across a reboot by the wall clock`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(400))
+        syncer().insert(rec(1))
+        advanceUntilIdle()
+        assertEquals(1, server.requestCount)
+
+        clock.reboot()
+        val next = syncer()
+        clock.nowMs += 10_000
+        next.insert(rec(2))
+        advanceUntilIdle()
+        assertEquals(1, server.requestCount)
+
+        repeat(3) { server.enqueue(ok()) }
+        clock.nowMs += 20_000
+        next.insert(rec(3))
+        advanceUntilIdle()
+        assertEquals(4, server.requestCount)
+        assertTrue(store.all.isEmpty())
+    }
+
+    @Test
+    fun `offline with records due schedules the upload job without delay, and an empty queue cancels it`() = runTest {
+        device.connectivityValue = Connectivity(connected = false, type = ConnectivityType.NONE)
+        val syncer = syncer()
+        syncer.insert(rec(1))
+        advanceUntilIdle()
+        assertEquals(listOf("schedule(0 s)"), uploadScheduler.calls)
+
+        device.connectivityValue = Connectivity(connected = true, type = ConnectivityType.WIFI)
+        server.enqueue(ok())
+        syncer.runScheduledPass()
+        assertEquals(listOf(listOf("r1")), takeUuids(1))
+        assertEquals(listOf("schedule(0 s)", "cancel"), uploadScheduler.calls)
+    }
+
+    @Test
+    fun `normal records on restricted cellular schedule the job for an unmetered network`() = runTest {
+        http { it.copy(disableAutoSyncOnCellular = true) }
+        device.connectivityValue = Connectivity(connected = true, type = ConnectivityType.CELLULAR)
+        val syncer = syncer()
+        syncer.insert(rec(1))
+        advanceUntilIdle()
+        assertEquals(0, server.requestCount)
+        assertEquals(listOf("schedule(0 s, unmetered)"), uploadScheduler.calls)
+    }
+
+    @Test
+    fun `tracking stopped schedules the upload job as a safety net`() = runTest {
+        val syncer = syncer()
+        syncer.onTrackingStopped()
+        assertEquals(listOf("schedule(0 s)"), uploadScheduler.calls)
+        http { it.copy(url = null) }
+        syncer.onTrackingStopped()
+        assertEquals(1, uploadScheduler.calls.size)
+    }
+
+    @Test
+    fun `the job runs another pass when records arrived during a successful one`() = runTest {
+        val syncer = syncer()
+        val inserted = AtomicBoolean(false)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (!inserted.getAndSet(true)) runBlocking { store.insert(rec(2)) }
+                return ok()
+            }
+        }
+        store.insert(rec(1))
+
+        syncer.runScheduledPass()
+
         assertEquals(listOf(listOf("r1"), listOf("r2")), takeUuids(2))
         assertTrue(store.all.isEmpty())
+    }
+
+    @Test
+    fun `a 302 to a page that answers 200 keeps the records`() = runTest {
+        // Recommendation 1: OkHttp would POST, follow the redirect with a GET and get 200, and the records were deleted.
+        server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", server.url("/login").toString()))
+        server.enqueue(ok("<html>login</html>"))
+        val syncer = syncer(client = OkHttpClient()) // a default client: the syncer itself must not follow redirects
+
+        syncer.insert(rec(1))
+        advanceUntilIdle()
+
+        assertEquals(1, server.requestCount)
+        assertEquals("POST", takeRequest().method)
+        assertEquals(listOf("r1"), store.all.map { it.uuid })
+        assertEquals(1, store.attempts("r1"))
+        assertEquals(listOf(302), httpEvents.map { it.status })
+        assertTrue(HttpSupport.sharedClient().let { !it.followRedirects && !it.followSslRedirects && !it.retryOnConnectionFailure })
+    }
+
+    @Test
+    fun `an upload answer is read up to 16 KB into the http event`() = runTest {
+        server.enqueue(ok("x".repeat(40_000)))
+        val syncer = syncer()
+
+        syncer.insert(rec(1))
+        advanceUntilIdle()
+
+        assertEquals(16_384, httpEvents.single().responseText.length)
+        assertTrue(store.all.isEmpty())
+    }
+
+    @Test
+    fun `HTTP 413 halves the batch for the rest of the pass and the next pass uses maxBatchSize again`() = runTest {
+        http { it.copy(batchSync = true, maxBatchSize = 4) }
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse =
+                if (uuidsOf(request).size > 2) MockResponse().setResponseCode(413) else ok()
+        }
+        val syncer = syncer()
+        for (i in 1..5) store.insert(rec(i))
+
+        syncer.insert(rec(6))
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(listOf("r1", "r2", "r3", "r4"), listOf("r1", "r2"), listOf("r3", "r4"), listOf("r5", "r6")),
+            takeUuids(4),
+        )
+        assertTrue(store.all.isEmpty())
+        assertEquals(0, store.attempts("r1"))
+
+        for (i in 7..9) store.insert(rec(i))
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = ok()
+        }
+        syncer.insert(rec(10))
+        advanceUntilIdle()
+        assertEquals(listOf(listOf("r7", "r8", "r9", "r10")), takeUuids(1))
+    }
+
+    @Test
+    fun `HTTP 413 for a single record is a failure like other 4xx answers`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(413))
+        val syncer = syncer()
+
+        syncer.insert(rec(1))
+        advanceUntilIdle()
+
+        assertEquals(1, server.requestCount)
+        assertEquals(1, store.attempts("r1"))
+        assertEquals(listOf("schedule(30 s)"), uploadScheduler.calls)
     }
 
     @Test
@@ -763,6 +1042,78 @@ class OkHttpSyncerTest {
     }
 
     @Test
+    fun `a 401 whose refresh fails waits 15 minutes, and new tokens from the app end the wait at once`() = runTest {
+        // Recommendation 4: without the wait, every new fix sent one rejected upload and one rejected refresh.
+        http { it.copy(authorization = jwt()) }
+        server.dispatcher = jwtDispatcher(refreshBody = """{"nope":true}""")
+        val syncer = syncer()
+        syncer.start()
+        syncer.insert(rec(1))
+        advanceUntilIdle()
+        assertEquals(2, server.requestCount)
+        assertEquals(NextTry.Reason.AUTHORIZATION, nextTryStore.load()!!.reason)
+        assertEquals(listOf("schedule(900 s)"), uploadScheduler.calls)
+
+        clock.advance(14 * 60_000L)
+        syncer.insert(rec(2))
+        advanceUntilIdle()
+        assertEquals(2, server.requestCount)
+
+        http { it.copy(authorization = jwt(accessToken = "new")) }
+        advanceUntilIdle()
+        assertEquals("Bearer new", takeRequest().let { takeRequest(); takeRequest() }.getHeader("Authorization"))
+        assertTrue(store.all.isEmpty())
+        assertNull(nextTryStore.load())
+    }
+
+    @Test
+    fun `a retry inside one upload keeps the token it started with and stops when the app switches users`() = runTest {
+        // Recommendation 2: user A's records must never be sent with user B's token.
+        http { it.copy(authorization = jwt(accessToken = "userA")) }
+        val tokens = CopyOnWriteArrayList<String?>()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                tokens += request.getHeader("Authorization")
+                if (tokens.size == 1) {
+                    configStore.update {
+                        it.copy(http = it.http.copy(authorization = jwt(accessToken = "userB").copy(refreshToken = "rB")))
+                    }
+                }
+                return MockResponse().setResponseCode(503)
+            }
+        }
+        val syncer = syncer()
+
+        syncer.insert(rec(1))
+        advanceUntilIdle()
+
+        assertEquals(listOf("Bearer userA"), tokens.toList())
+        assertEquals(listOf("r1"), store.all.map { it.uuid })
+        assertEquals(0, store.attempts("r1"))
+        assertEquals(listOf(503), httpEvents.map { it.status })
+    }
+
+    @Test
+    fun `sync reports an authorization change during the upload and keeps the records`() = runTest {
+        http { it.copy(authorization = jwt(accessToken = "userA")) }
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                configStore.update { it.copy(http = it.http.copy(authorization = null)) }
+                return MockResponse().setResponseCode(401)
+            }
+        }
+        val syncer = syncer()
+        store.insert(rec(1))
+
+        val error = runCatching { syncer.sync() }.exceptionOrNull() as TrackingException
+
+        assertEquals(ErrorCode.HTTP_ERROR, error.code)
+        assertTrue(error.message!!, error.message!!.contains("authorization changed"))
+        assertEquals(listOf("r1"), store.all.map { it.uuid })
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
     fun `401 without authorization config is a plain failure`() = runTest {
         server.dispatcher = jwtDispatcher()
 
@@ -958,7 +1309,7 @@ class OkHttpSyncerTest {
         http { it.copy(batchSync = true) }
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse =
-                if (uuidsOf(request).contains("r1")) MockResponse().setResponseCode(413) else ok()
+                if (uuidsOf(request).contains("r1")) MockResponse().setResponseCode(422) else ok()
         }
         val syncer = syncer()
         store.insert(rec(1))

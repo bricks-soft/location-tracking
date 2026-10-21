@@ -27,9 +27,16 @@ import java.io.IOException
  *   a 401 (at most once per upload; the caller enforces that).
  * - A refresh POSTs `refreshPayload` (string values with `{refreshToken}` substituted, JSON or form encoded) with
  *   `refreshHeaders` to `refreshUrl`, reads `accessToken|access_token`, `refreshToken|refresh_token` and
- *   `expires|expires_at` (epoch; seconds if < 1e12) or `expires_in` (relative seconds), persists the new tokens with
- *   `configStore.update` and emits an `Authorization` event (also on failure).
- * - Refreshes are single-flight: callers that waited while another caller replaced their stale token reuse it.
+ *   `expires|expires_at` (epoch; seconds if < 1e12) or `expires_in` (relative seconds), and emits an `Authorization`
+ *   event (also on failure). The refresh answer is read in full: the new tokens are parsed from it.
+ * - **One identity per upload** (recommendation 2). An upload reads the [Credentials] once, at its start, and every
+ *   try of that upload uses only them or credentials refreshed from them. When the configured tokens differ from them
+ *   (the app called `setConfig` with another user's token, or removed the authorization), [renew] and [prepare]
+ *   answer [Outcome.CHANGED] and the upload stops, keeping its records.
+ * - **Compare-and-set save.** A refresh saves its new tokens only if the configured access and refresh tokens are still
+ *   the ones it started from; otherwise the new tokens are dropped and the answer is [Outcome.CHANGED]. A refresh that
+ *   finishes after the app configured another user can therefore never overwrite that user's tokens.
+ * - Refreshes are single-flight (one at a time).
  *
  * Token values are never logged.
  */
@@ -48,8 +55,28 @@ internal class AuthorizationManager(
     @Volatile
     private var shortLivedToken: String? = null
 
-    /** The access token to send ([value] null = no Authorization header) and whether a refresh was attempted. */
-    data class Token(val value: String?, val refreshAttempted: Boolean)
+    /** The access and refresh tokens one upload is sent with (blank values are null). */
+    data class Credentials(val accessToken: String?, val refreshToken: String?) {
+        override fun toString(): String = "Credentials(redacted)"
+    }
+
+    /** What [prepare] or [renew] found. */
+    enum class Outcome {
+        /** The credentials are usable as they are (no refresh was needed, or [prepare] may not refresh). */
+        UNCHANGED,
+
+        /** The token was refreshed; use the returned credentials. */
+        RENEWED,
+
+        /** A refresh was needed but failed or is not possible (no `refreshUrl`). */
+        FAILED,
+
+        /** The configured tokens are no longer the upload's: stop the upload and keep its records. */
+        CHANGED,
+    }
+
+    /** [credentials] to send with and what happened; [refreshAttempted] is true if a refresh request was made. */
+    data class Result(val outcome: Outcome, val credentials: Credentials, val refreshAttempted: Boolean)
 
     /** Tokens read from a refresh response; [expires] is epoch ms or -1 if unknown. */
     data class Tokens(val accessToken: String, val refreshToken: String?, val expires: Long)
@@ -58,28 +85,37 @@ internal class AuthorizationManager(
     fun appliesTo(http: HttpConfig): Boolean =
         http.authorization != null && !HttpSupport.hasHeader(http.headers, HttpSupport.AUTHORIZATION)
 
+    /** The configured credentials, or null without `http.authorization`. */
+    fun current(): Credentials? = configStore.config.value.http.authorization?.let(::credentialsOf)
+
+    /** True while the configured credentials are still [credentials]. */
+    fun isCurrent(credentials: Credentials): Boolean = current() == credentials
+
     /**
-     * The token for the next request, refreshing first if it is missing or about to expire (and refreshable), unless
-     * [mayRefresh] is false.
+     * Before a request with [credentials]: refreshes first if the token is missing or about to expire and a refresh is
+     * possible, unless [mayRefresh] is false. Never answers [Outcome.FAILED] for a token that is still usable; a failed
+     * refresh of an expiring token keeps sending the old one ([Outcome.FAILED] with the old credentials).
      */
-    suspend fun tokenForRequest(client: OkHttpClient, mayRefresh: Boolean = true): Token {
-        val auth = configStore.config.value.http.authorization ?: return Token(null, false)
-        val current = auth.accessToken.nonBlank()
-        if (!mayRefresh || !needsRefresh(auth) || !canRefresh(auth)) return Token(current, false)
-        return Token(refresh(client, current) ?: current, true)
+    suspend fun prepare(client: OkHttpClient, credentials: Credentials, mayRefresh: Boolean): Result {
+        val auth = configStore.config.value.http.authorization
+        if (auth == null || credentialsOf(auth) != credentials) return Result(Outcome.CHANGED, credentials, false)
+        if (!mayRefresh || !needsRefresh(auth) || !canRefresh(auth)) return Result(Outcome.UNCHANGED, credentials, false)
+        return renew(client, credentials)
     }
 
     /**
-     * Refreshes the token (single-flight) unless another caller already replaced [staleToken] with a token that
-     * does not need a refresh. Returns the token to use, or null if there is none (refresh failed or impossible).
+     * Refreshes [from] (single-flight). [Outcome.CHANGED] if the configured tokens are no longer [from] (before or after
+     * the refresh request); [Outcome.FAILED] if the refresh failed or is not possible.
      */
-    suspend fun refresh(client: OkHttpClient, staleToken: String?): String? = mutex.withLock {
-        val auth = configStore.config.value.http.authorization ?: return@withLock null
-        val current = auth.accessToken.nonBlank()
-        if (current != null && current != staleToken && !needsRefresh(auth)) return@withLock current
-        if (!canRefresh(auth)) return@withLock null
-        performRefresh(client, auth)
+    suspend fun renew(client: OkHttpClient, from: Credentials): Result = mutex.withLock {
+        val auth = configStore.config.value.http.authorization
+        if (auth == null || credentialsOf(auth) != from) return@withLock Result(Outcome.CHANGED, from, false)
+        if (!canRefresh(auth)) return@withLock Result(Outcome.FAILED, from, false)
+        performRefresh(client, auth, from)
     }
+
+    private fun credentialsOf(auth: AuthorizationConfig) =
+        Credentials(auth.accessToken.nonBlank(), auth.refreshToken.nonBlank())
 
     private fun canRefresh(auth: AuthorizationConfig): Boolean = !auth.refreshUrl.isNullOrBlank()
 
@@ -91,12 +127,13 @@ internal class AuthorizationManager(
         return now >= auth.expires || (now >= auth.expires - EXPIRY_MARGIN_MS && token != shortLivedToken)
     }
 
-    private suspend fun performRefresh(client: OkHttpClient, auth: AuthorizationConfig): String? {
+    private suspend fun performRefresh(client: OkHttpClient, auth: AuthorizationConfig, from: Credentials): Result {
+        val failed = Result(Outcome.FAILED, from, refreshAttempted = true)
         val url = HttpSupport.parseUrl(auth.refreshUrl)
         if (url == null) {
             Logger.e(TAG, "authorization.refreshUrl is not a valid http(s) URL")
             emit(false, 0, "authorization.refreshUrl is not a valid http(s) URL", null)
-            return null
+            return failed.copy(refreshAttempted = false)
         }
         val (contentType, body) = refreshBody(auth)
         val headers = HttpSupport.headers(contentType, auth.refreshHeaders, bearerToken = null)
@@ -107,36 +144,50 @@ internal class AuthorizationManager(
             currentCoroutineContext().ensureActive()
             Logger.w(TAG, "token refresh failed: ${e.message}")
             emit(false, 0, e.message ?: e.javaClass.simpleName, null)
-            return null
+            return failed
         }
         val json = JsonUtil.parseObject(response.body)
         if (!response.isSuccessful) {
             Logger.w(TAG, "token refresh failed: HTTP ${response.status}")
             emit(false, response.status, "HTTP ${response.status}", json?.toString())
-            return null
+            return failed
         }
         val tokens = parseTokens(json, clock.now())
         if (tokens == null) {
             Logger.w(TAG, "token refresh response (HTTP ${response.status}) has no accessToken")
             emit(false, response.status, "refresh response has no accessToken", json?.toString())
-            return null
+            return failed
         }
+        var saved: Credentials? = null
         configStore.update { config ->
-            // Do not resurrect an authorization config removed while the refresh was in flight.
+            // Only onto the tokens the refresh started from: the app may have removed the authorization or configured
+            // another user while the refresh was in flight.
             val current = config.http.authorization ?: return@update config
+            if (credentialsOf(current) != from) return@update config
             val updated = current.copy(
                 accessToken = tokens.accessToken,
                 refreshToken = tokens.refreshToken ?: current.refreshToken,
                 expires = tokens.expires,
             )
+            saved = credentialsOf(updated)
             config.copy(http = config.http.copy(authorization = updated))
+        }
+        val renewed = saved
+        if (renewed == null) {
+            Logger.w(TAG, "the authorization changed while its token was refreshed; the new tokens are not saved")
+            return Result(Outcome.CHANGED, from, refreshAttempted = true)
         }
         val shortLived = tokens.expires > 0 && tokens.expires - clock.now() <= EXPIRY_MARGIN_MS
         shortLivedToken = if (shortLived) tokens.accessToken else null
         if (shortLived) Logger.w(TAG, "refreshed access token expires within ${EXPIRY_MARGIN_MS / 1000} s")
         Logger.i(TAG, "access token refreshed (HTTP ${response.status})")
         emit(true, response.status, null, json?.toString())
-        return tokens.accessToken
+        return Result(Outcome.RENEWED, renewed, refreshAttempted = true)
+    }
+
+    /** Emits an `Authorization` event with [error] and no request (for example the stored tokens cannot be read). */
+    fun reportUnusable(error: String) {
+        emit(false, 0, error, null)
     }
 
     private fun emit(success: Boolean, status: Int, error: String?, responseJson: String?) {

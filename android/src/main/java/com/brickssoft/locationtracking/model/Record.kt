@@ -85,6 +85,11 @@ data class GeofenceHit(val identifier: String, val action: GeofenceAction, val e
  * @property provider event `providerchange` only.
  * @property reason `tracking_start` / `tracking_stop` only.
  * @property heartbeat `heartbeat` only, and optional (round 2): the scheduling metadata of the heartbeat.
+ * @property stoppedAt `tracking_stop` only, when the stop happened before the record could be written (reason
+ *   `user_stopped`: the time the user stopped the app), epoch ms.
+ * @property network the connection type when the record was created (every record; null if unknown).
+ * @property device device readings (heartbeat and `tracking_start` records only).
+ * @property batteryDetails battery temperature, health and power source (heartbeat records only).
  */
 data class Record(
     val uuid: String,
@@ -103,4 +108,8 @@ data class Record(
     val provider: ProviderState? = null,
     val reason: String? = null,
     val heartbeat: HeartbeatMeta? = null,
+    val stoppedAt: Long? = null,
+    val network: ConnectivityType? = null,
+    val device: DeviceSnapshot? = null,
+    val batteryDetails: BatteryDetails? = null,
 )

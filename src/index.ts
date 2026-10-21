@@ -13,8 +13,10 @@ export {
   onHeartbeat,
   onHttp,
   onLocation,
+  onLocationError,
   onMotionChange,
   onNotificationAction,
   onPowerSaveChange,
   onProviderChange,
+  onStorageFull,
 } from './events';

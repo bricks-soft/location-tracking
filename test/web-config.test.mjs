@@ -38,7 +38,7 @@ function expectedDefaults() {
       motionTriggerDelay: 0,
       disableStopDetection: false,
     },
-    heartbeat: { enabled: true, minInterval: 180, maxInterval: 300 },
+    heartbeat: { enabled: true, minInterval: 180, maxInterval: 300, uploadKeepAwake: 10 },
     http: {
       url: null,
       method: 'POST',
@@ -54,6 +54,7 @@ function expectedDefaults() {
       locationTemplate: null,
       geofenceTemplate: null,
       timeout: 60000,
+      maxRetryAfter: 3600,
       authorization: null,
     },
     persistence: { maxDaysToPersist: 7, maxRecordsToPersist: -1, extras: {} },
@@ -86,8 +87,21 @@ function expectedState(config) {
     odometer: 0,
     backend: 'web',
     lastRecordAt: null,
+    lastStopReason: null,
+    lastStopAt: null,
     config,
   };
+}
+
+/** The State of `ready`, `setConfig` and `reset`: with the config `warnings`. */
+function expectedResult(config, warnings = []) {
+  return { ...expectedState(config), warnings };
+}
+
+/** [state] without `warnings`, as `getState()` returns it. */
+function withoutWarnings(state) {
+  const { warnings: _warnings, ...rest } = state;
+  return rest;
 }
 
 async function rejectsWithCode(promise, code) {
@@ -135,8 +149,8 @@ test('ready() applies the given config over the defaults', async () => {
   expected.http.url = 'https://example.test/locations';
   expected.http.headers = { A: '1' };
   expected.locationProvider = 'hms';
-  assert.deepEqual(state, expectedState(expected));
-  assert.deepEqual(await LocationTracking.getState(), state);
+  assert.deepEqual(state, expectedResult(expected));
+  assert.deepEqual(await LocationTracking.getState(), withoutWarnings(state));
 });
 
 test('setConfig deep-merges sections and replaces arrays and maps', async () => {
@@ -286,12 +300,12 @@ test('returned states are copies', async () => {
 test('ready({reset:false}) keeps the current config; ready() starts again from the defaults', async () => {
   const current = await LocationTracking.getState();
   const kept = await LocationTracking.ready({ reset: false, config: { geolocation: { distanceFilter: 77 } } });
-  assert.deepEqual(kept, current);
+  assert.deepEqual(kept, { ...current, warnings: [] });
 
   const fresh = await LocationTracking.ready({ config: { heartbeat: { minInterval: 240 } } });
   const expected = expectedDefaults();
   expected.heartbeat.minInterval = 240;
-  assert.deepEqual(fresh, expectedState(expected));
+  assert.deepEqual(fresh, expectedResult(expected));
 });
 
 test('reset() restores the defaults plus the given config', async () => {
@@ -299,6 +313,6 @@ test('reset() restores the defaults plus the given config', async () => {
   const state = await LocationTracking.reset({ config: { app: { startOnBoot: true } } });
   const expected = expectedDefaults();
   expected.app.startOnBoot = true;
-  assert.deepEqual(state, expectedState(expected));
-  assert.deepEqual(await LocationTracking.reset(), expectedState(expectedDefaults()));
+  assert.deepEqual(state, expectedResult(expected));
+  assert.deepEqual(await LocationTracking.reset(), expectedResult(expectedDefaults()));
 });

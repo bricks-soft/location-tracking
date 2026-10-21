@@ -135,7 +135,7 @@ Every record the plugin queues for upload, one call per record:
 Every event of the JS `LocationTracking.addListener` API, with the same `name` and the same `payload` as in JavaScript
 (see the [events reference in the README](../README.md#events-reference)): `location`, `motionchange`,
 `activitychange`, `providerchange`, `heartbeat`, `geofence`, `geofenceschange`, `http`, `connectivitychange`,
-`powersavechange`, `enabledchange`, `notificationaction`, `authorization`.
+`powersavechange`, `enabledchange`, `notificationaction`, `authorization`, `locationerror`, `storagefull`.
 
 Records and the events that carry them:
 

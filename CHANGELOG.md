@@ -61,6 +61,72 @@ version follows the Capacitor major version (Capacitor 8), as `@bricks-soft/cap-
   per flavor, and per-flavor manifests that remove the other provider's receivers and permission.
 
 
+Round 3: the changes the owner accepted from the comparison with the reference plugins. Decisions:
+[docs/DECISIONS.md, Round 3](docs/DECISIONS.md#round-3-comparison-with-the-reference-plugins).
+
+### Added
+
+- **Upload job:** a JobScheduler job uploads queued records also when no tracking session runs and after the app's
+  process ended: when a network returns, at the next allowed time after a failure, and once when tracking stops
+  (expedited on Android 12+ when it should run at once). `ready()` starts the uploader.
+- **`http.maxRetryAfter`** (s, default 3600): the longest `Retry-After` of a `429` or `503` the plugin waits for.
+- **`heartbeat.uploadKeepAwake`** (s, 0–60, default 10): a heartbeat keeps the CPU awake until its upload has
+  finished, at most this long.
+- **Events:** `locationerror` (the OS rejected the location request; the request is made again after 10 s, doubling
+  up to 5 minutes) and `storagefull` (a record could not be stored because the storage is full).
+  `enabledchange` has a `reason`.
+- **State:** `lastStopReason` and `lastStopAt` in `getState()`; `warnings` in the result of `ready()`, `setConfig()`
+  and `reset()`.
+- **Record fields:** `network` on every record; `device` readings (`background_restricted`, `standby_bucket`,
+  `disk_free_bytes`, `thermal_status`) and battery `temperature`, `health`, `plugged` on heartbeats; the phone
+  (`manufacturer`, `model`, `os_version`, `sdk_int`, `android_id`, `low_ram_device`, `ram_total_bytes`) on
+  `tracking_start`; `stopped_at` on `tracking_stop` reason `user_stopped`. 17 new template placeholders. Apps that
+  upload `android_id` declare "Device or other IDs" in Google Play's Data safety form.
+- **`getDeviceInfo()`:** `backendFallbackReason`, `gmsStatus`, `hmsStatus`, `hmsCoreOutdated`,
+  `locationAvailableHint`, `cpuCores`, `supportedAbis`.
+- **`tracking_stop` reason `user_stopped`**, written once after the user stopped the app (Settings → Force stop, or
+  the Android 13+ Task Manager) when something starts the app's process again.
+
+### Changed
+
+- **Uploads:** redirects are not followed (a `3xx` is a failed upload) and OkHttp no longer repeats a request after a
+  connection failure by itself; at most 16 KB of an upload answer is read. The 2, 4 and 8 s retries are moved by up to
+  20 %. After a failed automatic upload, normal records wait for a stored next-try time (30 s doubling to 15 minutes,
+  at least `Retry-After`; 15 minutes after an authorization failure, ended by new tokens), which survives restarts.
+  A `413` for a batch halves the batch size.
+- **Tokens:** one upload uses one token (or the token refreshed from it); an upload stops when the app changes the
+  authorization, and a refresh that finishes after the app set new tokens does not overwrite them.
+- **Location requests:** the `android` backend uses `gps` and `network` together for `'high'` and `'balanced'`, and
+  drops network fixes while a GPS fix is recent; its `getCurrentPosition` asks the providers in parallel. A fix
+  without an accuracy value counts as 1,000 km inaccurate (was 0 m). With HMS, the first fix counts as a successful
+  registration. `getCurrentPosition()` rejects at once when the OS rejects the request (was `TIMEOUT`).
+- **Backend choice:** with `locationProvider: 'auto'`, a better backend that becomes available (for example after a
+  Play services update) is switched to at the next start, `providerchange` or heartbeat. A warning is logged when HMS
+  Core is older than 6.3.0.301.
+- **Restores:** on Android 11–13, a restore from the background without "Allow all the time" location records
+  `tracking_stop` reason `service_start_failed` and offers the resume notification (the service would get no
+  location). A heartbeat alarm or service restart after a user stop no longer restarts tracking.
+- **`stopAfterElapsedMinutes`** is counted on the elapsed-time clock within one boot, so a wall-clock change does not
+  move it.
+- **`setConfig()` checks** `http.url`, header names and values, and templates, and rejects mistakes with
+  `INVALID_ARGUMENT`; an `http://` URL gives a warning.
+- **Logs:** all log files together stay under 10 MB; text passed to `log()` has tokens, JWTs and URLs removed.
+- **Writes:** a change of `enabled` is written with `commit()`, so a process killed right after `stop()` cannot bring
+  tracking back.
+
+### Security
+
+- `accessToken`, `refreshToken`, `refreshPayload` and `refreshHeaders` are stored encrypted (AES-256-GCM, Android
+  Keystore key) under `noBackupFilesDir`; plain-text tokens of older versions are moved on the first start.
+  `getState()` and the config results return them masked.
+- The database and the log files moved to `noBackupFilesDir` (out of Auto Backup and device transfer). A config
+  restored onto another installation never turns tracking on by itself and drops the tokens.
+
+### Known limitations
+
+- Not verified on a real phone: the Android 11–13 restore refusal, the expedited upload job, HMS registration timing,
+  and the Android Keystore encryption (unit tests only).
+
 Round 2: the field-force audit setup, a native API for companion plugins, and end-to-end tests on an Android
 emulator. Decisions: [docs/DECISIONS.md](docs/DECISIONS.md#round-2-field-force-audit-companion-api-and-avd-tests).
 
@@ -181,7 +247,8 @@ emulator. Decisions: [docs/DECISIONS.md](docs/DECISIONS.md#round-2-field-force-a
   the exemption.
 - The PremiseMonitor service can start from the background only while the tracking service is in the foreground or
   right after a geofence transition; a refused start is audited (`service_start_failed`), not a crash.
-- The heartbeat's wake lock ends when the heartbeat is queued; the upload itself holds no wake lock.
+- The heartbeat's wake lock ends when the heartbeat is queued; the upload itself holds no wake lock (changed in round
+  3: `heartbeat.uploadKeepAwake`).
 - Open items and owner questions: [docs/DECISIONS.md, R2.5](docs/DECISIONS.md#r25-open-requests-and-known-limitations).
 
 ## [0.1.0] - Not published

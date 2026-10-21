@@ -17,6 +17,7 @@ import com.brickssoft.locationtracking.core.LogLevel
 import com.brickssoft.locationtracking.core.Logger
 import com.brickssoft.locationtracking.data.LocationStore
 import com.brickssoft.locationtracking.device.DeviceMonitor
+import com.brickssoft.locationtracking.http.HttpSyncer
 import com.brickssoft.locationtracking.model.HeartbeatMeta
 import com.brickssoft.locationtracking.model.HeartbeatStatus
 import com.brickssoft.locationtracking.model.HeartbeatStrategy
@@ -70,8 +71,14 @@ import kotlin.coroutines.cancellation.CancellationException
  *   idle-paced backup. A record every 5 s therefore sets the alarms once per 30 s instead of once per record. An alarm
  *   left in place fires up to 30 s early; [onAlarm] then finds the window not due, creates no heartbeat and arms the
  *   real due time.
- * - One partial wake lock per alarm delivery. It is released when the heartbeat has been submitted (the upload that
- *   the submit starts holds no wake lock) and times out after [WAKE_LOCK_TIMEOUT_MS] if something hangs.
+ * - One partial wake lock per alarm delivery. It is released when the heartbeat has been submitted and times out after
+ *   [WAKE_LOCK_TIMEOUT_MS] if something hangs.
+ * - **Upload wake lock** (recommendation 11d, `heartbeat.uploadKeepAwake`, default 10 s). Right before the alarm's
+ *   wake lock ends, a second wake lock is taken for the heartbeat's upload: it is released when the first upload pass
+ *   that started after the heartbeat was queued has finished ([HttpSyncer.awaitUpload]: uploaded, failed or nothing to
+ *   send), or after `uploadKeepAwake` seconds. So the heartbeat reaches the server on time instead of when the phone
+ *   next wakes up. The wait runs outside the alarm broadcast, so a slow upload cannot hold the broadcast past its limit.
+ *   With 0 there is no second wake lock (the behavior before this setting).
  * - The backend's last known location is requested only when `runtime.lastLocation` is null, and not again within
  *   [LAST_LOCATION_RETRY_MS] after the backend answered that it has none (a timeout or an error is retried at the
  *   next heartbeat).
@@ -91,6 +98,8 @@ class DefaultHeartbeatScheduler(
     private val clock: Clock,
     private val scope: CoroutineScope,
     private val alarms: HeartbeatAlarms = SystemHeartbeatAlarms(context),
+    /** The uploader whose pass the upload wake lock waits for; null = no upload wake lock. */
+    private val uploads: Lazy<HttpSyncer>? = null,
 ) : HeartbeatScheduler {
     private enum class Lifecycle {
         /** Fresh process: never started. An alarm may still arrive from a previous process. */
@@ -323,7 +332,9 @@ class DefaultHeartbeatScheduler(
                 Logger.d(TAG, "$trigger: superseded by a newer record or stop() while the heartbeat was built")
                 return
             }
+            val ticket = uploads?.let { tryOrNull("upload ticket") { it.value.uploadTicket() } }
             recordSink.value.submit(record)
+            keepAwakeForUpload(ticket)
             val meta = record.heartbeat
             Logger.i(
                 TAG,
@@ -625,13 +636,45 @@ class DefaultHeartbeatScheduler(
 
     // ---- wake lock
 
-    private fun acquireWakeLock(): PowerManager.WakeLock? = try {
-        powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKE_LOCK_TAG)?.apply {
-            setReferenceCounted(false)
-            acquire(WAKE_LOCK_TIMEOUT_MS)
+    private fun acquireWakeLock(timeoutMs: Long = WAKE_LOCK_TIMEOUT_MS, tag: String = WAKE_LOCK_TAG): PowerManager.WakeLock? =
+        try {
+            powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, tag)?.apply {
+                setReferenceCounted(false)
+                acquire(timeoutMs)
+            }
+        } catch (e: RuntimeException) {
+            Logger.w(TAG, "cannot acquire the wake lock", e)
+            null
         }
-    } catch (e: RuntimeException) {
-        Logger.w(TAG, "cannot acquire the wake lock", e)
+
+    /**
+     * Keeps the phone awake until the first upload pass started after [ticket] has finished, at most
+     * `heartbeat.uploadKeepAwake` seconds (see the class docs). Taken before the caller's wake lock ends.
+     */
+    private fun keepAwakeForUpload(ticket: Long?) {
+        val syncer = uploads ?: return
+        val seconds = configStore.config.value.heartbeat.uploadKeepAwake
+        if (ticket == null || seconds <= 0) return
+        val limitMs = seconds * 1_000L
+        val wakeLock = acquireWakeLock(limitMs, UPLOAD_WAKE_LOCK_TAG)
+        scope.launch {
+            try {
+                val done = withTimeoutOrNull(limitMs) { syncer.value.awaitUpload(ticket) }
+                if (done == null) Logger.d(TAG, "heartbeat upload not finished within $seconds s; the phone may sleep")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Logger.w(TAG, "waiting for the heartbeat upload failed", e)
+            } finally {
+                release(wakeLock)
+            }
+        }
+    }
+
+    private inline fun <T> tryOrNull(what: String, block: () -> T): T? = try {
+        block()
+    } catch (e: Exception) {
+        Logger.w(TAG, "$what failed", e)
         null
     }
 
@@ -689,6 +732,7 @@ class DefaultHeartbeatScheduler(
         const val TAG = "LT.Heartbeat"
         const val LISTENER_TAG = "lt-heartbeat"
         const val WAKE_LOCK_TAG = "LocationTracking:heartbeat"
+        const val UPLOAD_WAKE_LOCK_TAG = "LocationTracking:heartbeat-upload"
 
         /**
          * Upper bound of the heartbeat wake lock. The lock is released as soon as the heartbeat is submitted

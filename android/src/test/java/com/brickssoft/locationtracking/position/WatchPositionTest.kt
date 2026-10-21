@@ -2,6 +2,7 @@ package com.brickssoft.locationtracking.position
 
 import com.brickssoft.locationtracking.config.Config
 import com.brickssoft.locationtracking.core.ErrorCode
+import com.brickssoft.locationtracking.core.TrackingException
 import com.brickssoft.locationtracking.core.Logger
 import com.brickssoft.locationtracking.model.DesiredAccuracy
 import com.brickssoft.locationtracking.model.ProviderKind
@@ -398,6 +399,20 @@ class WatchPositionTest {
 
         assertEquals(ErrorCode.PERMISSION_DENIED, got.errors.single().code)
         assertFalse(h.service.clearWatch("w1"))
+    }
+
+    @Test
+    fun `a request the backend refuses later is reported once and ends the watch`() = runTest {
+        val h = harness()
+        val got = Deliveries()
+        h.service.watchPosition("w1", WatchPositionOptions(), got)
+
+        h.backend.fail(TrackingException(ErrorCode.UNAVAILABLE, "provider gone"))
+        h.backend.emit(h.fix(5f))
+        runCurrent()
+
+        assertEquals(listOf(ErrorCode.UNAVAILABLE), got.errors.map { it.code })
+        assertTrue(got.records.isEmpty())
     }
 
     @Test

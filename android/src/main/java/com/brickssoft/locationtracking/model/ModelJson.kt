@@ -118,13 +118,18 @@ object RecordJson {
             "activity",
             JSONObject().put("type", record.activity.type.wire).put("confidence", record.activity.confidence),
         )
-        json.put(
-            "battery",
-            JSONObject()
-                .put("level", JsonUtil.floatOrNull(record.battery.level))
-                .put("is_charging", record.battery.isCharging),
-        )
+        val battery = JSONObject()
+            .put("level", JsonUtil.floatOrNull(record.battery.level))
+            .put("is_charging", record.battery.isCharging)
+        record.batteryDetails?.let { details ->
+            details.temperature?.let { battery.put("temperature", JsonUtil.floatOrNull(it)) }
+            details.health?.let { battery.put("health", it) }
+            details.plugged?.let { battery.put("plugged", it) }
+        }
+        json.put("battery", battery)
         json.put("backend", record.backend?.wire ?: JSONObject.NULL)
+        record.network?.let { json.put("network", it.wire) }
+        record.device?.takeUnless { it.isEmpty }?.let { json.put("device", deviceToJson(it)) }
         if (record.extras != null) {
             val extras = JsonUtil.parseObject(record.extras)
             if (extras != null) json.put("extras", extras) else Logger.w(TAG, "dropping invalid extras of ${record.uuid}")
@@ -133,8 +138,40 @@ object RecordJson {
         record.provider?.let { json.put("provider", ProviderStateJson.toJson(it)) }
         record.reason?.let { json.put("reason", it) }
         record.heartbeat?.let { json.put("heartbeat", heartbeatMetaToJson(it)) }
+        record.stoppedAt?.let { json.put("stopped_at", Iso8601.format(it)) }
         return json
     }
+
+    /** The `device` object of a record: only the readings that are set. */
+    fun deviceToJson(d: DeviceSnapshot): JSONObject {
+        val json = JSONObject()
+        d.backgroundRestricted?.let { json.put("background_restricted", it) }
+        d.standbyBucket?.let { json.put("standby_bucket", it) }
+        d.diskFreeBytes?.let { json.put("disk_free_bytes", it) }
+        d.thermalStatus?.let { json.put("thermal_status", it) }
+        d.manufacturer?.let { json.put("manufacturer", it) }
+        d.model?.let { json.put("model", it) }
+        d.osVersion?.let { json.put("os_version", it) }
+        d.sdkInt?.let { json.put("sdk_int", it) }
+        d.androidId?.let { json.put("android_id", it) }
+        d.lowRamDevice?.let { json.put("low_ram_device", it) }
+        d.ramTotalBytes?.let { json.put("ram_total_bytes", it) }
+        return json
+    }
+
+    private fun deviceFromJson(json: JSONObject): DeviceSnapshot = DeviceSnapshot(
+        backgroundRestricted = JsonUtil.optBoolean(json, "background_restricted"),
+        standbyBucket = JsonUtil.optString(json, "standby_bucket"),
+        diskFreeBytes = JsonUtil.optLong(json, "disk_free_bytes"),
+        thermalStatus = JsonUtil.optString(json, "thermal_status"),
+        manufacturer = JsonUtil.optString(json, "manufacturer"),
+        model = JsonUtil.optString(json, "model"),
+        osVersion = JsonUtil.optString(json, "os_version"),
+        sdkInt = JsonUtil.optInt(json, "sdk_int"),
+        androidId = JsonUtil.optString(json, "android_id"),
+        lowRamDevice = JsonUtil.optBoolean(json, "low_ram_device"),
+        ramTotalBytes = JsonUtil.optLong(json, "ram_total_bytes"),
+    )
 
     /** The `heartbeat` object of a heartbeat record (snake_case keys, `next_at` ISO-8601 or null). */
     fun heartbeatMetaToJson(meta: HeartbeatMeta): JSONObject = JSONObject()
@@ -203,12 +240,20 @@ object RecordJson {
                 confidence = JsonUtil.optInt(it, "confidence") ?: 0,
             )
         } ?: ActivitySample.UNKNOWN
-        val battery = json.optJSONObject("battery")?.let {
+        val batteryJson = json.optJSONObject("battery")
+        val battery = batteryJson?.let {
             BatterySnapshot(
                 level = JsonUtil.optFloat(it, "level") ?: -1f,
                 isCharging = JsonUtil.optBoolean(it, "is_charging") ?: false,
             )
         } ?: BatterySnapshot.UNKNOWN
+        val batteryDetails = batteryJson?.let {
+            BatteryDetails(
+                temperature = JsonUtil.optFloat(it, "temperature"),
+                health = JsonUtil.optString(it, "health"),
+                plugged = JsonUtil.optString(it, "plugged"),
+            )
+        }?.takeUnless { it.temperature == null && it.health == null && it.plugged == null }
         return Record(
             uuid = uuid,
             event = event,
@@ -226,6 +271,10 @@ object RecordJson {
             provider = json.optJSONObject("provider")?.let { ProviderStateJson.fromJson(it) },
             reason = JsonUtil.optString(json, "reason"),
             heartbeat = json.optJSONObject("heartbeat")?.let { heartbeatMetaFromJson(it) },
+            stoppedAt = Iso8601.parse(JsonUtil.optString(json, "stopped_at")),
+            network = ConnectivityType.fromWire(JsonUtil.optString(json, "network")),
+            device = json.optJSONObject("device")?.let { deviceFromJson(it) },
+            batteryDetails = batteryDetails,
         )
     }
 
@@ -426,6 +475,13 @@ object DeviceInfoJson {
             .put("hmsAvailable", d.hmsAvailable)
             .put("backend", d.backend.wire)
             .put("packagedProviders", providers)
+            .put("backendFallbackReason", JsonUtil.orNull(d.backendFallbackReason))
+            .put("gmsStatus", JsonUtil.orNull(d.gmsStatus))
+            .put("hmsStatus", JsonUtil.orNull(d.hmsStatus))
+            .put("hmsCoreOutdated", JsonUtil.orNull(d.hmsCoreOutdated))
+            .put("locationAvailableHint", JsonUtil.orNull(d.locationAvailableHint))
+            .put("cpuCores", d.cpuCores)
+            .put("supportedAbis", JSONArray().also { abis -> d.supportedAbis.forEach { abis.put(it) } })
     }
 }
 
@@ -497,6 +553,8 @@ object EventJson {
     const val ENABLEDCHANGE = "enabledchange"
     const val NOTIFICATIONACTION = "notificationaction"
     const val AUTHORIZATION = "authorization"
+    const val LOCATIONERROR = "locationerror"
+    const val STORAGEFULL = "storagefull"
 
     fun name(event: TrackingEvent): String = when (event) {
         is TrackingEvent.Location -> LOCATION
@@ -512,6 +570,8 @@ object EventJson {
         is TrackingEvent.EnabledChange -> ENABLEDCHANGE
         is TrackingEvent.NotificationAction -> NOTIFICATIONACTION
         is TrackingEvent.Authorization -> AUTHORIZATION
+        is TrackingEvent.LocationError -> LOCATIONERROR
+        is TrackingEvent.StorageFull -> STORAGEFULL
     }
 
     fun payload(event: TrackingEvent): JSONObject = when (event) {
@@ -538,7 +598,8 @@ object EventJson {
         is TrackingEvent.Http -> HttpResultJson.toJson(event.result)
         is TrackingEvent.ConnectivityChange -> ConnectivityJson.toJson(event.connectivity)
         is TrackingEvent.PowerSaveChange -> JSONObject().put("isPowerSaveMode", event.isPowerSaveMode)
-        is TrackingEvent.EnabledChange -> JSONObject().put("enabled", event.enabled)
+        is TrackingEvent.EnabledChange ->
+            JSONObject().put("enabled", event.enabled).put("reason", JsonUtil.orNull(event.reason))
         is TrackingEvent.NotificationAction -> JSONObject().put("id", event.id)
         is TrackingEvent.Authorization -> {
             val json = JSONObject().put("success", event.success).put("status", event.status)
@@ -546,5 +607,14 @@ object EventJson {
             JsonUtil.parseObject(event.responseJson)?.let { json.put("response", it) }
             json
         }
+        is TrackingEvent.LocationError -> JSONObject()
+            .put("code", event.code.name)
+            .put("message", event.message)
+            .put("backend", event.backend.wire)
+            .put("retryInMs", JsonUtil.orNull(event.retryInMs))
+        is TrackingEvent.StorageFull -> JSONObject()
+            .put("uuid", event.uuid)
+            .put("event", event.event.wire)
+            .put("diskFreeBytes", JsonUtil.orNull(event.diskFreeBytes))
     }
 }

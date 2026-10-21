@@ -498,7 +498,7 @@ Example: `node ~/lt-runs/lt-report.mjs http://127.0.0.1:8787/__records --tz Asia
 | Kill like a task killer (real phone, debug build) | `adb shell run-as com.brickssoft.fieldforce.example kill -9 <pid>` |
 | Clear data (also revokes permissions) | `adb shell pm clear com.brickssoft.fieldforce.example` |
 | Plugin log lines | `adb logcat -d -v threadtime \| grep -E ' LT[. ]'` |
-| Plugin log files (UTC day files) | `adb shell run-as com.brickssoft.fieldforce.example ls files/location-tracking-logs` then `adb shell run-as com.brickssoft.fieldforce.example cat files/location-tracking-logs/lt-2026-09-27.log` |
+| Plugin log files (UTC day files) | `adb shell run-as com.brickssoft.fieldforce.example ls no_backup/location-tracking-logs` then `adb shell run-as com.brickssoft.fieldforce.example cat no_backup/location-tracking-logs/lt-2026-09-27.log` |
 | Crashes of the app | `adb logcat -d -b crash \| grep -A20 'Process: com.brickssoft.fieldforce.example'` |
 
 The same commands work for the plugin example with its package name.
@@ -1041,9 +1041,9 @@ location records, activity recognition, stop and start detection, geofences and 
     `curl -s localhost:8787/__records > ~/lt-runs/current/m01-records.json` and
     `node ~/lt-runs/lt-report.mjs ~/lt-runs/current/m01-records.json --max-interval 120`.
 12. **[auto]** Search the plugin log for HMS errors:
-    `adb shell "run-as $APP sh -c 'cat files/location-tracking-logs/*.log'" | grep -E '907135|6003| ERROR '`. (The
+    `adb shell "run-as $APP sh -c 'cat no_backup/location-tracking-logs/*.log'" | grep -E '907135|6003| ERROR '`. (The
     whole device command is in double quotes, so the app's own shell expands `*.log`.) Also save the complete log:
-    `adb shell "run-as $APP sh -c 'cat files/location-tracking-logs/*.log'" > ~/lt-runs/current/m01-plugin.log`; it
+    `adb shell "run-as $APP sh -c 'cat no_backup/location-tracking-logs/*.log'" > ~/lt-runs/current/m01-plugin.log`; it
     must not be empty.
 13. **[auto]** `e2e_cmd $APP m01-stop stop`. Remove the geofence: `e2e_cmd $APP m01-rm removeGeofence '{"identifier":"m01-start"}'`.
 
@@ -1399,7 +1399,7 @@ exemption, heartbeats come about every 180 s and at most `maxInterval` (300 s) a
 stop comes by about 02:11; the limit adds one minute. The check runs in a separate step right after the heartbeat is
 queued, and the heartbeat's wake lock may already be released then. A stop that comes exactly one heartbeat interval
 later than expected points to the phone falling asleep in that moment; report it with the plugin log
-(`files/location-tracking-logs`) around the stop.
+(`no_backup/location-tracking-logs`) around the stop.
 
 **Pass / fail.** Pass when every row holds. A `tracking_stop` later than the limit, or none at all, is a fail: the
 stop time was not checked while the phone slept.

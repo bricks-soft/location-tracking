@@ -43,8 +43,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.zip.GZIPOutputStream
 
 /**
- * [LogStore] that keeps the log in daily UTC files `filesDir/location-tracking-logs/lt-YYYY-MM-DD.log`, in the format
- * of [LogFormatter].
+ * [LogStore] that keeps the log in daily UTC files `noBackupFilesDir/location-tracking-logs/lt-YYYY-MM-DD.log`, in the
+ * format of [LogFormatter]. `noBackupFilesDir` keeps the logs out of Android Auto Backup and device-to-device transfer
+ * (recommendation 7); files written by an older version under `filesDir` are moved there on first use.
  *
  * [write] never blocks and never throws: it stamps the entry with [Clock.now] and appends it to an in-memory queue
  * (beyond [maxPending] pending entries the oldest are dropped, and a warning records how many). One writer at a time
@@ -52,7 +53,10 @@ import java.util.zip.GZIPOutputStream
  * they see every entry written before they were called.
  *
  * Files are purged by [configure] and on each UTC day rollover: a file is deleted when its whole day lies more than
- * `maxDays` days back, i.e. the files of today and of the previous `maxDays` days are kept.
+ * `maxDays` days back, i.e. the files of today and of the previous `maxDays` days are kept. On top of that, the files
+ * together are kept under `maxTotalBytes` (10 MB; recommendation 16): after every [SIZE_CHECK_BYTES] written, and when
+ * purging, the oldest daily files are deleted until they fit. The file of the current day is never deleted, so a single
+ * day of verbose logging can still exceed the limit.
  *
  * [read] returns whole entries (a header line plus its indented continuation lines). `start`/`end` are inclusive
  * bounds on the entry time; `level` keeps entries at that severity or above, as [LogLevel.allows] (so `OFF` matches
@@ -69,6 +73,7 @@ class FileLogger(
     private val dispatchers: AppDispatchers,
     private val http: Lazy<OkHttpClient>,
     maxPending: Int = DEFAULT_MAX_PENDING,
+    private val maxTotalBytes: Long = DEFAULT_MAX_TOTAL_BYTES,
 ) : LogStore {
     /** A queued entry; the stack trace is rendered at write time so the throwable is not retained. */
     private class Entry(
@@ -82,8 +87,8 @@ class FileLogger(
     private val appContext: Context = context.applicationContext ?: context
     private val maxPending = maxPending.coerceAtLeast(1)
 
-    // Resolved on first use, on the writer's thread: Context.getFilesDir() may touch the disk.
-    private val logDir: File by lazy { File(appContext.filesDir, Constants.LOG_DIR) }
+    // Resolved on first use, on the writer's thread: Context.getNoBackupFilesDir() may touch the disk.
+    private val logDir: File by lazy { noBackupLogDir() }
     private val cacheLogDir: File by lazy { File(appContext.cacheDir, Constants.LOG_DIR) }
 
     private val queueLock = Any()
@@ -95,6 +100,7 @@ class FileLogger(
     private val fileLock = Mutex()
     private var lastWrittenDay = Long.MIN_VALUE // guarded by fileLock
     private var newlineCheckedFile: String? = null // guarded by fileLock
+    private var bytesSinceSizeCheck = 0L // guarded by fileLock
 
     @Volatile
     private var level: LogLevel = LogLevel.INFO
@@ -318,8 +324,11 @@ class FileLogger(
                 val e = batch[i]
                 text.append(LogFormatter.formatEntry(e.timeMs, e.level, e.tag, e.message, e.stackTrace))
             }
-            FileOutputStream(file, true).use { it.write(text.toString().toByteArray(Charsets.UTF_8)) }
+            val bytes = text.toString().toByteArray(Charsets.UTF_8)
+            FileOutputStream(file, true).use { it.write(bytes) }
             newlineCheckedFile = file.name
+            bytesSinceSizeCheck += bytes.size
+            if (bytesSinceSizeCheck >= SIZE_CHECK_BYTES) limitTotalSizeLocked(file)
         } catch (e: IOException) {
             newlineCheckedFile = null
             fallbackLog("could not write $file", e)
@@ -334,7 +343,10 @@ class FileLogger(
         }
     }
 
-    /** Deletes daily files whose day is more than [maxDays] days before [today]. Caller holds [fileLock]. */
+    /**
+     * Deletes daily files whose day is more than [maxDays] days before [today], then the oldest ones beyond
+     * `maxTotalBytes`. Caller holds [fileLock].
+     */
     private fun purgeLocked(today: Long) {
         val keepFrom = today - maxDays.coerceAtLeast(0)
         try {
@@ -342,6 +354,47 @@ class FileLogger(
         } catch (e: RuntimeException) {
             fallbackLog("could not purge old log files", e)
         }
+        limitTotalSizeLocked(File(logDir, LogFormatter.fileName(clock.now())))
+    }
+
+    /** Deletes the oldest daily files, never [current], until all of them fit in `maxTotalBytes`. Caller holds [fileLock]. */
+    private fun limitTotalSizeLocked(current: File) {
+        bytesSinceSizeCheck = 0
+        try {
+            val files = logFiles().map { it.second }
+            var total = files.sumOf { it.length() }
+            for (file in files) {
+                if (total <= maxTotalBytes) break
+                if (file.name == current.name) continue
+                val size = file.length()
+                if (file.delete()) total -= size
+            }
+        } catch (e: RuntimeException) {
+            fallbackLog("could not limit the log size", e)
+        }
+    }
+
+    /**
+     * `noBackupFilesDir/location-tracking-logs`, after moving the daily files an older version wrote to
+     * `filesDir/location-tracking-logs` there (a file that already exists in the new folder is left in the old one).
+     */
+    private fun noBackupLogDir(): File {
+        val target = File(appContext.noBackupFilesDir, Constants.LOG_DIR)
+        try {
+            val legacy = File(appContext.filesDir, Constants.LOG_DIR)
+            if (legacy.isDirectory) {
+                if (!target.exists() && legacy.renameTo(target)) return target
+                target.mkdirs()
+                legacy.listFiles()?.forEach { file ->
+                    val moved = File(target, file.name)
+                    if (!moved.exists()) file.renameTo(moved)
+                }
+                legacy.delete() // only if empty
+            }
+        } catch (e: RuntimeException) {
+            fallbackLog("could not move the old log files", e)
+        }
+        return target
     }
 
     /** Daily log files with their day numbers, oldest first. */
@@ -446,6 +499,12 @@ class FileLogger(
     companion object {
         const val DEFAULT_MAX_PENDING = 5_000
         const val DEFAULT_MAX_DAYS = 3
+
+        /** All daily log files together are kept under this size (recommendation 16). */
+        const val DEFAULT_MAX_TOTAL_BYTES = 10L * 1024 * 1024
+
+        /** The size limit is checked after this many bytes were written. */
+        const val SIZE_CHECK_BYTES = 256L * 1024
 
         /** Name of the gzipped log attached by [upload] and [prepareEmail]. */
         const val UPLOAD_FILE_NAME = "location-tracking-log.txt.gz"

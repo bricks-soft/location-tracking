@@ -22,6 +22,7 @@ import io.mockk.every
 import io.mockk.mockk
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -46,6 +47,12 @@ class DefaultProviderFactoryTest {
 
         @Volatile
         var availabilityError: Throwable? = null
+
+        @Volatile
+        var status: Int? = null
+
+        @Volatile
+        var versionNote: String? = null
         val location = FakeLocationBackend(kind)
         val activity = FakeActivityBackend(kind)
         val geofence = FakeGeofenceBackend(true, kind)
@@ -54,6 +61,10 @@ class DefaultProviderFactoryTest {
             availabilityError?.let { throw it }
             return available
         }
+
+        override fun availabilityStatus(): Int? = status
+
+        override fun versionDiagnostic(): String? = versionNote
 
         override fun location(): LocationBackend = location
 
@@ -490,6 +501,58 @@ class DefaultProviderFactoryTest {
     }
 
     // ---- reselect
+
+    @Test
+    fun `selectionInfo names why better backends were skipped, with the raw status codes`() {
+        gms.available = false
+        gms.status = 2 // SERVICE_VERSION_UPDATE_REQUIRED
+        hms.available = false
+        hms.status = 1
+
+        val info = factory().selectionInfo()
+
+        assertEquals("gms: unavailable (status 2); hms: unavailable (status 1)", info.fallbackReason)
+        assertEquals(2, info.gmsStatus)
+        assertEquals(1, info.hmsStatus)
+        assertEquals(false, info.hmsCoreOutdated)
+    }
+
+    @Test
+    fun `selectionInfo has no fallback reason when the preferred backend is used, and flags an old HMS Core`() {
+        gms.status = 0
+        hms.versionNote = "HMS Core 6.1 is older than 6.3.0.301"
+
+        val f = factory()
+        assertNull(f.selectionInfo().fallbackReason)
+
+        setSetting(LocationProviderSetting.HMS)
+        f.reselect()
+        val info = f.selectionInfo()
+        assertNull(info.fallbackReason)
+        assertEquals(true, info.hmsCoreOutdated)
+    }
+
+    @Test
+    fun `selectionInfo names a provider whose sdk is not packaged`() {
+        present -= ProviderBundles.GMS_SDK_CLASS
+
+        assertEquals("gms: SDK not packaged", factory().selectionInfo().fallbackReason)
+    }
+
+    @Test
+    fun `bestAvailable reports a backend that became available without changing the selection`() {
+        gms.available = false
+        val f = factory()
+        assertEquals(ProviderKind.HMS, f.kind)
+        assertEquals(ProviderKind.HMS, f.bestAvailable())
+
+        gms.available = true // e.g. Play services finished updating
+
+        assertEquals(ProviderKind.GMS, f.bestAvailable())
+        assertEquals(ProviderKind.HMS, f.kind)
+        setSetting(LocationProviderSetting.HMS)
+        assertEquals(ProviderKind.HMS, f.bestAvailable()) // only 'auto' looks for a better backend
+    }
 
     @Test
     fun `reselect follows a config change and reports it`() {

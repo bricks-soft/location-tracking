@@ -23,6 +23,11 @@ import com.brickssoft.locationtracking.testing.FakeDeviceMonitor
 import com.brickssoft.locationtracking.testing.FakeProviderFactory
 import com.brickssoft.locationtracking.testing.Fixtures
 import com.brickssoft.locationtracking.testing.JsonAssert.assertJsonEquals
+import com.brickssoft.locationtracking.device.DeviceDetails
+import com.brickssoft.locationtracking.model.DeviceSnapshot
+import com.brickssoft.locationtracking.model.BatteryDetails
+import com.brickssoft.locationtracking.model.Connectivity
+import com.brickssoft.locationtracking.model.ConnectivityType
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -363,7 +368,7 @@ class DefaultRecordFactoryTest {
         assertEquals(
             setOf(
                 "uuid", "event", "timestamp", "recorded_at", "elapsed_realtime_ms", "boot_count", "is_moving",
-                "odometer", "mock", "coords", "activity", "battery", "backend", "extras", "provider",
+                "odometer", "mock", "coords", "activity", "battery", "backend", "network", "extras", "provider",
             ),
             json.keys().asSequence().toSet(),
         )
@@ -396,6 +401,7 @@ class DefaultRecordFactoryTest {
               "activity": { "type": "in_vehicle", "confidence": 92 },
               "battery": { "level": 0.81, "is_charging": false },
               "backend": "gms",
+              "network": "wifi",
               "extras": { "driver_id": 7 },
               "provider": { "enabled": true, "gps": true, "network": true, "permission": "always",
                             "accuracy": "precise", "backend": "gms" }
@@ -403,6 +409,40 @@ class DefaultRecordFactoryTest {
             """,
             json,
         )
+    }
+
+    @Test
+    fun `heartbeat records carry the heartbeat device readings and battery details, tracking_start the phone details`() {
+        val details = object : DeviceDetails {
+            override fun forHeartbeat() = DeviceSnapshot(backgroundRestricted = true, standbyBucket = "rare", diskFreeBytes = 5L, thermalStatus = "light")
+
+            override fun forTrackingStart() = DeviceSnapshot(manufacturer = "Google", model = "Pixel 8", osVersion = "15", sdkInt = 35, androidId = "a1b2")
+
+            override fun batteryDetails() = BatteryDetails(31.5f, "good", "usb")
+        }
+        val withDetails = DefaultRecordFactory(configStore, device, providers, clock, details)
+        device.connectivityValue = Connectivity(connected = true, type = ConnectivityType.CELLULAR)
+
+        val heartbeat = withDetails.create(RecordEvent.HEARTBEAT, null)
+        val start = withDetails.create(RecordEvent.TRACKING_START, Fixtures.location(), reason = "start")
+        val location = withDetails.create(RecordEvent.LOCATION, Fixtures.location())
+
+        assertEquals(details.forHeartbeat(), heartbeat.device)
+        assertEquals(details.batteryDetails(), heartbeat.batteryDetails)
+        assertEquals(details.forTrackingStart(), start.device)
+        assertNull(start.batteryDetails)
+        assertNull(location.device)
+        assertNull(location.batteryDetails)
+        assertEquals(ConnectivityType.CELLULAR, location.network)
+
+        val json = RecordJson.toJson(heartbeat)
+        assertEquals("cellular", json.getString("network"))
+        assertEquals(true, json.getJSONObject("device").getBoolean("background_restricted"))
+        assertEquals("rare", json.getJSONObject("device").getString("standby_bucket"))
+        assertEquals(31.5, json.getJSONObject("battery").getDouble("temperature"), 0.001)
+        assertEquals("usb", json.getJSONObject("battery").getString("plugged"))
+        assertEquals("a1b2", RecordJson.toJson(start).getJSONObject("device").getString("android_id"))
+        assertEquals(heartbeat, RecordJson.fromJson(json))
     }
 
     @Test

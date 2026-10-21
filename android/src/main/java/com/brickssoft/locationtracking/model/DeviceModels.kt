@@ -139,7 +139,17 @@ data class HeartbeatStatus(
 
 // ---- device
 
-/** JS `DeviceInfo`. */
+/**
+ * JS `DeviceInfo`.
+ *
+ * @property backendFallbackReason why a better location backend is not used (recommendation 15), or null.
+ * @property gmsStatus `GoogleApiAvailability` result code (0 = SUCCESS), null if GMS is not packaged or not checked.
+ * @property hmsStatus `HuaweiApiAvailability` result code (0 = SUCCESS), null if HMS is not packaged or not checked.
+ * @property hmsCoreOutdated true when HMS Core is older than 6.3.0.301; null if HMS is not packaged.
+ * @property locationAvailableHint the last `LocationAvailability` of GMS or HMS; a hint, null if none was reported.
+ * @property cpuCores `Runtime.availableProcessors()`.
+ * @property supportedAbis `Build.SUPPORTED_ABIS`.
+ */
 data class DeviceInfo(
     val platform: String = "android",
     val manufacturer: String,
@@ -152,7 +162,38 @@ data class DeviceInfo(
     val hmsAvailable: Boolean,
     val backend: ProviderKind,
     val packagedProviders: List<String>,
+    val backendFallbackReason: String? = null,
+    val gmsStatus: Int? = null,
+    val hmsStatus: Int? = null,
+    val hmsCoreOutdated: Boolean? = null,
+    val locationAvailableHint: Boolean? = null,
+    val cpuCores: Int = 0,
+    val supportedAbis: List<String> = emptyList(),
 )
+
+/**
+ * The `device` object of heartbeat and `tracking_start` records (see `DeviceDetails`); a null field is not written.
+ * Heartbeat: [backgroundRestricted], [standbyBucket], [diskFreeBytes], [thermalStatus]. `tracking_start`:
+ * [manufacturer], [model], [osVersion], [sdkInt], [androidId], [lowRamDevice], [ramTotalBytes].
+ */
+data class DeviceSnapshot(
+    val backgroundRestricted: Boolean? = null,
+    val standbyBucket: String? = null,
+    val diskFreeBytes: Long? = null,
+    val thermalStatus: String? = null,
+    val manufacturer: String? = null,
+    val model: String? = null,
+    val osVersion: String? = null,
+    val sdkInt: Int? = null,
+    val androidId: String? = null,
+    val lowRamDevice: Boolean? = null,
+    val ramTotalBytes: Long? = null,
+) {
+    val isEmpty: Boolean get() = this == DeviceSnapshot()
+}
+
+/** Battery readings added to the `battery` object of heartbeat records: °C, health and power source. */
+data class BatteryDetails(val temperature: Float?, val health: String?, val plugged: String?)
 
 /** JS `Sensors`. */
 data class Sensors(

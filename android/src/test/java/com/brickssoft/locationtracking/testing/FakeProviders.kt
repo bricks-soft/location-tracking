@@ -11,6 +11,7 @@ import com.brickssoft.locationtracking.provider.LocationListener
 import com.brickssoft.locationtracking.provider.LocationRequestSpec
 import com.brickssoft.locationtracking.provider.OsGeofence
 import com.brickssoft.locationtracking.provider.ProviderFactory
+import com.brickssoft.locationtracking.provider.ProviderSelectionInfo
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -19,7 +20,8 @@ import java.util.concurrent.CopyOnWriteArrayList
  * - [emit] delivers fixes to every active listener.
  * - [lastLocation] is returned by `getLastLocation`.
  * - `getCurrentLocation` pops [currentLocationQueue] if non-empty, else returns [currentLocation];
- *   [currentLocationCalls] records (accuracy, timeoutMs).
+ *   [currentLocationCalls] records (accuracy, timeoutMs). It throws [currentLocationError] when set.
+ * - [fail] reports a request failure to every active listener and forgets their requests, as the real backends do.
  */
 class FakeLocationBackend(override val kind: ProviderKind = ProviderKind.GMS) : LocationBackend {
     val requests = CopyOnWriteArrayList<Pair<LocationRequestSpec, LocationListener>>()
@@ -36,6 +38,12 @@ class FakeLocationBackend(override val kind: ProviderKind = ProviderKind.GMS) : 
 
     @Volatile
     var lastLocationCalls = 0
+
+    @Volatile
+    var currentLocationError: TrackingException? = null
+
+    @Volatile
+    override var availabilityHint: Boolean? = null
 
     /** Current request per listener (a copy). */
     val active: Map<LocationListener, LocationRequestSpec> get() = synchronized(activeRequests) { activeRequests.toMap() }
@@ -60,6 +68,7 @@ class FakeLocationBackend(override val kind: ProviderKind = ProviderKind.GMS) : 
 
     override suspend fun getCurrentLocation(accuracy: DesiredAccuracy, timeoutMs: Long): TrackedLocation? {
         currentLocationCalls += accuracy to timeoutMs
+        currentLocationError?.let { throw it }
         return synchronized(currentLocationQueue) {
             if (currentLocationQueue.isNotEmpty()) currentLocationQueue.removeFirst() else currentLocation
         }
@@ -69,6 +78,12 @@ class FakeLocationBackend(override val kind: ProviderKind = ProviderKind.GMS) : 
     fun emit(vararg locations: TrackedLocation) {
         val listeners = synchronized(activeRequests) { activeRequests.keys.toList() }
         for (l in listeners) l.onLocations(locations.toList())
+    }
+
+    /** The OS rejected or ended every active request: they are forgotten and each listener gets [error] once. */
+    fun fail(error: TrackingException) {
+        val listeners = synchronized(activeRequests) { activeRequests.keys.toList().also { activeRequests.clear() } }
+        for (l in listeners) l.onError(error)
     }
 }
 
@@ -169,4 +184,15 @@ class FakeProviderFactory(
         reselectCalls++
         return reselectResult
     }
+
+    /** What [bestAvailable] returns; null: the current [kind]. */
+    @Volatile
+    var best: ProviderKind? = null
+
+    @Volatile
+    var selection = ProviderSelectionInfo(fallbackReason = null, gmsStatus = null, hmsStatus = null)
+
+    override fun bestAvailable(): ProviderKind = best ?: kind
+
+    override fun selectionInfo(): ProviderSelectionInfo = selection
 }

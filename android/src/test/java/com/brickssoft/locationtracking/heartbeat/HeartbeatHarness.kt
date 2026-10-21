@@ -45,6 +45,8 @@ internal class HeartbeatHarness(
     providersOverride: ((FakeProviderFactory) -> ProviderFactory)? = null,
     factoryOverride: ((FakeRecordFactory) -> RecordFactory)? = null,
     deviceOverride: ((FakeDeviceMonitor) -> DeviceMonitor)? = null,
+    /** Passed as the scheduler's `uploads` (the upload wake lock); null = none, as before recommendation 11d. */
+    uploads: Lazy<HttpSyncer>? = null,
 ) {
     val app: Application = ApplicationProvider.getApplicationContext<Application>().also {
         // Below API 33, ContextCompat's RECEIVER_NOT_EXPORTED needs this permission, which androidx.core's
@@ -76,6 +78,7 @@ internal class HeartbeatHarness(
         clock,
         scope,
         alarms,
+        uploads,
     )
     val sink: DefaultRecordSink = DefaultRecordSink(store, configStore, scheduler, syncer, events).also { sinkRef = it }
 

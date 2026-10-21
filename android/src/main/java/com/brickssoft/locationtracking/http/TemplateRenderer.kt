@@ -18,7 +18,8 @@ import org.json.JSONTokener
  * Each `<%= name %>` placeholder (surrounding whitespace allowed) is replaced by a raw JSON literal: numbers and
  * booleans bare, null as `null`, strings JSON-escaped but without quotes (templates write `"<%= uuid %>"`), and
  * `extras` as JSON object text (`{}` when the record has none), and `record` as the default record object (with
- * `sent_at`), so `"raw": <%= record %>` keeps every field, and `provider` as the record's provider object (or null).
+ * `sent_at`), so `"raw": <%= record %>` keeps every field, and `provider` and `device` as the record's provider and
+ * device objects (or null).
  * A null value in a placeholder that is exactly wrapped
  * in quotes (`"<%= timestamp %>"`) replaces the quotes too, so it becomes JSON `null` rather than the string "null".
  * An unknown placeholder becomes "" and logs a warning.
@@ -53,10 +54,26 @@ internal object TemplateRenderer {
         "activity.confidence" to { r, _ -> r.activity.confidence.toString() },
         "battery.level" to { r, _ -> number(r.battery.level) },
         "battery.is_charging" to { r, _ -> r.battery.isCharging.toString() },
+        "battery.temperature" to { r, _ -> number(r.batteryDetails?.temperature) },
+        "battery.health" to { r, _ -> r.batteryDetails?.health?.let { string(it) } },
+        "battery.plugged" to { r, _ -> r.batteryDetails?.plugged?.let { string(it) } },
+        "network" to { r, _ -> r.network?.let { string(it.wire) } },
+        "device.background_restricted" to { r, _ -> r.device?.backgroundRestricted?.toString() },
+        "device.standby_bucket" to { r, _ -> r.device?.standbyBucket?.let { string(it) } },
+        "device.disk_free_bytes" to { r, _ -> r.device?.diskFreeBytes?.toString() },
+        "device.thermal_status" to { r, _ -> r.device?.thermalStatus?.let { string(it) } },
+        "device.manufacturer" to { r, _ -> r.device?.manufacturer?.let { string(it) } },
+        "device.model" to { r, _ -> r.device?.model?.let { string(it) } },
+        "device.os_version" to { r, _ -> r.device?.osVersion?.let { string(it) } },
+        "device.sdk_int" to { r, _ -> r.device?.sdkInt?.toString() },
+        "device.android_id" to { r, _ -> r.device?.androidId?.let { string(it) } },
+        "device.low_ram_device" to { r, _ -> r.device?.lowRamDevice?.toString() },
+        "device.ram_total_bytes" to { r, _ -> r.device?.ramTotalBytes?.toString() },
         "elapsed_realtime_ms" to { r, _ -> r.elapsedRealtimeMs.toString() },
         "boot_count" to { r, _ -> r.bootCount.toString() },
         "backend" to { r, _ -> r.backend?.let { string(it.wire) } },
         "reason" to { r, _ -> r.reason?.let { string(it) } },
+        "stopped_at" to { r, _ -> r.stoppedAt?.let { string(Iso8601.format(it)) } },
         "geofence.identifier" to { r, _ -> r.geofence?.let { string(it.identifier) } },
         "geofence.action" to { r, _ -> r.geofence?.let { string(it.action.name) } },
         "provider.enabled" to { r, _ -> r.provider?.enabled?.toString() },
@@ -66,10 +83,15 @@ internal object TemplateRenderer {
         "extras" to { r, _ -> JsonUtil.parseObject(r.extras)?.toString() ?: "{}" },
         "record" to { r, sentAt -> RecordJson.toJson(r, sentAt).toString() },
         "provider" to { r, _ -> r.provider?.let { ProviderStateJson.toJson(it).toString() } },
+        "device" to { r, _ -> r.device?.let { RecordJson.deviceToJson(it).toString() } },
     )
 
     /** Every supported placeholder name. */
     val PLACEHOLDERS: Set<String> get() = RESOLVERS.keys
+
+    /** The placeholder names used in [template]. */
+    fun placeholderNames(template: String): Set<String> =
+        PLACEHOLDER.findAll(template).map { it.groupValues[2] }.toSet()
 
     /**
      * The template for [record]: `geofenceTemplate` for geofence records (falling back to `locationTemplate`),

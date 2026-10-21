@@ -51,8 +51,11 @@ class SharedPrefsConfigStoreTest {
         Logger.sink = null
     }
 
-    /** A new instance reads everything back from the prefs file, as after a process restart. */
-    private fun newStore() = SharedPrefsConfigStore(app, clock)
+    /** Stands in for the encrypted tokens file (Robolectric has no Android Keystore); it outlives store instances. */
+    private val secrets = SecretStore.inMemory()
+
+    /** A new instance reads everything back from the prefs file and [secrets], as after a process restart. */
+    private fun newStore(secretStore: SecretStore = secrets) = SharedPrefsConfigStore(app, clock, secretStore)
 
     // ---- load
 
@@ -281,10 +284,18 @@ class SharedPrefsConfigStoreTest {
     }
 
     @Test
-    fun `the persisted config is the TS Config shape`() {
+    fun `the persisted config is the TS Config shape without the tokens`() {
         newStore().merge(JSONObject(CUSTOM_JSON))
 
-        assertJsonEquals(CUSTOM_JSON, JSONObject(prefs.getString(SharedPrefsConfigStore.KEY_CONFIG, null)!!))
+        val expected = JSONObject(CUSTOM_JSON)
+        expected.getJSONObject("http").getJSONObject("authorization")
+            .put("accessToken", JSONObject.NULL)
+            .put("refreshToken", JSONObject.NULL)
+            .put("refreshPayload", JSONObject(AuthorizationConfig().refreshPayload))
+            .put("refreshHeaders", JSONObject())
+        assertJsonEquals(expected.toString(), JSONObject(prefs.getString(SharedPrefsConfigStore.KEY_CONFIG, null)!!))
+        assertEquals(AuthorizationSecrets.of(CUSTOM.http.authorization!!), secrets.read())
+        assertTrue(prefs.getBoolean(SharedPrefsConfigStore.KEY_SECRETS, false))
     }
 
     // ---- runtime
@@ -393,6 +404,118 @@ class SharedPrefsConfigStoreTest {
         val reloaded = newStore()
         assertEquals(store.runtime.value, reloaded.runtime.value)
         assertEquals(store.config.value, reloaded.config.value)
+    }
+
+    // ---- tokens (recommendation 8) and restore detection (recommendation 7)
+
+    @Test
+    fun `plain-text tokens written by an older version move to the secret store on the first load`() {
+        prefs.edit().putString(SharedPrefsConfigStore.KEY_CONFIG, CUSTOM_JSON).commit()
+
+        val store = newStore()
+
+        assertEquals(CUSTOM, store.config.value)
+        assertEquals(AuthorizationSecrets.of(CUSTOM.http.authorization!!), secrets.read())
+        val persisted = JSONObject(prefs.getString(SharedPrefsConfigStore.KEY_CONFIG, null)!!)
+            .getJSONObject("http").getJSONObject("authorization")
+        assertTrue(persisted.isNull("accessToken"))
+        assertTrue(persisted.isNull("refreshToken"))
+        assertFalse(store.secretsUnavailable)
+        assertEquals(CUSTOM, newStore().config.value)
+    }
+
+    @Test
+    fun `tokens that cannot be decrypted read as unset until the app sets new ones`() {
+        newStore().merge(JSONObject(CUSTOM_JSON))
+        val broken = object : SecretStore by secrets {
+            override fun read(): AuthorizationSecrets? = throw java.security.GeneralSecurityException("key gone")
+        }
+
+        val store = newStore(broken)
+
+        val auth = store.config.value.http.authorization!!
+        assertNull(auth.accessToken)
+        assertNull(auth.refreshToken)
+        assertEquals(CUSTOM.http.url, store.config.value.http.url)
+        assertTrue(store.secretsUnavailable)
+
+        store.merge(JSONObject("""{"http":{"authorization":{"accessToken":"new-access"}}}"""))
+        assertFalse(store.secretsUnavailable)
+        assertEquals("new-access", secrets.read()!!.accessToken)
+    }
+
+    @Test
+    fun `a missing secrets file after tokens were stored marks the tokens unavailable`() {
+        newStore().merge(JSONObject(CUSTOM_JSON))
+        secrets.clear()
+
+        val store = newStore()
+
+        assertNull(store.config.value.http.authorization!!.accessToken)
+        assertTrue(store.secretsUnavailable)
+    }
+
+    @Test
+    fun `tokens that cannot be encrypted stay in memory and the old ones are removed`() {
+        val store = newStore()
+        store.merge(JSONObject(CUSTOM_JSON))
+        val failing = object : SecretStore by secrets {
+            override fun write(secrets: AuthorizationSecrets) = throw java.security.GeneralSecurityException("no key")
+        }
+        val second = newStore(failing)
+
+        second.merge(JSONObject("""{"http":{"authorization":{"accessToken":"other-user"}}}"""))
+
+        assertEquals("other-user", second.config.value.http.authorization!!.accessToken)
+        assertNull(secrets.read())
+        assertFalse(prefs.getBoolean(SharedPrefsConfigStore.KEY_SECRETS, true))
+        assertTrue(log.lines.any { it.level == LogLevel.ERROR && it.message.contains("cannot store the authorization tokens") })
+    }
+
+    @Test
+    fun `removing the authorization deletes the stored tokens`() {
+        val store = newStore()
+        store.merge(JSONObject(CUSTOM_JSON))
+
+        store.merge(JSONObject("""{"http":{"authorization":null}}"""))
+
+        assertNull(secrets.read())
+        assertNull(newStore().config.value.http.authorization)
+    }
+
+    @Test
+    fun `a prefs file restored from another installation never turns tracking on and drops the tokens`() {
+        val store = newStore()
+        store.merge(JSONObject(CUSTOM_JSON))
+        store.updateRuntime { RUNTIME.copy(enabled = true, isMoving = true) }
+        val installed = prefs.getLong(SharedPrefsConfigStore.KEY_FIRST_INSTALL, -1L)
+        assertTrue(installed >= 0)
+        // As written by the other installation (Auto Backup restore or device-to-device transfer).
+        prefs.edit().putLong(SharedPrefsConfigStore.KEY_FIRST_INSTALL, installed + 1).commit()
+
+        val restored = newStore()
+
+        assertFalse(restored.runtime.value.enabled)
+        assertFalse(restored.runtime.value.isMoving)
+        assertNull(restored.config.value.http.authorization!!.accessToken)
+        assertNull(restored.config.value.http.authorization!!.refreshToken)
+        assertEquals(CUSTOM.http.url, restored.config.value.http.url)
+        assertNull(secrets.read())
+        assertEquals(installed, prefs.getLong(SharedPrefsConfigStore.KEY_FIRST_INSTALL, -1L))
+        assertFalse(newStore().runtime.value.enabled)
+    }
+
+    @Test
+    fun `a file without a stored install time is not a restore`() {
+        val store = newStore()
+        store.merge(JSONObject(CUSTOM_JSON))
+        store.updateRuntime { RUNTIME.copy(enabled = true) }
+        prefs.edit().remove(SharedPrefsConfigStore.KEY_FIRST_INSTALL).commit()
+
+        val reloaded = newStore()
+
+        assertTrue(reloaded.runtime.value.enabled)
+        assertEquals(CUSTOM, reloaded.config.value)
     }
 
     private fun assertInvalid(block: () -> Unit) {

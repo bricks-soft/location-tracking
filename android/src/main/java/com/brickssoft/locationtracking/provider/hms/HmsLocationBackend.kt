@@ -10,8 +10,12 @@ import com.brickssoft.locationtracking.model.TrackedLocation
 import com.brickssoft.locationtracking.provider.LocationBackend
 import com.brickssoft.locationtracking.provider.LocationListener
 import com.brickssoft.locationtracking.provider.LocationRequestSpec
+import com.brickssoft.locationtracking.provider.LocationSubscriptions
+import com.brickssoft.locationtracking.provider.OsRegistration
+import com.brickssoft.locationtracking.provider.RegistrationEvents
 import com.huawei.hmf.tasks.TaskExecutors
 import com.huawei.hms.location.FusedLocationProviderClient
+import com.huawei.hms.location.LocationAvailability
 import com.huawei.hms.location.LocationCallback
 import com.huawei.hms.location.LocationRequest
 import com.huawei.hms.location.LocationResult
@@ -22,9 +26,14 @@ import kotlinx.coroutines.withTimeoutOrNull
 /**
  * [LocationBackend] over the HMS fused location client.
  *
- * - Each listener gets its own [LocationCallback] on the main looper; requesting again with the same listener
- *   replaces its request, and late fixes from a replaced callback are dropped.
- * - `getCurrentLocation` is a one-shot request (`numUpdates = 1`) whose callback is always removed.
+ * - Listener bookkeeping is [LocationSubscriptions]: each request gets its own [LocationCallback] on the main looper; a
+ *   request for the same listener removes the previous callback first, and late fixes of a replaced callback are
+ *   dropped. A failure of `requestLocationUpdates` (thrown, or reported later by its task) reaches the listener's
+ *   `onError` (recommendation 3). The first delivered fix counts as a successful registration: Huawei does not
+ *   guarantee that the task succeeds before the first result.
+ * - `getCurrentLocation` is a one-shot request (`numUpdates = 1`) whose callback is always removed. It returns the
+ *   first fix even while the request task has not completed, and a failed request ends it at once with the error
+ *   instead of waiting for the timeout.
  * - Permission failures surface as `TrackingException(PERMISSION_DENIED)`; other HMS failures are mapped by
  *   [toTrackingException].
  *
@@ -40,35 +49,17 @@ internal class HmsLocationBackend(
 
     private val client: FusedLocationProviderClient by lazy(clientProvider)
 
-    /**
-     * Active callback per listener. Guarded by [lock], which is also held across the HMS request/remove calls so a
-     * concurrent request/remove for the same listener cannot leave an orphaned HMS registration. Those calls only
-     * submit work and return a task; callbacks never take the lock (they check [ListenerCallback.active]).
-     */
-    private val callbacks = HashMap<LocationListener, ListenerCallback>()
-    private val lock = Any()
+    private val subscriptions = LocationSubscriptions(TAG) { it.toTrackingException("requestLocationUpdates") }
+
+    override val availabilityHint: Boolean? get() = subscriptions.availabilityHint
 
     override fun requestUpdates(spec: LocationRequestSpec, listener: LocationListener) {
         val request = buildLocationRequest(spec)
-        synchronized(lock) {
-            callbacks.remove(listener)?.let(::deactivateAndRemove)
-            val callback = ListenerCallback(listener)
-            callbacks[listener] = callback
-            try {
-                client.requestLocationUpdates(request, callback, looperProvider())
-                    .addOnFailureListener(TaskExecutors.immediate()) { e ->
-                        Logger.e(TAG, "requestLocationUpdates failed: ${describeHmsError(e)}", e)
-                        forget(callback)
-                    }
-            } catch (e: Exception) {
-                Logger.e(TAG, "requestLocationUpdates failed: ${describeHmsError(e)}", e)
-                forget(callback)
-            }
-        }
+        subscriptions.request(listener, spec) { events -> Registration(request, events) }
     }
 
     override fun removeUpdates(listener: LocationListener) {
-        synchronized(lock) { callbacks.remove(listener)?.let(::deactivateAndRemove) }
+        subscriptions.remove(listener)
     }
 
     override suspend fun getLastLocation(): TrackedLocation? = hmsCall("getLastLocation") {
@@ -87,9 +78,15 @@ internal class HmsLocationBackend(
         var requested = false
         try {
             return withTimeoutOrNull(timeoutMs.coerceAtLeast(0)) {
-                hmsCall("getCurrentLocation") {
+                val task = hmsCall("getCurrentLocation") {
                     requested = true
-                    client.requestLocationUpdates(buildOneShotRequest(accuracy), callback, looperProvider()).await()
+                    client.requestLocationUpdates(buildOneShotRequest(accuracy), callback, looperProvider())
+                }
+                task.addOnFailureListener(TaskExecutors.immediate()) { e ->
+                    fix.completeExceptionally(e.toTrackingException("getCurrentLocation"))
+                }
+                task.addOnCanceledListener(TaskExecutors.immediate()) {
+                    fix.completeExceptionally(HmsTaskCanceledException().toTrackingException("getCurrentLocation"))
                 }
                 fix.await()
             }
@@ -99,18 +96,7 @@ internal class HmsLocationBackend(
     }
 
     /** Number of listeners with an active request (for tests and diagnostics). */
-    internal val activeListenerCount: Int get() = synchronized(lock) { callbacks.size }
-
-    /** Drops [callback] after its request failed, unless it was already replaced or removed. */
-    private fun forget(callback: ListenerCallback) {
-        callback.active = false
-        synchronized(lock) { if (callbacks[callback.listener] === callback) callbacks.remove(callback.listener) }
-    }
-
-    private fun deactivateAndRemove(callback: ListenerCallback) {
-        callback.active = false
-        removeQuietly(callback)
-    }
+    internal val activeListenerCount: Int get() = subscriptions.count
 
     private fun removeQuietly(callback: LocationCallback) {
         try {
@@ -123,21 +109,29 @@ internal class HmsLocationBackend(
         }
     }
 
-    /** Delivers to [listener] until replaced or removed; late fixes after that are dropped. */
-    private class ListenerCallback(val listener: LocationListener) : LocationCallback() {
-        @Volatile
-        var active = true
+    /** One `requestLocationUpdates` with its own callback. */
+    private inner class Registration(
+        private val request: LocationRequest,
+        private val events: RegistrationEvents,
+    ) : OsRegistration {
+        private val callback = object : LocationCallback() {
+            override fun onLocationResult(result: LocationResult?) {
+                events.locations(result?.locations.orEmpty().mapNotNull { location -> location?.let(::toTrackedLocation) })
+            }
 
-        override fun onLocationResult(result: LocationResult?) {
-            if (!active) return
-            val fixes = result?.locations.orEmpty().mapNotNull { location -> location?.let(::toTrackedLocation) }
-            if (fixes.isEmpty()) return
-            try {
-                listener.onLocations(fixes)
-            } catch (e: Exception) {
-                Logger.e(TAG, "location listener failed", e)
+            override fun onLocationAvailability(availability: LocationAvailability?) {
+                availability?.let { events.availability(it.isLocationAvailable) }
             }
         }
+
+        override fun start(done: (Exception?) -> Unit) {
+            client.requestLocationUpdates(request, callback, looperProvider())
+                .addOnSuccessListener(TaskExecutors.immediate()) { done(null) }
+                .addOnFailureListener(TaskExecutors.immediate()) { e -> done(e) }
+                .addOnCanceledListener(TaskExecutors.immediate()) { done(HmsTaskCanceledException()) }
+        }
+
+        override fun remove() = removeQuietly(callback)
     }
 
     companion object {

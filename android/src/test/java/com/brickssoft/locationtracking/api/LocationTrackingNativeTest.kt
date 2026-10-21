@@ -88,6 +88,9 @@ class LocationTrackingNativeTest {
 
     private fun state(): JSONObject = ConfigJson.stateToJson(services.engine.state())
 
+    /** What ready, setConfig and reset return: the State plus the config warnings (recommendation 14). */
+    private fun configResult(vararg warnings: String): JSONObject = state().put("warnings", JSONArray(warnings.toList()))
+
     // ---------------------------------------------------------------- lifecycle and config
 
     @Test
@@ -96,11 +99,23 @@ class LocationTrackingNativeTest {
 
         val result = run<JSONObject> { LocationTrackingNative.ready(app, config, true, it) }
 
-        assertJsonEquals(state(), result.getOrThrow())
+        assertJsonEquals(configResult(), result.getOrThrow())
         assertEquals(240, services.configStore.config.value.heartbeat.minInterval)
         assertEquals(listOf("ready"), services.engine.calls)
         assertEquals(listOf("ready(reset=true)"), services.configStore.calls.filter { it.startsWith("ready") })
         assertFalse(PluginHandlers.processReady.get())
+    }
+
+    @Test
+    fun `setConfig with a plain http url is accepted with a warning`() {
+        val result = run<JSONObject> {
+            LocationTrackingNative.setConfig(app, JSONObject("""{"http":{"url":"http://example.com/locations"}}"""), it)
+        }.getOrThrow()
+
+        val warnings = result.getJSONArray("warnings")
+        assertEquals(1, warnings.length())
+        assertTrue(warnings.getString(0), warnings.getString(0).contains("http://"))
+        assertEquals("http://example.com/locations", services.configStore.config.value.http.url)
     }
 
     @Test
@@ -124,7 +139,7 @@ class LocationTrackingNativeTest {
         val setConfig = run<JSONObject> {
             LocationTrackingNative.setConfig(app, JSONObject("""{"heartbeat":{"minInterval":200}}"""), it)
         }
-        assertJsonEquals(state(), setConfig.getOrThrow())
+        assertJsonEquals(configResult(), setConfig.getOrThrow())
         assertEquals(200, services.configStore.config.value.heartbeat.minInterval)
 
         val started = run<JSONObject> { LocationTrackingNative.start(app, it) }.getOrThrow()

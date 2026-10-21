@@ -36,6 +36,8 @@
     'enabledchange',
     'notificationaction',
     'authorization',
+    'locationerror',
+    'storagefull',
   ];
   var WATCH_EVENT = 'watchPosition';
   var MAX_EVENTS = 200;
@@ -1257,13 +1259,13 @@
 
     /* events */
     subscribeAll: function () {
-      return run('addListener (all 13 events)', subscribeAll);
+      return run('addListener (all 15 events)', subscribeAll);
     },
     removeAllListeners: function () {
       return run('removeAllListeners', function () {
         return plugin.removeAllListeners().then(function () {
           listenerHandles = [];
-          setListenerStatus('none (removeAllListeners). Press "Subscribe to all 13 events" to listen again.');
+          setListenerStatus('none (removeAllListeners). Press "Subscribe to all 15 events" to listen again.');
         });
       });
     },

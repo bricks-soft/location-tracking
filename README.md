@@ -28,6 +28,8 @@ whether the user really kept tracking on.
 - [Companion plugins (native API)](#companion-plugins-native-api)
 - [Error codes](#error-codes)
 - [Web stub](#web-stub)
+- [Stored data and backups](#stored-data-and-backups)
+- [Device information on records](#device-information-on-records)
 - [Server side](#server-side)
 - [Example app](#example-app)
 - [Field-force example](#field-force-example)
@@ -143,11 +145,22 @@ does not use it. The `locationProvider` values:
 - `'android'`: always the Android `LocationManager`.
 
 The backend is chosen once per process and again whenever `locationProvider` changes (while tracking, the location
-request, activity updates and geofences move to the new backend). `getState().backend` and `getDeviceInfo()`
-(`gmsAvailable`, `hmsAvailable`, `packagedProviders`) show what was selected.
+request, activity updates and geofences move to the new backend). With `'auto'`, the plugin also checks when tracking
+starts, on every `providerchange` and on every heartbeat whether a better backend has become available (for example
+Google Play services finished an update), and then moves to it. `getState().backend` and `getDeviceInfo()` show what
+was selected: `gmsAvailable`, `hmsAvailable`, `packagedProviders`, and why a better backend was not used
+(`backendFallbackReason`, with the raw availability codes `gmsStatus` and `hmsStatus`). `hmsCoreOutdated` is `true`
+when HMS Core on the phone is older than 6.3.0.301, which Huawei names for Location Kit 6.x (the plugin still uses it
+and logs a warning). `locationAvailableHint` is the last `LocationAvailability` from GMS or HMS; Google documents that
+it can be wrong in both directions, so it is a hint only.
 
 The `android` backend has two limitations: it has **no activity recognition**, so motion detection relies on distance
 only, and **no native geofence dwell**, so the plugin synthesizes `DWELL` itself (see [Geofencing](#geofencing)).
+For `'high'` and `'balanced'` accuracy it registers both the `gps` and the `network` provider, so a phone indoors
+without satellites still gets network fixes; while a GPS fix arrived in the last 10 s (or two update intervals, if
+longer), network fixes are dropped, so GPS and network points do not alternate. A fix without an accuracy value is
+treated as 1,000 km inaccurate, so `filter.trackingAccuracyThreshold` drops it. `getCurrentPosition()` asks the
+enabled providers at the same time and keeps the most accurate fix that arrives within 3 s of the first one.
 
 **Release builds (R8 / minify).** Nothing to add: the plugin ships consumer ProGuard/R8 rules that keep its provider
 bundles and the GMS/HMS class names it probes by reflection, so a minified release app still detects Google Play
@@ -345,6 +358,17 @@ If you don't want a permission, remove it in your app's manifest and turn off th
 </manifest>
 ```
 
+**Apps that track only while they are in use.** Because the plugin's manifest declares `ACCESS_BACKGROUND_LOCATION`,
+Google Play asks every app that uses the plugin for the background-location declaration. An app that never asks for
+"Allow all the time" should remove the permission, so that Play does not ask:
+
+```xml
+<uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" tools:node="remove"/>
+```
+
+Without it, geofences do not fire in the background, and on Android 11 and newer tracking is not resumed from the
+background (after a reboot, an app update or process death); it resumes when the app opens and calls `ready()`.
+
 ### 5. Runtime permission flow
 
 `requestPermissions()` asks, by default, for all four permissions in this order: `location`, `notifications`,
@@ -365,7 +389,10 @@ resolves with the resulting `PermissionStatus`. Overlapping calls run one after 
   `backgroundPermissionRationale`; if the user declines it, or no Activity is visible, the step is skipped. Google
   Play requires your own in-app disclosure before this, plus a declaration in the Play Console.
 - **Android 12+.** The user may grant only *approximate* location. `getProviderState().accuracy` then reports
-  `'approximate'`.
+  `'approximate'`. Approximate fixes are accurate to only a few kilometres, so `filter.trackingAccuracyThreshold`
+  (default 100 m) drops all of them: no `location` or `motionchange` records with coords are created, and only
+  heartbeats and audit records (`tracking_start`, `tracking_stop`, `providerchange`) are uploaded. Check
+  `getProviderState().accuracy` and ask the user for precise location if your app needs positions.
 - **Android 13+.** `POST_NOTIFICATIONS` is a runtime permission. If it is denied, tracking still works, but the
   foreground-service notification is hidden.
 - **Below Android 10**, there is no separate background permission (it is reported the same as `location`), and
@@ -373,8 +400,10 @@ resolves with the resulting `PermissionStatus`. Overlapping calls run one after 
   also reported as `'granted'`.
 - A permission whose Android permission you removed from the app's manifest (`tools:node="remove"`) is not requested.
 - Background location is needed for geofencing and for resuming tracking after a reboot, an app update or process
-  death. On Android 14+ a resume from the background without it ends with a `tracking_stop` whose reason is
-  `service_start_failed`.
+  death. On Android 11 and newer, a resume from the background without it ends with a `tracking_stop` whose reason
+  is `service_start_failed`: Android 14+ refuses to start the service, and on Android 11 to 13 the service would start
+  but get no location, so the plugin does not start it. [`notification.resume`](#confignotificationresume) lets the
+  user resume with a tap. Opening the app (`ready()`) also resumes tracking.
 - Revoking a location permission in Settings kills the app's process. While tracking is on, the plugin records a
   `providerchange` the next time it runs; if location permission is gone completely, it also stops tracking with a
   `tracking_stop` whose reason is `permission_denied`.
@@ -488,9 +517,24 @@ instead.
 
 ## Configuration reference
 
-All options are optional. `getState().config` returns the full config with every default filled in (including the
-JWT tokens). Out-of-range values are clamped to the limits given below, and every clamp is logged as a warning;
-numbers that are not finite become the default.
+All options are optional. `getState().config` returns the full config with every default filled in. The secret
+values of `http.authorization` are masked there (see [Tokens](#tokens-storage-and-masking)). Out-of-range values are
+clamped to the limits given below, and every clamp is logged as a warning; numbers that are not finite become the
+default.
+
+`ready()`, `setConfig()` and `reset()` also check the values that would otherwise fail only at upload time, and
+reject with `INVALID_ARGUMENT` (nothing is applied):
+
+- `http.url` (when set): an `http` or `https` URL with a host, without user info (`user:password@`) and without a
+  fragment (`#...`).
+- `http.headers` and `http.authorization.refreshHeaders`: names and values that HTTP allows (ASCII, no line breaks).
+  The error names the header but never repeats its value.
+- `http.locationTemplate` and `http.geofenceTemplate`: every `<%= name %>` placeholder exists, and the template
+  renders to a JSON object or array, both for a record with every field set and for one with no location.
+
+Values that are accepted but probably wrong are listed in the `warnings` array of the `State` these calls resolve
+with. Today the only warning is an `http://` URL: Android 9+ blocks cleartext traffic unless the app's network
+security config allows that host.
 
 ### `config` (top level)
 
@@ -510,7 +554,7 @@ numbers that are not finite become the default.
 | `elasticityMultiplier` | number (≥ 0) | `1` | Elastic filter: `distanceFilter × max(1, round(speed / 5) × elasticityMultiplier)`. |
 | `stationaryRadius` | number (m, ≥ 1) | `25` | While stationary: the stationary geofence has a radius of `max(stationaryRadius, 150)` m, and a fix whose distance from the stop point minus its accuracy is more than `stationaryRadius` (with an accuracy no worse than `filter.trackingAccuracyThreshold`) switches to moving. While moving, a displacement beyond it counts as evidence of motion for stop detection. |
 | `stopTimeout` | number (min, ≥ 0) | `5` | Minutes without evidence of motion (a displacement beyond `stationaryRadius`, or a confident moving activity) before switching to stationary. Values below 1 act as 1. |
-| `stopAfterElapsedMinutes` | number (min, ≥ 0) | `0` (off) | Stops tracking automatically this many minutes after it started (`tracking_stop`, reason `stop_after_elapsed`). While the phone sleeps, the stop can come later: see [Field-force example](#field-force-example). If the deadline passes while the phone is off or the app is not running, the stop is recorded when the plugin next runs, and tracking does not resume. |
+| `stopAfterElapsedMinutes` | number (min, ≥ 0) | `0` (off) | Stops tracking automatically this many minutes after it started (`tracking_stop`, reason `stop_after_elapsed`). While the phone sleeps, the stop can come later: see [Field-force example](#field-force-example). If the deadline passes while the phone is off or the app is not running, the stop is recorded when the plugin next runs, and tracking does not resume. The time is counted on the phone's elapsed-time clock, so changing the wall clock does not move the stop; after a reboot it is counted from the wall-clock start time. |
 | `stopOnStationary` | boolean | `false` | Stops tracking when stop detection switches the device to stationary (`tracking_stop`, reason `stop_on_stationary`). `changePace({ isMoving: false })` does not stop tracking. |
 | `locationTimeout` | number (ms, > 0) | `30000` | Default timeout of `getCurrentPosition()`, and of the first fix after `start()`. |
 | `filter` | object | see below | Location filters. |
@@ -543,12 +587,13 @@ numbers that are not finite become the default.
 | `enabled` | boolean | `true` | Creates `heartbeat` records while tracking is on. |
 | `minInterval` | number (s, ≥ 60) | `180` | A heartbeat is due when no record has been created for this long. |
 | `maxInterval` | number (s, ≥ `minInterval`) | `300` | Upper end of the heartbeat window: the heartbeat should exist by then. A heartbeat Android delivers later is still created, and the lateness is logged. |
+| `uploadKeepAwake` | number (s, 0–60) | `10` | After a heartbeat is created, the plugin keeps the CPU awake (a partial wake lock) until the upload that sends it has finished, for at most this many seconds. So the heartbeat reaches the server when it is created, not when the phone next wakes up. `0` turns it off. |
 
 ### `config.http`
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `url` | string \| null | none | Upload endpoint. Without a URL (or with one that isn't a valid `http(s)` URL) nothing is uploaded, and records stay queued. |
+| `url` | string \| null | none | Upload endpoint. Without a URL nothing is uploaded, and records stay queued. An invalid URL is rejected by `setConfig()` (see above); an `http://` URL gives a warning. |
 | `method` | `'POST' \| 'PUT' \| 'PATCH'` | `'POST'` | HTTP method. |
 | `headers` | object | `{}` | Extra request headers. They can override `Content-Type`; an `Authorization` header turns the JWT handling off. |
 | `params` | object | `{}` | Merged into the **root** of every request body. Keys that the body already has are not overwritten. Ignored for a batch with `rootProperty: '.'`. |
@@ -562,6 +607,7 @@ numbers that are not finite become the default.
 | `locationTemplate` | string \| null | `null` | JSON text with `<%= name %>` placeholders that replaces the default record shape. |
 | `geofenceTemplate` | string \| null | `null` | Template for `geofence` records. Falls back to `locationTemplate`. |
 | `timeout` | number (ms, > 0) | `60000` | Request timeout (call, read and write). |
+| `maxRetryAfter` | number (s, ≥ 0) | `3600` | Longest wait the plugin accepts from a `Retry-After` header of a `429` or `503` response. A longer value is cut to this. |
 | `authorization` | object \| null | `null` | JWT settings, see below. |
 
 The upload rules (priority records, retries, templates, body shapes) are described in
@@ -579,6 +625,34 @@ The upload rules (priority records, retries, templates, body shapes) are describ
 | `refreshHeaders` | object | none | Headers of the refresh request. |
 | `refreshPayloadEncoding` | `'json' \| 'form'` | `'json'` | Body encoding of the refresh request. |
 | `expires` | number (epoch ms) | `-1` | Access-token expiry. `-1` means unknown. The token is refreshed 60 s before it expires, and after a `401` (at most one refresh per upload). Updated by every refresh. |
+
+#### Tokens: storage and masking
+
+- `accessToken`, `refreshToken`, `refreshPayload` and `refreshHeaders` are stored encrypted (AES-256-GCM with a key
+  that stays in the Android Keystore) in a file under `noBackupFilesDir`, not in the SharedPreferences file. Tokens
+  that an older version stored in plain text are moved there on the first start.
+- If the stored tokens cannot be decrypted (for example the Keystore key is gone), they read as unset: uploads that
+  need them wait, an `authorization` event reports the error, and new tokens from `setConfig()` end the wait.
+- `getState()` and the `State` of `ready()`, `setConfig()` and `reset()` return these values masked: `"***"`, or
+  `"***"` plus the last 4 characters for values longer than 8 characters. The string values of `refreshPayload` are
+  masked one by one; a value that contains `{refreshToken}` is shown as it is. The `authorization` event still carries the full
+  server response, which apps need to read new tokens.
+- A masked value given back unchanged in `setConfig()` (for example the whole `getState().config`) keeps the stored
+  value. Any other value replaces it.
+- One upload uses one token: the token read when the upload starts, or the token refreshed from it after a `401`.
+  If the app changes the authorization during an upload, the upload stops and the records stay queued for the new
+  settings. A refresh that finishes after the app set new tokens does not overwrite them.
+
+#### Logging out and switching users
+
+The queue does not remember which user recorded a record. To make sure one user's records are never uploaded with
+another user's token or `params`, log out in this order:
+
+1. `await LocationTracking.stop()`;
+2. `await LocationTracking.sync()` to upload the queued records with the current user's settings, or
+   `await LocationTracking.destroyLocations()` to delete them;
+3. remove the authorization: `await LocationTracking.setConfig({ http: { authorization: null } })`;
+4. configure the new user (`setConfig` with the new token, `params` and `extras`), then `start()` again.
 
 ### `config.persistence`
 
@@ -645,7 +719,12 @@ session resumes with the persisted config and its original `stopAfterElapsedMinu
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `logLevel` | `'off' \| 'error' \| 'warn' \| 'info' \| 'debug' \| 'verbose'` | `'info'` | Minimum level written to the plugin log. |
-| `logMaxDays` | number (≥ 1) | `3` | Days of log files to keep. |
+| `logMaxDays` | number (≥ 1) | `3` | Days of log files to keep. All log files together are also kept under 10 MB: the oldest daily files are deleted first (never today's). |
+
+Text that the app writes with `log()` is cleaned before it reaches logcat and the log files (which `emailLog()` and
+`uploadLog()` send): values of credential fields (`accessToken`, `refresh_token`, `password`, `secret`, `apiKey`,
+`authorization`, …) become `[redacted]`, `Bearer <token>` becomes `Bearer [redacted]`, JSON Web Tokens become `[jwt]`
+and URLs become `[url]`.
 
 ### `config.backgroundPermissionRationale`
 
@@ -683,6 +762,11 @@ The dialog shown before the Android 11+ "Allow all the time" settings page.
   one twice does nothing.
 - `stop()` removes the location and activity updates, records a `tracking_stop` (reason `stop`) while the foreground
   service is still running, then stops the service, the heartbeat and the OS geofences, and emits `enabledchange`.
+  The change of `enabled` is written to disk before `stop()` resolves, so a process killed right after `stop()` does
+  not bring tracking back.
+- Every `enabledchange` event carries the `reason` of the change (the `tracking_start` or `tracking_stop` reason, for
+  example `start`, `stop`, `stop_after_elapsed` or `service_start_failed`). `getState()` returns the reason and time
+  of the last `tracking_stop` as `lastStopReason` and `lastStopAt`.
 - Tracking also stops by itself: `stopOnStationary`, `stopAfterElapsedMinutes`, `stopOnTerminate` (app swiped away),
   a revoked location permission (`permission_denied`), or Android refusing the foreground service
   (`service_start_failed`). Each case records a `tracking_stop` with that reason and emits `enabledchange`. When
@@ -690,7 +774,13 @@ The dialog shown before the Android 11+ "Allow all the time" settings page.
   permission is no longer granted, and `service_start_failed` otherwise.
 - Tracking resumes by itself after the process was killed (reason `restore`), after a reboot (`boot`) and after an
   app update (`package_replaced`, both only with `app.startOnBoot`), and when `ready()` finds it enabled but not
-  running. See [docs/heartbeat.md](docs/heartbeat.md#android-reliability) for what Android allows. When Android
+  running.
+- **User stop.** After the user stops the app (Settings → Force stop, or the Stop button of the Android 13+ Task
+  Manager), tracking stays off until the app is opened again: a broadcast, alarm or service restart that starts the
+  process does not resume it. The plugin records one `tracking_stop` with reason `user_stopped` and `stopped_at` (the
+  time of the stop, from Android's exit record), releases the leftover activity, geofence and heartbeat
+  registrations, and keeps `enabled` set, so `ready()` resumes tracking when the app opens. A boot or app-update
+  restore is not checked (on Android 11 and 12 an update can be recorded like a user stop). See [docs/heartbeat.md](docs/heartbeat.md#android-reliability) for what Android allows. When Android
   refuses such a restore, [`notification.resume`](#confignotificationresume) can offer a tap that resumes it
   (`resume_notification`).
 - A boot broadcast restores tracking once per boot. The plugin reads the phone's boot counter
@@ -720,13 +810,17 @@ The dialog shown before the Android 11+ "Allow all the time" settings page.
   last evidence of motion, even if no more fixes arrive.
 - Each transition records a `motionchange` with the new `is_moving`. `changePace({ isMoving })` forces a transition;
   it is ignored while tracking is off or in geofences-only mode.
+- **Location request errors.** If the OS rejects the location request (for example a missing permission, or GMS or
+  HMS reporting an error later), the plugin emits a `locationerror` event and requests it again after 10 s, doubling
+  the wait up to 5 minutes; the next fix resets the wait. Tracking stays on.
 - Without activity recognition (the `android` backend, `disableMotionActivityUpdates`, or no activity permission),
   motion is detected from the stationary region and from distance only.
 
 **Positions.** `getCurrentPosition()` works whether or not tracking is on. It needs location permission
 (`PERMISSION_DENIED`) and enabled location services (`LOCATION_DISABLED`). It takes up to `samples` fixes, stops
 early on a fix of 10 m or better, and resolves with the most accurate one; at the timeout it resolves with the best
-fix so far, or rejects with `TIMEOUT` if there is none. With `maximumAge`, a recent enough known fix is returned
+fix so far, or rejects with `TIMEOUT` if there is none. If the OS rejects the location request, it rejects at once
+with that error (for example `PERMISSION_DENIED` or `UNAVAILABLE`) instead of waiting for the timeout. With `maximumAge`, a recent enough known fix is returned
 right away. With `persist: true` (default) the fix is stored as a `current_position` record, which is uploaded,
 emitted as a `location` event and restarts the heartbeat window. `watchPosition()` reports each fix (or an error,
 such as `PERMISSION_DENIED`) to its callback until `clearWatch()`; it doesn't report disabled location services as
@@ -856,12 +950,27 @@ How to measure the cost on a real phone: procedure M-04 in the
   [docs/wire-format.md](docs/wire-format.md#when-uploads-happen). Priority records (`heartbeat`, `tracking_start`,
   `tracking_stop`, `providerchange`) are uploaded right away and take the older queued records along.
 - A request answered `5xx` or `429`, or without an answer (timeout, network error), is **tried again in the same
-  upload** after 2, 4 and 8 seconds (at most 4 tries). Other answers are not tried again; a `401` refreshes the JWT
-  and retries once ([details](docs/wire-format.md#response-handling-and-retries)).
-- With `syncInterval: 0` (the default) there is **no retry timer** for failed uploads: queued records are retried when
-  a record is inserted (at least every heartbeat while tracking), when the network comes back, when tracking starts,
-  and on `sync()`. With `syncInterval` above 0, a timer uploads normal records that have become due, and retries them
-  once per `syncInterval` after a failed upload (see below).
+  upload** after about 2, 4 and 8 seconds (at most 4 tries; each wait is moved by up to 20 % up or down, so many
+  phones do not retry at the same moment). A `429` or `503` with a `Retry-After` longer than the next wait ends the
+  upload. Other answers are not tried again; a `401` refreshes the JWT and retries once
+  ([details](docs/wire-format.md#response-handling-and-retries)).
+- Redirects are not followed: a `3xx` answer is a failed upload and the records stay queued. Only the first 16 KB of
+  an upload answer are read (for the `http` event's `responseText`).
+- A `413` (request too large) for a batch halves the batch size and sends the same records again in smaller batches.
+- **Wait after a failed upload.** When the last try of an automatic upload fails, the plugin stores the earliest time
+  of the next automatic upload of normal records: 30 s after the first failure, doubling with each further failure up
+  to 15 minutes (each moved by up to 20 %), and at least the server's `Retry-After` (up to `http.maxRetryAfter`).
+  After a `401` that a token refresh cannot fix, the wait is 15 minutes, and new tokens from `setConfig()` end it at
+  once. The stored time survives an app restart. The network coming back ends a server wait (not an authorization
+  wait), and a successful upload ends both. Priority records and `sync()` are not held back.
+- **Uploads when the app is not running.** The plugin schedules an Android job (JobScheduler) for queued records: when
+  the device is offline it runs as soon as a network is available, after a failed upload it runs at the stored next
+  time, and when tracking stops it is scheduled to run right away once. So records are uploaded also after the app's
+  process has ended.
+  On Android 12+ the job is expedited when it should run at once.
+- Records are uploaded when a record is inserted (at least every heartbeat while tracking), when the network comes
+  back, when tracking starts, by the upload job, and on `sync()`. With `syncInterval` above 0, a timer also uploads
+  normal records that have become due (see below).
 - `getLocations({ limit })` returns queued records, oldest first; `getCount()` counts them; `destroyLocations()` and
   `destroyLocation({ uuid })` delete them without uploading.
 - `sync()` uploads the whole queue now, ignoring `autoSync`, `autoSyncThreshold` and `disableAutoSyncOnCellular`, and
@@ -940,9 +1049,11 @@ tracking has been started (or resumed) in the app's process.
 | `http` | `{ success, status, responseText, uuids }` | An upload request finished. There is one event per HTTP request: a `401` followed by a token refresh and a retry gives two, and every try of an upload that is tried again gives one. `status` is `0` for a network error. |
 | `connectivitychange` | `{ connected, type }` | The network connection changed. A network blocked for the app by Doze or Data Saver counts as disconnected. |
 | `powersavechange` | `{ isPowerSaveMode }` | Battery saver was turned on or off. |
-| `enabledchange` | `{ enabled }` | Tracking was started or stopped, including automatic stops (`stopOnStationary`, `stopAfterElapsedMinutes`, `terminate`, `permission_denied`, `service_start_failed`, `reboot`, `package_replaced`). Not emitted when tracking resumes in a new process. |
+| `enabledchange` | `{ enabled, reason }` | Tracking was started or stopped, including automatic stops. `reason` is the reason of the `tracking_start` or `tracking_stop` record: `start`, `start_geofences`, `resume_notification`, `stop`, `stop_on_stationary`, `stop_after_elapsed`, `terminate`, `permission_denied`, `service_start_failed`, `reboot` or `package_replaced`. Not emitted when tracking resumes in a new process. |
 | `notificationaction` | `{ id }` | A notification action button was tapped. |
-| `authorization` | `{ success, status, error?, response? }` | A JWT refresh was attempted, successfully or not. `response` is the parsed JSON body of the refresh response. |
+| `authorization` | `{ success, status, error?, response? }` | A JWT refresh was attempted, successfully or not, or the stored tokens cannot be decrypted (`success: false`, `status: 0`, `error` says to set the tokens again). `response` is the parsed JSON body of the refresh response. |
+| `locationerror` | `{ code, message, backend, retryInMs }` | The OS rejected the location request (`code` is an [error code](#error-codes) such as `PERMISSION_DENIED` or `UNAVAILABLE`). Tracking stays on and the request is made again after `retryInMs` (10 s, doubling up to 5 minutes; `null` when no retry is scheduled). |
+| `storagefull` | `{ uuid, event, diskFreeBytes }` | A record could not be stored because the phone's storage is full. `diskFreeBytes` is the free space of the app's storage, or `null`. Show the user a "storage full" message: until space is freed, records are lost. |
 
 ## Companion plugins (native API)
 
@@ -1071,6 +1182,39 @@ nothing and cannot track.
   (the status stays `'prompt'`).
 - **Everything else** rejects with `UNIMPLEMENTED`.
 
+## Stored data and backups
+
+The plugin keeps its SQLite queue (`location_tracking.db`), its log files and the encrypted tokens under the app's
+`noBackupFilesDir`, so Android Auto Backup and device-to-device transfer never copy them. Files of an older version are
+moved there on the first start, without losing records. The SharedPreferences file (config and runtime state) stays
+where it was and can be part of a backup or transfer; it holds no tokens.
+
+When that file is restored onto another installation (a backup restore or a new phone), the plugin notices it (the
+stored install time differs from the app's) and never turns tracking on by itself: `enabled` is cleared, the
+authorization tokens are removed and the boot counters are reset. The rest of the config (URL, intervals, ...) is
+kept. The app logs the user in again and calls `start()`.
+
+## Device information on records
+
+Some records carry readings that explain gaps in tracking (all without extra permissions):
+
+| Field | On | Content |
+|---|---|---|
+| `network` | every record | Connection type when the record was created: `wifi`, `cellular`, `ethernet`, `other` or `none`. |
+| `device.background_restricted`, `device.standby_bucket` | `heartbeat` | The user set battery use to "Restricted"; the app standby bucket (`active`, `working_set`, `frequent`, `rare`, `restricted`). Android 9+. |
+| `device.disk_free_bytes` | `heartbeat` | Free space of the storage that holds the app's files. |
+| `device.thermal_status` | `heartbeat` | `none`, `light`, `moderate`, `severe`, `critical`, `emergency` or `shutdown`. Android 10+. |
+| `battery.temperature`, `battery.health`, `battery.plugged` | `heartbeat` | °C; `good`, `overheat`, `dead`, `over_voltage`, `cold`, `failure`, `unknown`; `ac`, `usb`, `wireless`, `dock`, `none`. |
+| `device.manufacturer`, `model`, `os_version`, `sdk_int`, `android_id`, `low_ram_device`, `ram_total_bytes` | `tracking_start` | The phone, its Android version, `Settings.Secure.ANDROID_ID` and its memory. |
+
+A reading that the Android version does not have, or that fails, is left out. Templates use them through the
+placeholders listed in [docs/wire-format.md](docs/wire-format.md#templates).
+
+**Google Play Data safety.** `tracking_start` records include `android_id` (`Settings.Secure.ANDROID_ID`), an ID that
+identifies the phone for your app. An app that uploads it must declare **"Device or other IDs"** in the Data safety
+form of the Google Play Console (collected, together with the purpose, for example "App functionality" or
+"Analytics").
+
 ## Server side
 
 - [docs/wire-format.md](docs/wire-format.md) describes every record variant, batching, templates, upload and retry
@@ -1091,11 +1235,15 @@ next, so a normal 9-minute gap in Doze is not flagged as a failure (see
 [docs/heartbeat.md](docs/heartbeat.md#heartbeat-metadata)). A back office can show tracking as **online** while the
 latest record is not older than that expected gap. A `tracking_stop` with reason `service_start_failed` means Android
 refused the tracking foreground service (a `start()` from the background, or a restart in the background); the app
-has to call `start()` again while it is visible.
+has to call `start()` again while it is visible. A `tracking_stop` with reason `user_stopped` means the user stopped
+the app (Settings → Force stop, or the Task Manager); its `stopped_at` is the time of the stop, which can be well
+before `recorded_at`. Records from a phone that is offline for a long time arrive late; the `heartbeat` records'
+`device` and `battery` readings (standby bucket, "Restricted" battery setting, free disk, temperature) help explain
+gaps.
 
 ## Example app
 
-[`example/`](example/) is a plain HTML/JS Capacitor app, with a button for every method and a live log of all 13
+[`example/`](example/) is a plain HTML/JS Capacitor app, with a button for every method and a live log of all 15
 events:
 
 ```bash
@@ -1313,6 +1461,8 @@ version to the commit and workflow run that built it. The first version, publish
 * [`addListener('enabledchange', ...)`](#addlistenerenabledchange-)
 * [`addListener('notificationaction', ...)`](#addlistenernotificationaction-)
 * [`addListener('authorization', ...)`](#addlistenerauthorization-)
+* [`addListener('locationerror', ...)`](#addlistenerlocationerror-)
+* [`addListener('storagefull', ...)`](#addlistenerstoragefull-)
 * [`removeAllListeners()`](#removealllisteners)
 * [Interfaces](#interfaces)
 * [Type Aliases](#type-aliases)
@@ -2114,6 +2264,38 @@ addListener(eventName: 'authorization', listenerFunc: (e: AuthorizationEvent) =>
 --------------------
 
 
+### addListener('locationerror', ...)
+
+```typescript
+addListener(eventName: 'locationerror', listenerFunc: (e: LocationErrorEvent) => void) => Promise<PluginListenerHandle>
+```
+
+| Param              | Type                                                                              |
+| ------------------ | --------------------------------------------------------------------------------- |
+| **`eventName`**    | <code>'locationerror'</code>                                                      |
+| **`listenerFunc`** | <code>(e: <a href="#locationerrorevent">LocationErrorEvent</a>) =&gt; void</code> |
+
+**Returns:** <code>Promise&lt;<a href="#pluginlistenerhandle">PluginListenerHandle</a>&gt;</code>
+
+--------------------
+
+
+### addListener('storagefull', ...)
+
+```typescript
+addListener(eventName: 'storagefull', listenerFunc: (e: StorageFullEvent) => void) => Promise<PluginListenerHandle>
+```
+
+| Param              | Type                                                                          |
+| ------------------ | ----------------------------------------------------------------------------- |
+| **`eventName`**    | <code>'storagefull'</code>                                                    |
+| **`listenerFunc`** | <code>(e: <a href="#storagefullevent">StorageFullEvent</a>) =&gt; void</code> |
+
+**Returns:** <code>Promise&lt;<a href="#pluginlistenerhandle">PluginListenerHandle</a>&gt;</code>
+
+--------------------
+
+
 ### removeAllListeners()
 
 ```typescript
@@ -2128,15 +2310,18 @@ removeAllListeners() => Promise<void>
 
 #### State
 
-| Prop               | Type                                                        | Description                   |
-| ------------------ | ----------------------------------------------------------- | ----------------------------- |
-| **`enabled`**      | <code>boolean</code>                                        |                               |
-| **`trackingMode`** | <code><a href="#trackingmode">TrackingMode</a></code>       |                               |
-| **`isMoving`**     | <code>boolean</code>                                        |                               |
-| **`odometer`**     | <code>number</code>                                         |                               |
-| **`backend`**      | <code><a href="#locationbackend">LocationBackend</a></code> |                               |
-| **`lastRecordAt`** | <code>string \| null</code>                                 |                               |
-| **`config`**       | <code><a href="#config">Config</a></code>                   | fully populated with defaults |
+| Prop                 | Type                                                        | Description                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| -------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`enabled`**        | <code>boolean</code>                                        |                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| **`trackingMode`**   | <code><a href="#trackingmode">TrackingMode</a></code>       |                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| **`isMoving`**       | <code>boolean</code>                                        |                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| **`odometer`**       | <code>number</code>                                         |                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| **`backend`**        | <code><a href="#locationbackend">LocationBackend</a></code> |                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| **`lastRecordAt`**   | <code>string \| null</code>                                 |                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| **`lastStopReason`** | <code>string \| null</code>                                 | reason of the last `tracking_stop` record (the `tracking_stop` reasons of <a href="#location">`Location.reason`</a>); null if none                                                                                                                                                                                                                                                                                                 |
+| **`lastStopAt`**     | <code>string \| null</code>                                 | when tracking stopped for `lastStopReason` (ISO-8601 UTC ms); null if none                                                                                                                                                                                                                                                                                                                                                         |
+| **`config`**         | <code><a href="#config">Config</a></code>                   | fully populated with defaults. On Android the `http.authorization` secrets (`accessToken`, `refreshToken`, the values of `refreshPayload` and `refreshHeaders`) are masked: `***`, or `***` plus the last 4 characters for values longer than 8 characters; a `refreshPayload` value that contains `{refreshToken}` is shown. Passing a masked value back to `setConfig` keeps the stored one. The web stub returns them as given. |
+| **`warnings`**       | <code>string[]</code>                                       | `ready()`, `setConfig()` and `reset()` only: what the given config contains that was accepted but is probably wrong (for example an `http://` upload URL).                                                                                                                                                                                                                                                                         |
 
 
 #### Config
@@ -2199,32 +2384,34 @@ removeAllListeners() => Promise<void>
 
 #### HeartbeatConfig
 
-| Prop              | Type                 | Description                | Default           |
-| ----------------- | -------------------- | -------------------------- | ----------------- |
-| **`enabled`**     | <code>boolean</code> |                            | <code>true</code> |
-| **`minInterval`** | <code>number</code>  | seconds, min 60            | <code>180</code>  |
-| **`maxInterval`** | <code>number</code>  | seconds, &gt;= minInterval | <code>300</code>  |
+| Prop                  | Type                 | Description                                                                                                                                                                                                    | Default           |
+| --------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- |
+| **`enabled`**         | <code>boolean</code> |                                                                                                                                                                                                                | <code>true</code> |
+| **`minInterval`**     | <code>number</code>  | seconds, min 60                                                                                                                                                                                                | <code>180</code>  |
+| **`maxInterval`**     | <code>number</code>  | seconds, &gt;= minInterval                                                                                                                                                                                     | <code>300</code>  |
+| **`uploadKeepAwake`** | <code>number</code>  | seconds, 0..60. After a heartbeat is queued, keep the phone awake until its upload has finished, or at most this long, so it reaches the server on time while tracking is on. 0 = do not keep the phone awake. | <code>10</code>   |
 
 
 #### HttpConfig
 
-| Prop                            | Type                                                                        | Description                                                              | Default                 |
-| ------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ----------------------- |
-| **`url`**                       | <code>string \| null</code>                                                 | No url =&gt; nothing is uploaded (records stay queued).                  |                         |
-| **`method`**                    | <code><a href="#httpmethod">HttpMethod</a></code>                           |                                                                          | <code>'POST'</code>     |
-| **`headers`**                   | <code><a href="#record">Record</a>&lt;string, string&gt;</code>             |                                                                          | <code>{}</code>         |
-| **`params`**                    | <code><a href="#record">Record</a>&lt;string, unknown&gt;</code>            | merged into the ROOT of every request body                               | <code>{}</code>         |
-| **`autoSync`**                  | <code>boolean</code>                                                        |                                                                          | <code>true</code>       |
-| **`autoSyncThreshold`**         | <code>number</code>                                                         | upload when queue &gt;= threshold; 0 = every record                      | <code>0</code>          |
-| **`syncInterval`**              | <code>number</code>                                                         | s; upload normal records once the oldest queued one is this old; 0 = off | <code>0</code>          |
-| **`batchSync`**                 | <code>boolean</code>                                                        |                                                                          | <code>false</code>      |
-| **`maxBatchSize`**              | <code>number</code>                                                         |                                                                          | <code>100</code>        |
-| **`disableAutoSyncOnCellular`** | <code>boolean</code>                                                        |                                                                          | <code>false</code>      |
-| **`rootProperty`**              | <code>string</code>                                                         | '.' = no wrapping                                                        | <code>'location'</code> |
-| **`locationTemplate`**          | <code>string \| null</code>                                                 | JSON text with `&lt;%= name %&gt;` placeholders                          |                         |
-| **`geofenceTemplate`**          | <code>string \| null</code>                                                 | used for event 'geofence'; falls back to locationTemplate                |                         |
-| **`timeout`**                   | <code>number</code>                                                         | ms                                                                       | <code>60000</code>      |
-| **`authorization`**             | <code><a href="#authorizationconfig">AuthorizationConfig</a> \| null</code> |                                                                          |                         |
+| Prop                            | Type                                                                        | Description                                                                                                            | Default                 |
+| ------------------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| **`url`**                       | <code>string \| null</code>                                                 | No url =&gt; nothing is uploaded (records stay queued).                                                                |                         |
+| **`method`**                    | <code><a href="#httpmethod">HttpMethod</a></code>                           |                                                                                                                        | <code>'POST'</code>     |
+| **`headers`**                   | <code><a href="#record">Record</a>&lt;string, string&gt;</code>             |                                                                                                                        | <code>{}</code>         |
+| **`params`**                    | <code><a href="#record">Record</a>&lt;string, unknown&gt;</code>            | merged into the ROOT of every request body                                                                             | <code>{}</code>         |
+| **`autoSync`**                  | <code>boolean</code>                                                        |                                                                                                                        | <code>true</code>       |
+| **`autoSyncThreshold`**         | <code>number</code>                                                         | upload when queue &gt;= threshold; 0 = every record                                                                    | <code>0</code>          |
+| **`syncInterval`**              | <code>number</code>                                                         | s; upload normal records once the oldest queued one is this old; 0 = off                                               | <code>0</code>          |
+| **`batchSync`**                 | <code>boolean</code>                                                        |                                                                                                                        | <code>false</code>      |
+| **`maxBatchSize`**              | <code>number</code>                                                         |                                                                                                                        | <code>100</code>        |
+| **`disableAutoSyncOnCellular`** | <code>boolean</code>                                                        |                                                                                                                        | <code>false</code>      |
+| **`rootProperty`**              | <code>string</code>                                                         | '.' = no wrapping                                                                                                      | <code>'location'</code> |
+| **`locationTemplate`**          | <code>string \| null</code>                                                 | JSON text with `&lt;%= name %&gt;` placeholders                                                                        |                         |
+| **`geofenceTemplate`**          | <code>string \| null</code>                                                 | used for event 'geofence'; falls back to locationTemplate                                                              |                         |
+| **`timeout`**                   | <code>number</code>                                                         | ms                                                                                                                     | <code>60000</code>      |
+| **`maxRetryAfter`**             | <code>number</code>                                                         | seconds, &gt;= 0. The longest wait that a `Retry-After` header of a 429 or 503 answer can impose on automatic uploads. | <code>3600</code>       |
+| **`authorization`**             | <code><a href="#authorizationconfig">AuthorizationConfig</a> \| null</code> |                                                                                                                        |                         |
 
 
 #### AuthorizationConfig
@@ -2331,27 +2518,30 @@ restart), typically on Android 14+ without "Allow all the time". A tap resumes t
 
 #### Location
 
-| Prop                      | Type                                                                                                                                                     | Description                                                                                                                                                                                                                             |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **`uuid`**                | <code>string</code>                                                                                                                                      |                                                                                                                                                                                                                                         |
-| **`event`**               | <code><a href="#recordevent">RecordEvent</a></code>                                                                                                      |                                                                                                                                                                                                                                         |
-| **`timestamp`**           | <code>string \| null</code>                                                                                                                              | fix time (ISO-8601 UTC ms); null if no location ever known                                                                                                                                                                              |
-| **`recorded_at`**         | <code>string</code>                                                                                                                                      | record creation time                                                                                                                                                                                                                    |
-| **`sent_at`**             | <code>string</code>                                                                                                                                      | only present in HTTP bodies                                                                                                                                                                                                             |
-| **`elapsed_realtime_ms`** | <code>number</code>                                                                                                                                      |                                                                                                                                                                                                                                         |
-| **`boot_count`**          | <code>number</code>                                                                                                                                      | -1 if unavailable                                                                                                                                                                                                                       |
-| **`is_moving`**           | <code>boolean</code>                                                                                                                                     |                                                                                                                                                                                                                                         |
-| **`odometer`**            | <code>number</code>                                                                                                                                      |                                                                                                                                                                                                                                         |
-| **`mock`**                | <code>boolean</code>                                                                                                                                     |                                                                                                                                                                                                                                         |
-| **`coords`**              | <code><a href="#coords">Coords</a> \| null</code>                                                                                                        |                                                                                                                                                                                                                                         |
-| **`activity`**            | <code>{ type: <a href="#activitytype">ActivityType</a>; confidence: number; }</code>                                                                     |                                                                                                                                                                                                                                         |
-| **`battery`**             | <code>{ level: number; is_charging: boolean; }</code>                                                                                                    | level 0..1, -1 unknown                                                                                                                                                                                                                  |
-| **`backend`**             | <code><a href="#locationbackend">LocationBackend</a> \| null</code>                                                                                      |                                                                                                                                                                                                                                         |
-| **`extras`**              | <code><a href="#record">Record</a>&lt;string, unknown&gt;</code>                                                                                         |                                                                                                                                                                                                                                         |
-| **`geofence`**            | <code>{ identifier: string; action: <a href="#geofenceaction">GeofenceAction</a>; extras?: <a href="#record">Record</a>&lt;string, unknown&gt;; }</code> | event 'geofence' only                                                                                                                                                                                                                   |
-| **`provider`**            | <code><a href="#providerstate">ProviderState</a></code>                                                                                                  | provider state when the record was created; the new state for event 'providerchange'                                                                                                                                                    |
-| **`reason`**              | <code>string</code>                                                                                                                                      | tracking_start: start\|start_geofences\|boot\|restore\|package_replaced\|resume_notification; tracking_stop: stop\|stop_on_stationary\|stop_after_elapsed\|terminate\|permission_denied\|service_start_failed\|reboot\|package_replaced |
-| **`heartbeat`**           | <code><a href="#heartbeatmeta">HeartbeatMeta</a></code>                                                                                                  | event 'heartbeat' only, optional: how the heartbeat is scheduled                                                                                                                                                                        |
+| Prop                      | Type                                                                                                                                                                                                                                             | Description                                                                                                                                                                                                                                           |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`uuid`**                | <code>string</code>                                                                                                                                                                                                                              |                                                                                                                                                                                                                                                       |
+| **`event`**               | <code><a href="#recordevent">RecordEvent</a></code>                                                                                                                                                                                              |                                                                                                                                                                                                                                                       |
+| **`timestamp`**           | <code>string \| null</code>                                                                                                                                                                                                                      | fix time (ISO-8601 UTC ms); null if no location ever known                                                                                                                                                                                            |
+| **`recorded_at`**         | <code>string</code>                                                                                                                                                                                                                              | record creation time                                                                                                                                                                                                                                  |
+| **`sent_at`**             | <code>string</code>                                                                                                                                                                                                                              | only present in HTTP bodies                                                                                                                                                                                                                           |
+| **`elapsed_realtime_ms`** | <code>number</code>                                                                                                                                                                                                                              |                                                                                                                                                                                                                                                       |
+| **`boot_count`**          | <code>number</code>                                                                                                                                                                                                                              | -1 if unavailable                                                                                                                                                                                                                                     |
+| **`is_moving`**           | <code>boolean</code>                                                                                                                                                                                                                             |                                                                                                                                                                                                                                                       |
+| **`odometer`**            | <code>number</code>                                                                                                                                                                                                                              |                                                                                                                                                                                                                                                       |
+| **`mock`**                | <code>boolean</code>                                                                                                                                                                                                                             |                                                                                                                                                                                                                                                       |
+| **`coords`**              | <code><a href="#coords">Coords</a> \| null</code>                                                                                                                                                                                                |                                                                                                                                                                                                                                                       |
+| **`activity`**            | <code>{ type: <a href="#activitytype">ActivityType</a>; confidence: number; }</code>                                                                                                                                                             |                                                                                                                                                                                                                                                       |
+| **`battery`**             | <code>{ level: number; is_charging: boolean; temperature?: number; health?: 'unknown' \| 'good' \| 'overheat' \| 'dead' \| 'over_voltage' \| 'cold' \| 'failure'; plugged?: 'none' \| 'ac' \| 'usb' \| 'wireless' \| 'dock' \| 'other'; }</code> | level 0..1, -1 unknown. Heartbeat records also carry `temperature` (°C), `health` and `plugged` when the device reports them.                                                                                                                         |
+| **`backend`**             | <code><a href="#locationbackend">LocationBackend</a> \| null</code>                                                                                                                                                                              |                                                                                                                                                                                                                                                       |
+| **`extras`**              | <code><a href="#record">Record</a>&lt;string, unknown&gt;</code>                                                                                                                                                                                 |                                                                                                                                                                                                                                                       |
+| **`geofence`**            | <code>{ identifier: string; action: <a href="#geofenceaction">GeofenceAction</a>; extras?: <a href="#record">Record</a>&lt;string, unknown&gt;; }</code>                                                                                         | event 'geofence' only                                                                                                                                                                                                                                 |
+| **`provider`**            | <code><a href="#providerstate">ProviderState</a></code>                                                                                                                                                                                          | provider state when the record was created; the new state for event 'providerchange'                                                                                                                                                                  |
+| **`reason`**              | <code>string</code>                                                                                                                                                                                                                              | tracking_start: start\|start_geofences\|boot\|restore\|package_replaced\|resume_notification; tracking_stop: stop\|stop_on_stationary\|stop_after_elapsed\|terminate\|permission_denied\|service_start_failed\|reboot\|package_replaced\|user_stopped |
+| **`stopped_at`**          | <code>string</code>                                                                                                                                                                                                                              | event 'tracking_stop' with reason 'user_stopped' only: when the user stopped the app (ISO-8601 UTC ms)                                                                                                                                                |
+| **`heartbeat`**           | <code><a href="#heartbeatmeta">HeartbeatMeta</a></code>                                                                                                                                                                                          | event 'heartbeat' only, optional: how the heartbeat is scheduled                                                                                                                                                                                      |
+| **`network`**             | <code><a href="#connectivitytype">ConnectivityType</a></code>                                                                                                                                                                                    | connection type when the record was created                                                                                                                                                                                                           |
+| **`device`**              | <code><a href="#devicereadings">DeviceReadings</a></code>                                                                                                                                                                                        | events 'heartbeat' and 'tracking_start' only: device readings (see <a href="#devicereadings">`DeviceReadings`</a>)                                                                                                                                    |
 
 
 #### Coords
@@ -2393,6 +2583,28 @@ Scheduling metadata of a `heartbeat` record (snake_case = wire format).
 | **`next_at`**        | <code>string \| null</code>                                    | when the next heartbeat is expected (ISO-8601 UTC ms); null if unknown |
 | **`battery_exempt`** | <code>boolean</code>                                           | the app is exempt from battery optimization                            |
 | **`device_idle`**    | <code>boolean</code>                                           | the device was in deep Doze                                            |
+
+
+#### DeviceReadings
+
+The `device` object of records; a reading is present only when the device provides it.
+Heartbeat records: `background_restricted`, `standby_bucket`, `disk_free_bytes`, `thermal_status`.
+`tracking_start` records: `manufacturer`, `model`, `os_version`, `sdk_int`, `android_id`, `low_ram_device`,
+`ram_total_bytes`.
+
+| Prop                        | Type                                                                                                             | Description                                                                                   |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| **`background_restricted`** | <code>boolean</code>                                                                                             | the user set the app's battery use to "Restricted" (Android 9+)                               |
+| **`standby_bucket`**        | <code>'exempted' \| 'active' \| 'working_set' \| 'frequent' \| 'rare' \| 'restricted'</code>                     | App Standby bucket (Android 9+)                                                               |
+| **`disk_free_bytes`**       | <code>number</code>                                                                                              | free space on the storage that holds the app's files                                          |
+| **`thermal_status`**        | <code>'none' \| 'unknown' \| 'light' \| 'moderate' \| 'severe' \| 'critical' \| 'emergency' \| 'shutdown'</code> | Android 10+                                                                                   |
+| **`manufacturer`**          | <code>string</code>                                                                                              |                                                                                               |
+| **`model`**                 | <code>string</code>                                                                                              |                                                                                               |
+| **`os_version`**            | <code>string</code>                                                                                              | Android version, e.g. "14"                                                                    |
+| **`sdk_int`**               | <code>number</code>                                                                                              |                                                                                               |
+| **`android_id`**            | <code>string</code>                                                                                              | `Settings.Secure.ANDROID_ID`: declare "Device or other IDs" in Google Play's Data safety form |
+| **`low_ram_device`**        | <code>boolean</code>                                                                                             |                                                                                               |
+| **`ram_total_bytes`**       | <code>number</code>                                                                                              |                                                                                               |
 
 
 #### CurrentPositionOptions
@@ -2484,19 +2696,26 @@ the computed enclosing circle.
 
 #### DeviceInfo
 
-| Prop                    | Type                                                        |
-| ----------------------- | ----------------------------------------------------------- |
-| **`platform`**          | <code>'android' \| 'web'</code>                             |
-| **`manufacturer`**      | <code>string</code>                                         |
-| **`model`**             | <code>string</code>                                         |
-| **`brand`**             | <code>string</code>                                         |
-| **`osVersion`**         | <code>string</code>                                         |
-| **`sdkInt`**            | <code>number</code>                                         |
-| **`pluginVersion`**     | <code>string</code>                                         |
-| **`gmsAvailable`**      | <code>boolean</code>                                        |
-| **`hmsAvailable`**      | <code>boolean</code>                                        |
-| **`backend`**           | <code><a href="#locationbackend">LocationBackend</a></code> |
-| **`packagedProviders`** | <code>string[]</code>                                       |
+| Prop                        | Type                                                        | Description                                                                                                     |
+| --------------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| **`platform`**              | <code>'android' \| 'web'</code>                             |                                                                                                                 |
+| **`manufacturer`**          | <code>string</code>                                         |                                                                                                                 |
+| **`model`**                 | <code>string</code>                                         |                                                                                                                 |
+| **`brand`**                 | <code>string</code>                                         |                                                                                                                 |
+| **`osVersion`**             | <code>string</code>                                         |                                                                                                                 |
+| **`sdkInt`**                | <code>number</code>                                         |                                                                                                                 |
+| **`pluginVersion`**         | <code>string</code>                                         |                                                                                                                 |
+| **`gmsAvailable`**          | <code>boolean</code>                                        |                                                                                                                 |
+| **`hmsAvailable`**          | <code>boolean</code>                                        |                                                                                                                 |
+| **`backend`**               | <code><a href="#locationbackend">LocationBackend</a></code> |                                                                                                                 |
+| **`packagedProviders`**     | <code>string[]</code>                                       |                                                                                                                 |
+| **`backendFallbackReason`** | <code>string \| null</code>                                 | why a better location backend is not used (for example "gms: unavailable (status 2)"); null when none is better |
+| **`gmsStatus`**             | <code>number \| null</code>                                 | raw GoogleApiAvailability result (0 = success); null if GMS is not packaged or not checked yet                  |
+| **`hmsStatus`**             | <code>number \| null</code>                                 | raw HuaweiApiAvailability result (0 = success); null if HMS is not packaged or not checked yet                  |
+| **`hmsCoreOutdated`**       | <code>boolean \| null</code>                                | true when HMS Core is older than 6.3.0.301; null if HMS is not packaged                                         |
+| **`locationAvailableHint`** | <code>boolean \| null</code>                                | last LocationAvailability reported by GMS or HMS; only a hint (it can be wrong both ways); null if none         |
+| **`cpuCores`**              | <code>number</code>                                         | number of CPU cores                                                                                             |
+| **`supportedAbis`**         | <code>string[]</code>                                       | CPU types (Build.SUPPORTED_ABIS), e.g. ["arm64-v8a"]                                                            |
 
 
 #### Sensors
@@ -2608,9 +2827,10 @@ the computed enclosing circle.
 
 #### EnabledChangeEvent
 
-| Prop          | Type                 |
-| ------------- | -------------------- |
-| **`enabled`** | <code>boolean</code> |
+| Prop          | Type                        | Description                                                                                                                                                                                                                 |
+| ------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`enabled`** | <code>boolean</code>        |                                                                                                                                                                                                                             |
+| **`reason`**  | <code>string \| null</code> | why: a `tracking_start` reason when tracking was switched on (start, start_geofences, resume_notification), a `tracking_stop` reason when it was switched off; the same values as <a href="#location">`Location.reason`</a> |
 
 
 #### NotificationActionEvent
@@ -2628,6 +2848,29 @@ the computed enclosing circle.
 | **`status`**   | <code>number</code>                                              |
 | **`error`**    | <code>string</code>                                              |
 | **`response`** | <code><a href="#record">Record</a>&lt;string, unknown&gt;</code> |
+
+
+#### LocationErrorEvent
+
+The location request failed (no permission, Play services or HMS Core refused it, no usable provider).
+
+| Prop            | Type                                                        | Description                                                                        |
+| --------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| **`code`**      | <code><a href="#errorcode">ErrorCode</a></code>             |                                                                                    |
+| **`message`**   | <code>string</code>                                         |                                                                                    |
+| **`backend`**   | <code><a href="#locationbackend">LocationBackend</a></code> |                                                                                    |
+| **`retryInMs`** | <code>number \| null</code>                                 | the plugin requests location updates again after this many ms; null if it does not |
+
+
+#### StorageFullEvent
+
+A record could not be stored because the device storage is full.
+
+| Prop                | Type                                                |
+| ------------------- | --------------------------------------------------- |
+| **`uuid`**          | <code>string</code>                                 |
+| **`event`**         | <code><a href="#recordevent">RecordEvent</a></code> |
+| **`diskFreeBytes`** | <code>number \| null</code>                         |
 
 
 ### Type Aliases
@@ -2692,6 +2935,11 @@ Construct a type with a set of properties K of type T
 <code>'ENTER' | 'EXIT' | 'DWELL'</code>
 
 
+#### ConnectivityType
+
+<code>'wifi' | 'cellular' | 'ethernet' | 'other' | 'none'</code>
+
+
 #### WatchPositionCallback
 
 <code>(location: <a href="#location">Location</a> | null, error?: { code: <a href="#errorcode">ErrorCode</a>; message: string; }): void</code>
@@ -2747,11 +2995,6 @@ Make all properties in T optional
 <a href="#exclude">Exclude</a> from T those types that are assignable to U
 
 <code>T extends U ? never : T</code>
-
-
-#### ConnectivityType
-
-<code>'wifi' | 'cellular' | 'ethernet' | 'other' | 'none'</code>
 
 </docgen-api>
 

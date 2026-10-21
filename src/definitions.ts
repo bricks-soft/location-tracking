@@ -152,6 +152,12 @@ export interface HeartbeatConfig {
    * @default 300
    */
   maxInterval?: number;
+  /**
+   * seconds, 0..60. After a heartbeat is queued, keep the phone awake until its upload has finished, or at most this
+   * long, so it reaches the server on time while tracking is on. 0 = do not keep the phone awake.
+   * @default 10
+   */
+  uploadKeepAwake?: number;
 }
 
 export interface AuthorizationConfig {
@@ -219,6 +225,11 @@ export interface HttpConfig {
    * @default 60000
    */
   timeout?: number;
+  /**
+   * seconds, >= 0. The longest wait that a `Retry-After` header of a 429 or 503 answer can impose on automatic uploads.
+   * @default 3600
+   */
+  maxRetryAfter?: number;
   authorization?: AuthorizationConfig | null;
 }
 
@@ -345,8 +356,22 @@ export interface State {
   odometer: number;
   backend: LocationBackend;
   lastRecordAt: string | null;
-  /** fully populated with defaults */
+  /** reason of the last `tracking_stop` record (the `tracking_stop` reasons of `Location.reason`); null if none */
+  lastStopReason: string | null;
+  /** when tracking stopped for `lastStopReason` (ISO-8601 UTC ms); null if none */
+  lastStopAt: string | null;
+  /**
+   * fully populated with defaults. On Android the `http.authorization` secrets (`accessToken`, `refreshToken`, the
+   * values of `refreshPayload` and `refreshHeaders`) are masked: `***`, or `***` plus the last 4 characters for values
+   * longer than 8 characters; a `refreshPayload` value that contains `{refreshToken}` is shown. Passing a masked value
+   * back to `setConfig` keeps the stored one. The web stub returns them as given.
+   */
   config: Config;
+  /**
+   * `ready()`, `setConfig()` and `reset()` only: what the given config contains that was accepted but is probably
+   * wrong (for example an `http://` upload URL).
+   */
+  warnings?: string[];
 }
 
 /* ================= RECORDS (snake_case = identical to wire format) ================= */
@@ -389,8 +414,17 @@ export interface Location {
   mock: boolean;
   coords: Coords | null;
   activity: { type: ActivityType; confidence: number };
-  /** level 0..1, -1 unknown */
-  battery: { level: number; is_charging: boolean };
+  /**
+   * level 0..1, -1 unknown. Heartbeat records also carry `temperature` (°C), `health` and `plugged` when the device
+   * reports them.
+   */
+  battery: {
+    level: number;
+    is_charging: boolean;
+    temperature?: number;
+    health?: 'good' | 'overheat' | 'dead' | 'over_voltage' | 'cold' | 'failure' | 'unknown';
+    plugged?: 'ac' | 'usb' | 'wireless' | 'dock' | 'none' | 'other';
+  };
   backend: LocationBackend | null;
   extras?: Record<string, unknown>;
   /** event 'geofence' only */
@@ -399,11 +433,43 @@ export interface Location {
   provider?: ProviderState;
   /**
    * tracking_start: start|start_geofences|boot|restore|package_replaced|resume_notification;
-   * tracking_stop: stop|stop_on_stationary|stop_after_elapsed|terminate|permission_denied|service_start_failed|reboot|package_replaced
+   * tracking_stop: stop|stop_on_stationary|stop_after_elapsed|terminate|permission_denied|service_start_failed|reboot|package_replaced|user_stopped
    */
   reason?: string;
+  /** event 'tracking_stop' with reason 'user_stopped' only: when the user stopped the app (ISO-8601 UTC ms) */
+  stopped_at?: string;
   /** event 'heartbeat' only, optional: how the heartbeat is scheduled */
   heartbeat?: HeartbeatMeta;
+  /** connection type when the record was created */
+  network?: ConnectivityType;
+  /** events 'heartbeat' and 'tracking_start' only: device readings (see `DeviceReadings`) */
+  device?: DeviceReadings;
+}
+
+/**
+ * The `device` object of records; a reading is present only when the device provides it.
+ * Heartbeat records: `background_restricted`, `standby_bucket`, `disk_free_bytes`, `thermal_status`.
+ * `tracking_start` records: `manufacturer`, `model`, `os_version`, `sdk_int`, `android_id`, `low_ram_device`,
+ * `ram_total_bytes`.
+ */
+export interface DeviceReadings {
+  /** the user set the app's battery use to "Restricted" (Android 9+) */
+  background_restricted?: boolean;
+  /** App Standby bucket (Android 9+) */
+  standby_bucket?: 'exempted' | 'active' | 'working_set' | 'frequent' | 'rare' | 'restricted';
+  /** free space on the storage that holds the app's files */
+  disk_free_bytes?: number;
+  /** Android 10+ */
+  thermal_status?: 'none' | 'light' | 'moderate' | 'severe' | 'critical' | 'emergency' | 'shutdown' | 'unknown';
+  manufacturer?: string;
+  model?: string;
+  /** Android version, e.g. "14" */
+  os_version?: string;
+  sdk_int?: number;
+  /** `Settings.Secure.ANDROID_ID`: declare "Device or other IDs" in Google Play's Data safety form */
+  android_id?: string;
+  low_ram_device?: boolean;
+  ram_total_bytes?: number;
 }
 
 /** Scheduling metadata of a `heartbeat` record (snake_case = wire format). */
@@ -497,6 +563,25 @@ export interface PowerSaveChangeEvent {
 }
 export interface EnabledChangeEvent {
   enabled: boolean;
+  /**
+   * why: a `tracking_start` reason when tracking was switched on (start, start_geofences, resume_notification), a
+   * `tracking_stop` reason when it was switched off; the same values as `Location.reason`
+   */
+  reason: string | null;
+}
+/** The location request failed (no permission, Play services or HMS Core refused it, no usable provider). */
+export interface LocationErrorEvent {
+  code: ErrorCode;
+  message: string;
+  backend: LocationBackend;
+  /** the plugin requests location updates again after this many ms; null if it does not */
+  retryInMs: number | null;
+}
+/** A record could not be stored because the device storage is full. */
+export interface StorageFullEvent {
+  uuid: string;
+  event: RecordEvent;
+  diskFreeBytes: number | null;
 }
 export interface NotificationActionEvent {
   id: string;
@@ -521,6 +606,8 @@ export interface LocationTrackingEventMap {
   enabledchange: EnabledChangeEvent;
   notificationaction: NotificationActionEvent;
   authorization: AuthorizationEvent;
+  locationerror: LocationErrorEvent;
+  storagefull: StorageFullEvent;
 }
 export type LocationTrackingEventName = keyof LocationTrackingEventMap;
 
@@ -599,6 +686,20 @@ export interface DeviceInfo {
   hmsAvailable: boolean;
   backend: LocationBackend;
   packagedProviders: string[];
+  /** why a better location backend is not used (for example "gms: unavailable (status 2)"); null when none is better */
+  backendFallbackReason: string | null;
+  /** raw GoogleApiAvailability result (0 = success); null if GMS is not packaged or not checked yet */
+  gmsStatus: number | null;
+  /** raw HuaweiApiAvailability result (0 = success); null if HMS is not packaged or not checked yet */
+  hmsStatus: number | null;
+  /** true when HMS Core is older than 6.3.0.301; null if HMS is not packaged */
+  hmsCoreOutdated: boolean | null;
+  /** last LocationAvailability reported by GMS or HMS; only a hint (it can be wrong both ways); null if none */
+  locationAvailableHint: boolean | null;
+  /** number of CPU cores */
+  cpuCores: number;
+  /** CPU types (Build.SUPPORTED_ABIS), e.g. ["arm64-v8a"] */
+  supportedAbis: string[];
 }
 
 export interface Sensors {
@@ -722,5 +823,7 @@ export interface LocationTrackingPlugin {
     listenerFunc: (e: NotificationActionEvent) => void,
   ): Promise<PluginListenerHandle>;
   addListener(eventName: 'authorization', listenerFunc: (e: AuthorizationEvent) => void): Promise<PluginListenerHandle>;
+  addListener(eventName: 'locationerror', listenerFunc: (e: LocationErrorEvent) => void): Promise<PluginListenerHandle>;
+  addListener(eventName: 'storagefull', listenerFunc: (e: StorageFullEvent) => void): Promise<PluginListenerHandle>;
   removeAllListeners(): Promise<void>;
 }

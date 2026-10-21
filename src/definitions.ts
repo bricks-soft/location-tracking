@@ -442,17 +442,22 @@ export interface Location {
   heartbeat?: HeartbeatMeta;
   /** connection type when the record was created */
   network?: ConnectivityType;
-  /** events 'heartbeat' and 'tracking_start' only: device readings (see `DeviceReadings`) */
+  /** the device id on every record; more readings on 'heartbeat' and 'tracking_start' records (see `DeviceReadings`) */
   device?: DeviceReadings;
 }
 
 /**
  * The `device` object of records; a reading is present only when the device provides it.
+ * Every record: `device_id`.
  * Heartbeat records: `background_restricted`, `standby_bucket`, `disk_free_bytes`, `thermal_status`.
- * `tracking_start` records: `manufacturer`, `model`, `os_version`, `sdk_int`, `android_id`, `low_ram_device`,
- * `ram_total_bytes`.
+ * `tracking_start` records: `manufacturer`, `model`, `os_version`, `sdk_int`, `low_ram_device`, `ram_total_bytes`.
  */
 export interface DeviceReadings {
+  /**
+   * the device id: on Android, `Settings.Secure.ANDROID_ID`; other platforms will fill it with their own id.
+   * Absent in records queued by an older version. Declare "Device or other IDs" in Google Play's Data safety form.
+   */
+  device_id?: string;
   /** the user set the app's battery use to "Restricted" (Android 9+) */
   background_restricted?: boolean;
   /** App Standby bucket (Android 9+) */
@@ -466,8 +471,6 @@ export interface DeviceReadings {
   /** Android version, e.g. "14" */
   os_version?: string;
   sdk_int?: number;
-  /** `Settings.Secure.ANDROID_ID`: declare "Device or other IDs" in Google Play's Data safety form */
-  android_id?: string;
   low_ram_device?: boolean;
   ram_total_bytes?: number;
 }

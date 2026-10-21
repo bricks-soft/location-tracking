@@ -172,9 +172,11 @@ data class DeviceInfo(
 )
 
 /**
- * The `device` object of heartbeat and `tracking_start` records (see `DeviceDetails`); a null field is not written.
+ * The `device` object of records (see `DeviceDetails`); a null field is not written. Every record: [deviceId].
  * Heartbeat: [backgroundRestricted], [standbyBucket], [diskFreeBytes], [thermalStatus]. `tracking_start`:
- * [manufacturer], [model], [osVersion], [sdkInt], [androidId], [lowRamDevice], [ramTotalBytes].
+ * [manufacturer], [model], [osVersion], [sdkInt], [lowRamDevice], [ramTotalBytes].
+ *
+ * @property deviceId the device id: `Settings.Secure.ANDROID_ID` on Android; null in records queued by an older version.
  */
 data class DeviceSnapshot(
     val backgroundRestricted: Boolean? = null,
@@ -185,7 +187,7 @@ data class DeviceSnapshot(
     val model: String? = null,
     val osVersion: String? = null,
     val sdkInt: Int? = null,
-    val androidId: String? = null,
+    val deviceId: String? = null,
     val lowRamDevice: Boolean? = null,
     val ramTotalBytes: Long? = null,
 ) {

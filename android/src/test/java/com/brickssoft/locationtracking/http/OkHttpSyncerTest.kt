@@ -39,6 +39,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
@@ -1079,6 +1080,55 @@ class OkHttpSyncerTest {
                         it.copy(http = it.http.copy(authorization = jwt(accessToken = "userB").copy(refreshToken = "rB")))
                     }
                 }
+                return MockResponse().setResponseCode(if (tokens.size == 1) 503 else 200)
+            }
+        }
+        val syncer = syncer()
+
+        syncer.insert(rec(1))
+        advanceTimeBy(OkHttpSyncer.CHANGED_RETRY_MS - 1)
+
+        assertEquals(listOf("Bearer userA"), tokens.toList())
+        assertEquals(listOf("r1"), store.all.map { it.uuid })
+        assertEquals(0, store.attempts("r1"))
+        assertEquals(listOf(503), httpEvents.map { it.status })
+        assertNull(nextTryStore.load())
+    }
+
+    @Test
+    fun `after an upload stopped for new tokens, a new pass 10 s later sends the records with the new token`() = runTest {
+        // The owner's rule of 2026-10-21: the app changed the token during an upload and http.authorization is set.
+        http { it.copy(authorization = jwt(accessToken = "userA")) }
+        val tokens = CopyOnWriteArrayList<String?>()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                tokens += request.getHeader("Authorization")
+                if (tokens.size == 1) http { it.copy(authorization = jwt(accessToken = "userB")) }
+                return MockResponse().setResponseCode(if (tokens.size == 1) 503 else 200)
+            }
+        }
+        val syncer = syncer()
+
+        syncer.insert(rec(1))
+        advanceTimeBy(OkHttpSyncer.CHANGED_RETRY_MS - 1)
+        assertEquals(listOf("Bearer userA"), tokens.toList())
+
+        advanceTimeBy(2)
+        advanceUntilIdle()
+
+        assertEquals(listOf("Bearer userA", "Bearer userB"), tokens.toList())
+        assertTrue(store.all.isEmpty())
+        assertEquals(listOf(503, 200), httpEvents.map { it.status })
+        assertEquals(listOf("schedule(10 s)", "cancel"), uploadScheduler.calls)
+    }
+
+    @Test
+    fun `after an upload stopped because the app removed the authorization, no new pass starts`() = runTest {
+        // README logout order, step 3: the records stay queued for the next trigger.
+        http { it.copy(authorization = jwt(accessToken = "userA")) }
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                http { it.copy(authorization = null) }
                 return MockResponse().setResponseCode(503)
             }
         }
@@ -1087,10 +1137,10 @@ class OkHttpSyncerTest {
         syncer.insert(rec(1))
         advanceUntilIdle()
 
-        assertEquals(listOf("Bearer userA"), tokens.toList())
+        assertEquals(1, server.requestCount)
         assertEquals(listOf("r1"), store.all.map { it.uuid })
-        assertEquals(0, store.attempts("r1"))
-        assertEquals(listOf(503), httpEvents.map { it.status })
+        assertTrue(uploadScheduler.calls.isEmpty())
+        assertNull(nextTryStore.load())
     }
 
     @Test
@@ -1110,7 +1160,30 @@ class OkHttpSyncerTest {
         assertEquals(ErrorCode.HTTP_ERROR, error.code)
         assertTrue(error.message!!, error.message!!.contains("authorization changed"))
         assertEquals(listOf("r1"), store.all.map { it.uuid })
-        assertEquals(1, server.requestCount)
+        advanceUntilIdle()
+        assertEquals(1, server.requestCount) // the authorization was removed: no new pass
+    }
+
+    @Test
+    fun `sync stopped for new tokens is followed by an automatic pass 10 s later`() = runTest {
+        http { it.copy(authorization = jwt(accessToken = "userA")) }
+        val tokens = CopyOnWriteArrayList<String?>()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                tokens += request.getHeader("Authorization")
+                if (tokens.size == 1) http { it.copy(authorization = jwt(accessToken = "userB")) }
+                return MockResponse().setResponseCode(if (tokens.size == 1) 401 else 200)
+            }
+        }
+        val syncer = syncer()
+        store.insert(rec(1))
+
+        assertTrue(runCatching { syncer.sync() }.exceptionOrNull()!!.message!!.contains("authorization changed"))
+        assertEquals(listOf("schedule(10 s)"), uploadScheduler.calls)
+        advanceUntilIdle()
+
+        assertEquals(listOf("Bearer userA", "Bearer userB"), tokens.toList())
+        assertTrue(store.all.isEmpty())
     }
 
     @Test

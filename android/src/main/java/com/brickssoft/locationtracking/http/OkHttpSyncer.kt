@@ -63,7 +63,10 @@ import kotlin.coroutines.cancellation.CancellationException
  *   failed upload like any other non-2xx answer: the client follows no redirects ([HttpSupport.sharedClient]).
  * - Every try of one upload is sent with the credentials read at the start of the upload, or credentials refreshed
  *   from them ([AuthorizationManager]); if the app configured other tokens in the meantime, the upload stops and keeps
- *   its records (recommendation 2).
+ *   its records (recommendation 2). No wait is stored and no attempt is counted. If `http.authorization` is still set,
+ *   a new automatic pass runs [CHANGED_RETRY_MS] later with the new tokens (a coroutine timer, and the upload job for
+ *   the case that this process dies); if it was removed, nothing is started (README, "Logging out and switching
+ *   users").
  * - 2xx deletes the records; a failure that ends the upload keeps them and marks one attempt. One `Http` event
  *   is emitted per HTTP request (every try; a 401 that triggers a token refresh and a retry yields two). At most
  *   [HttpSupport.MAX_UPLOAD_RESPONSE_BYTES] of an answer are read into the event.
@@ -177,6 +180,9 @@ class OkHttpSyncer(
 
     private val stateWatcherLaunched = AtomicBoolean(false)
 
+    /** The timer of the pass after an upload stopped for new tokens; guarded by [uploadLock]. */
+    private var changedRetry: Job? = null
+
     override fun start() {
         if (!started.compareAndSet(false, true)) return
         events.subscribe { event ->
@@ -240,6 +246,7 @@ class OkHttpSyncer(
                 setNextTry(null)
                 cancelJobIfEmpty()
             }
+            if (drained.failure?.kind == FailureKind.CHANGED) retryAfterAuthorizationChange(configStore.config.value.http)
             updateIntervalTimer(null)
             drained
         }
@@ -372,9 +379,9 @@ class OkHttpSyncer(
                 cancelJobIfEmpty()
             }
             failure.kind == FailureKind.CHANGED -> {
-                // Not a failure of the server, so no wait. No new pass either: the records stay queued until the next
-                // trigger, which leaves the app time to finish a user switch (README, "Logging out and switching users").
+                // Not a failure of the server, so no wait and no attempt.
                 lastPass = PassResult.FAILED
+                retryAfterAuthorizationChange(config)
             }
             else -> {
                 lastPass = PassResult.FAILED
@@ -382,6 +389,25 @@ class OkHttpSyncer(
             }
         }
         return null
+    }
+
+    /**
+     * After an upload stopped because the app changed `http.authorization`: a new automatic pass [CHANGED_RETRY_MS]
+     * later, if the authorization is still set. Caller holds [uploadLock].
+     */
+    private fun retryAfterAuthorizationChange(config: HttpConfig) {
+        if (authorization.current() == null) {
+            Logger.i(TAG, "http.authorization was removed during the upload; no new upload is started")
+            return
+        }
+        Logger.i(TAG, "http.authorization changed during the upload; next upload in ${CHANGED_RETRY_MS / MS_PER_SECOND} s")
+        changedRetry?.cancel()
+        changedRetry = scope.launch(dispatchers.io) {
+            delay(CHANGED_RETRY_MS)
+            requestPass()
+        }
+        // The job replaces the waiting one; a longer stored wait keeps its time, as normal records wait for it anyway.
+        scheduler.schedule(maxOf(CHANGED_RETRY_MS, waitRemainingMs(config)))
     }
 
     /** True if normal records follow `syncInterval` now: configured ([SyncPolicy.usesInterval]) and tracking is on. */
@@ -877,8 +903,8 @@ class OkHttpSyncer(
         }
     }
 
-    private companion object {
-        const val TAG = "LT.Http"
+    internal companion object {
+        private const val TAG = "LT.Http"
         const val HTTP_UNAUTHORIZED = 401
         const val HTTP_PAYLOAD_TOO_LARGE = 413
         const val HTTP_TOO_MANY_REQUESTS = 429
@@ -890,6 +916,9 @@ class OkHttpSyncer(
         const val MAX_JOB_PASSES = 5
 
         const val AUTH_CHANGED = "http.authorization changed during the upload"
+
+        /** The wait before the pass that follows an upload stopped for new tokens (rule 2a). */
+        const val CHANGED_RETRY_MS = 10_000L
 
         /** An unrestricted network, to ask the policy what is due whatever the network is. */
         val ONLINE = Connectivity(connected = true, type = ConnectivityType.WIFI)

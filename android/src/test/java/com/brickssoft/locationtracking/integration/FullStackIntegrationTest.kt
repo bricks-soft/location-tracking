@@ -1,7 +1,9 @@
 package com.brickssoft.locationtracking.integration
 
 import android.content.Intent
+import android.os.Build
 import android.os.PowerManager
+import android.provider.Settings
 import com.brickssoft.locationtracking.bridge.BridgeServices
 import com.brickssoft.locationtracking.bridge.PluginHandlers
 import com.brickssoft.locationtracking.config.SharedPrefsConfigStore
@@ -64,6 +66,7 @@ internal class FullStackIntegrationTest : FullStackTestBase() {
 
     @Test
     fun `a - ready then start uploads tracking_start and the initial motionchange in the wire format`() = runTest {
+        Settings.Secure.putString(app.contentResolver, Settings.Secure.ANDROID_ID, "9774d56d682e549c")
         val p = newProcess()
         val t0 = clock.now()
         val extras = JSONObject().put("driver_id", 7)
@@ -90,6 +93,9 @@ internal class FullStackIntegrationTest : FullStackTestBase() {
         assertFalse(motion.getJSONObject("battery").getBoolean("is_charging"))
         assertEquals(clock.bootCount(), motion.getInt("boot_count"))
         assertEquals(clock.elapsedRealtime(), motion.getLong("elapsed_realtime_ms"))
+        server.received().forEach { assertEquals("9774d56d682e549c", it.getJSONObject("device").getString("device_id")) }
+        assertEquals(Build.MODEL, trackingStart.getJSONObject("device").getString("model"))
+        assertFalse(motion.getJSONObject("device").has("model"))
 
         // Queue drained; JS-facing events; runtime state.
         assertEquals(0, p.locationStore.count())

@@ -52,18 +52,26 @@ class DeviceDetailsTest {
     }
 
     @Test
-    fun `tracking_start readings name the phone and include ANDROID_ID`() {
-        Settings.Secure.putString(app.contentResolver, Settings.Secure.ANDROID_ID, "a1b2c3d4e5f60718")
-
+    fun `tracking_start readings name the phone`() {
         val snapshot = DefaultDeviceDetails(app).forTrackingStart()
 
         assertEquals(Build.MANUFACTURER, snapshot.manufacturer)
         assertEquals(Build.MODEL, snapshot.model)
         assertEquals(Build.VERSION.RELEASE, snapshot.osVersion)
         assertEquals(Build.VERSION.SDK_INT, snapshot.sdkInt)
-        assertEquals("a1b2c3d4e5f60718", snapshot.androidId)
         assertNotNull(snapshot.lowRamDevice)
         assertNull(snapshot.standbyBucket)
+        assertNull(snapshot.deviceId) // the record factory adds it to every record
+    }
+
+    @Test
+    fun `the device id is ANDROID_ID, read once`() {
+        Settings.Secure.putString(app.contentResolver, Settings.Secure.ANDROID_ID, "a1b2c3d4e5f60718")
+        val details = DefaultDeviceDetails(app)
+
+        assertEquals("a1b2c3d4e5f60718", details.deviceId())
+        Settings.Secure.putString(app.contentResolver, Settings.Secure.ANDROID_ID, "0000000000000000")
+        assertEquals("a1b2c3d4e5f60718", details.deviceId())
     }
 
     @Test

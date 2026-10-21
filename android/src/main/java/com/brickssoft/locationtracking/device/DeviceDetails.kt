@@ -15,13 +15,14 @@ import com.brickssoft.locationtracking.model.BatteryDetails
 import com.brickssoft.locationtracking.model.DeviceSnapshot
 
 /**
- * Device readings carried by some records (the device-information parts d1 to d7):
+ * Device readings carried by records (the device-information parts d1 to d7):
+ * - [deviceId]: `Settings.Secure.ANDROID_ID`, on every record (`device.device_id`); read once per process.
  * - [forHeartbeat]: `background_restricted` and `standby_bucket` (Android 9+), `disk_free_bytes`, `thermal_status`
  *   (Android 10+). They explain gaps: a "Restricted" battery setting, a low standby bucket and a full disk each stop or
  *   delay records, and heartbeats are the records sent while nothing else is recorded.
  * - [batteryDetails]: battery `temperature`, `health` and `plugged`, for heartbeat records.
- * - [forTrackingStart]: phone `manufacturer`, `model`, `os_version`, `sdk_int`, `android_id`
- *   (`Settings.Secure.ANDROID_ID`), `low_ram_device` and `ram_total_bytes`. They do not change during a session.
+ * - [forTrackingStart]: phone `manufacturer`, `model`, `os_version`, `sdk_int`, `low_ram_device` and
+ *   `ram_total_bytes`. They do not change during a session.
  *
  * Every reading is null when the Android version does not have it or reading it fails (logged); none needs a
  * permission. Never throws.
@@ -33,6 +34,8 @@ interface DeviceDetails {
 
     fun batteryDetails(): BatteryDetails?
 
+    fun deviceId(): String?
+
     companion object {
         /** No readings (tests, and callers without a Context). */
         val NONE: DeviceDetails = object : DeviceDetails {
@@ -41,6 +44,8 @@ interface DeviceDetails {
             override fun forTrackingStart(): DeviceSnapshot = DeviceSnapshot()
 
             override fun batteryDetails(): BatteryDetails? = null
+
+            override fun deviceId(): String? = null
         }
     }
 }
@@ -48,6 +53,11 @@ interface DeviceDetails {
 /** [DeviceDetails] from the platform services. */
 class DefaultDeviceDetails(context: Context, private val sdkInt: Int = Build.VERSION.SDK_INT) : DeviceDetails {
     private val appContext: Context = context.applicationContext ?: context
+
+    // One instance per process (Components); ANDROID_ID only changes on a factory reset or a new signing key.
+    private val deviceId: String? by lazy {
+        read("ANDROID_ID") { Settings.Secure.getString(appContext.contentResolver, Settings.Secure.ANDROID_ID) }
+    }
 
     override fun forHeartbeat(): DeviceSnapshot = DeviceSnapshot(
         backgroundRestricted = read("isBackgroundRestricted") {
@@ -79,13 +89,12 @@ class DefaultDeviceDetails(context: Context, private val sdkInt: Int = Build.VER
             model = Build.MODEL.orEmpty(),
             osVersion = Build.VERSION.RELEASE.orEmpty(),
             sdkInt = sdkInt,
-            androidId = read("ANDROID_ID") {
-                Settings.Secure.getString(appContext.contentResolver, Settings.Secure.ANDROID_ID)
-            },
             lowRamDevice = read("isLowRamDevice") { activityManager()?.isLowRamDevice },
             ramTotalBytes = memory?.totalMem?.takeIf { it > 0 },
         )
     }
+
+    override fun deviceId(): String? = deviceId
 
     override fun batteryDetails(): BatteryDetails? = read("battery details") {
         val intent: Intent = appContext.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))

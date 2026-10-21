@@ -640,8 +640,12 @@ The upload rules (priority records, retries, templates, body shapes) are describ
 - A masked value given back unchanged in `setConfig()` (for example the whole `getState().config`) keeps the stored
   value. Any other value replaces it.
 - One upload uses one token: the token read when the upload starts, or the token refreshed from it after a `401`.
-  If the app changes the authorization during an upload, the upload stops and the records stay queued for the new
-  settings. A refresh that finishes after the app set new tokens does not overwrite them.
+  If the app changes the authorization during an upload, the upload stops and the records stay queued. If
+  `http.authorization` is still set, a new upload with the new tokens starts about 10 s later (also when tracking is
+  off or the app's process has ended, through the upload job). If the app removed the authorization (step 3 below),
+  nothing starts until the next trigger (a new record, the network returning, `sync()`). So an app that sets the next
+  user's tokens without the logout steps below gets the queued records uploaded with them. A refresh that finishes
+  after the app set new tokens does not overwrite them.
 
 #### Logging out and switching users
 
@@ -1201,17 +1205,18 @@ Some records carry readings that explain gaps in tracking (all without extra per
 | Field | On | Content |
 |---|---|---|
 | `network` | every record | Connection type when the record was created: `wifi`, `cellular`, `ethernet`, `other` or `none`. |
+| `device.device_id` | every record | The device id: on Android, `Settings.Secure.ANDROID_ID`; other platforms will fill it with their own id. Read once per process. Not in records queued by an older version. |
 | `device.background_restricted`, `device.standby_bucket` | `heartbeat` | The user set battery use to "Restricted"; the app standby bucket (`active`, `working_set`, `frequent`, `rare`, `restricted`). Android 9+. |
 | `device.disk_free_bytes` | `heartbeat` | Free space of the storage that holds the app's files. |
 | `device.thermal_status` | `heartbeat` | `none`, `light`, `moderate`, `severe`, `critical`, `emergency` or `shutdown`. Android 10+. |
 | `battery.temperature`, `battery.health`, `battery.plugged` | `heartbeat` | °C; `good`, `overheat`, `dead`, `over_voltage`, `cold`, `failure`, `unknown`; `ac`, `usb`, `wireless`, `dock`, `none`. |
-| `device.manufacturer`, `model`, `os_version`, `sdk_int`, `android_id`, `low_ram_device`, `ram_total_bytes` | `tracking_start` | The phone, its Android version, `Settings.Secure.ANDROID_ID` and its memory. |
+| `device.manufacturer`, `model`, `os_version`, `sdk_int`, `low_ram_device`, `ram_total_bytes` | `tracking_start` | The phone, its Android version and its memory. |
 
 A reading that the Android version does not have, or that fails, is left out. Templates use them through the
 placeholders listed in [docs/wire-format.md](docs/wire-format.md#templates).
 
-**Google Play Data safety.** `tracking_start` records include `android_id` (`Settings.Secure.ANDROID_ID`), an ID that
-identifies the phone for your app. An app that uploads it must declare **"Device or other IDs"** in the Data safety
+**Google Play Data safety.** Every record includes `device.device_id` (`Settings.Secure.ANDROID_ID` on Android), an ID
+that identifies the phone for your app. An app that uploads records must declare **"Device or other IDs"** in the Data safety
 form of the Google Play Console (collected, together with the purpose, for example "App functionality" or
 "Analytics").
 
@@ -2541,7 +2546,7 @@ restart), typically on Android 14+ without "Allow all the time". A tap resumes t
 | **`stopped_at`**          | <code>string</code>                                                                                                                                                                                                                              | event 'tracking_stop' with reason 'user_stopped' only: when the user stopped the app (ISO-8601 UTC ms)                                                                                                                                                |
 | **`heartbeat`**           | <code><a href="#heartbeatmeta">HeartbeatMeta</a></code>                                                                                                                                                                                          | event 'heartbeat' only, optional: how the heartbeat is scheduled                                                                                                                                                                                      |
 | **`network`**             | <code><a href="#connectivitytype">ConnectivityType</a></code>                                                                                                                                                                                    | connection type when the record was created                                                                                                                                                                                                           |
-| **`device`**              | <code><a href="#devicereadings">DeviceReadings</a></code>                                                                                                                                                                                        | events 'heartbeat' and 'tracking_start' only: device readings (see <a href="#devicereadings">`DeviceReadings`</a>)                                                                                                                                    |
+| **`device`**              | <code><a href="#devicereadings">DeviceReadings</a></code>                                                                                                                                                                                        | the device id on every record; more readings on 'heartbeat' and 'tracking_start' records (see <a href="#devicereadings">`DeviceReadings`</a>)                                                                                                         |
 
 
 #### Coords
@@ -2588,23 +2593,23 @@ Scheduling metadata of a `heartbeat` record (snake_case = wire format).
 #### DeviceReadings
 
 The `device` object of records; a reading is present only when the device provides it.
+Every record: `device_id`.
 Heartbeat records: `background_restricted`, `standby_bucket`, `disk_free_bytes`, `thermal_status`.
-`tracking_start` records: `manufacturer`, `model`, `os_version`, `sdk_int`, `android_id`, `low_ram_device`,
-`ram_total_bytes`.
+`tracking_start` records: `manufacturer`, `model`, `os_version`, `sdk_int`, `low_ram_device`, `ram_total_bytes`.
 
-| Prop                        | Type                                                                                                             | Description                                                                                   |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| **`background_restricted`** | <code>boolean</code>                                                                                             | the user set the app's battery use to "Restricted" (Android 9+)                               |
-| **`standby_bucket`**        | <code>'exempted' \| 'active' \| 'working_set' \| 'frequent' \| 'rare' \| 'restricted'</code>                     | App Standby bucket (Android 9+)                                                               |
-| **`disk_free_bytes`**       | <code>number</code>                                                                                              | free space on the storage that holds the app's files                                          |
-| **`thermal_status`**        | <code>'none' \| 'unknown' \| 'light' \| 'moderate' \| 'severe' \| 'critical' \| 'emergency' \| 'shutdown'</code> | Android 10+                                                                                   |
-| **`manufacturer`**          | <code>string</code>                                                                                              |                                                                                               |
-| **`model`**                 | <code>string</code>                                                                                              |                                                                                               |
-| **`os_version`**            | <code>string</code>                                                                                              | Android version, e.g. "14"                                                                    |
-| **`sdk_int`**               | <code>number</code>                                                                                              |                                                                                               |
-| **`android_id`**            | <code>string</code>                                                                                              | `Settings.Secure.ANDROID_ID`: declare "Device or other IDs" in Google Play's Data safety form |
-| **`low_ram_device`**        | <code>boolean</code>                                                                                             |                                                                                               |
-| **`ram_total_bytes`**       | <code>number</code>                                                                                              |                                                                                               |
+| Prop                        | Type                                                                                                             | Description                                                                                                                                                                                                             |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`device_id`**             | <code>string</code>                                                                                              | the device id: on Android, `Settings.Secure.ANDROID_ID`; other platforms will fill it with their own id. Absent in records queued by an older version. Declare "Device or other IDs" in Google Play's Data safety form. |
+| **`background_restricted`** | <code>boolean</code>                                                                                             | the user set the app's battery use to "Restricted" (Android 9+)                                                                                                                                                         |
+| **`standby_bucket`**        | <code>'exempted' \| 'active' \| 'working_set' \| 'frequent' \| 'rare' \| 'restricted'</code>                     | App Standby bucket (Android 9+)                                                                                                                                                                                         |
+| **`disk_free_bytes`**       | <code>number</code>                                                                                              | free space on the storage that holds the app's files                                                                                                                                                                    |
+| **`thermal_status`**        | <code>'none' \| 'unknown' \| 'light' \| 'moderate' \| 'severe' \| 'critical' \| 'emergency' \| 'shutdown'</code> | Android 10+                                                                                                                                                                                                             |
+| **`manufacturer`**          | <code>string</code>                                                                                              |                                                                                                                                                                                                                         |
+| **`model`**                 | <code>string</code>                                                                                              |                                                                                                                                                                                                                         |
+| **`os_version`**            | <code>string</code>                                                                                              | Android version, e.g. "14"                                                                                                                                                                                              |
+| **`sdk_int`**               | <code>number</code>                                                                                              |                                                                                                                                                                                                                         |
+| **`low_ram_device`**        | <code>boolean</code>                                                                                             |                                                                                                                                                                                                                         |
+| **`ram_total_bytes`**       | <code>number</code>                                                                                              |                                                                                                                                                                                                                         |
 
 
 #### CurrentPositionOptions
@@ -2900,9 +2905,7 @@ A record could not be stored because the device storage is full.
 
 Construct a type with a set of properties K of type T
 
-<code>{
- [P in K]: T;
- }</code>
+<code>{ [P in K]: T; }</code>
 
 
 #### NotificationPriority
@@ -2961,18 +2964,14 @@ Rejection `code` of every failed promise.
 
 From T, pick a set of properties whose keys are in the union K
 
-<code>{
- [P in K]: T[P];
- }</code>
+<code>{ [P in K]: T[P]; }</code>
 
 
 #### Partial
 
 Make all properties in T optional
 
-<code>{
- [P in keyof T]?: T[P];
- }</code>
+<code>{ [P in keyof T]?: T[P]; }</code>
 
 
 #### HeartbeatStrategy

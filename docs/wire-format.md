@@ -63,10 +63,10 @@ Timestamps are ISO-8601 in UTC with milliseconds, for example `2026-09-26T10:15:
 
 Every record has all of these keys; values that are unknown are `null`. The exceptions are the optional `extras`,
 `provider` (missing only when the plugin could not read the provider state, and on records queued by a plugin version
-before 8.0.0), `network` (missing when the connection type could not be read, on `insertLocation()` records, and on
-records queued by an older version), and the event-specific keys `geofence`, `reason`, `stopped_at`, `heartbeat` and
-`device`, which appear only when they apply. The
-examples below show `provider` only on `providerchange`.
+before 8.0.0), `network` (missing when the connection type could not be read, and on records queued by an older
+version), `device` (missing when the device id could not be read and the record has no other readings, and on records
+queued by an older version), and the event-specific keys `geofence`, `reason`, `stopped_at` and `heartbeat`, which
+appear only when they apply. The examples below show `provider` only on `providerchange`.
 
 | Key | Type | Meaning |
 |---|---|---|
@@ -91,7 +91,7 @@ examples below show `provider` only on `providerchange`.
 | `reason` | string | Only for `tracking_start` and `tracking_stop` (see the reason tables below). |
 | `stopped_at` | string | Only for a `tracking_stop` with reason `user_stopped`, when Android reported it: when the user stopped the app (ISO-8601 UTC). It can be long before `recorded_at`. |
 | `heartbeat` | object | Only for `heartbeat`, and optional: how heartbeats are scheduled (see [`heartbeat`](#heartbeat)). |
-| `device` | object | Only for `heartbeat` and `tracking_start`: device readings (see [`heartbeat`](#heartbeat) and [`tracking_start`](#tracking_start)). A reading that the Android version does not have, or that could not be read, is left out. |
+| `device` | object | Every record: `device_id`, the device id. On Android it is `Settings.Secure.ANDROID_ID` (a 64-bit hex string, the same for one app signing key, user and phone until a factory reset), read once per process; other platforms will fill it with their own id. An app that uploads it must declare "Device or other IDs" in Google Play's Data safety form. `heartbeat` and `tracking_start` records add more readings (see [`heartbeat`](#heartbeat) and [`tracking_start`](#tracking_start)). A reading that the Android version does not have, or that could not be read, is left out. |
 
 `coords`:
 
@@ -143,6 +143,8 @@ and differ only as described after this example.
   "activity": { "type": "in_vehicle", "confidence": 92 },
   "battery": { "level": 0.81, "is_charging": false },
   "backend": "gms",
+  "network": "cellular",
+  "device": { "device_id": "9774d56d682e549c" },
   "extras": { "driver_id": 7 }
 }
 ```
@@ -177,6 +179,8 @@ The fix at the moment the device switched between moving and stationary. `is_mov
   "activity": { "type": "still", "confidence": 100 },
   "battery": { "level": 0.8, "is_charging": false },
   "backend": "gms",
+  "network": "cellular",
+  "device": { "device_id": "9774d56d682e549c" },
   "extras": { "driver_id": 7 }
 }
 ```
@@ -192,7 +196,8 @@ off, so they can arrive outside a `tracking_start` … `tracking_stop` period.
 
 The app can add its own records with `insertLocation()`. They have the default shape, with the `event` the app gave
 (`location` if none), its `coords` (`accuracy` 0 if not given), `timestamp` (the insert time if not given) and
-`is_moving` (the current state if not given), and the current `odometer`, `activity`, `battery` and `backend`. Their
+`is_moving` (the current state if not given), and the current `odometer`, `activity`, `battery`, `backend`, `network`,
+`provider` and `device.device_id`. Their
 `extras` are `persistence.extras` merged with the given ones. They are queued and uploaded like any other
 record, but they don't count as tracking activity: they don't restart the heartbeat window.
 
@@ -276,6 +281,7 @@ seconds (default 180). See [heartbeat.md](heartbeat.md).
     "device_idle": false
   },
   "device": {
+    "device_id": "9774d56d682e549c",
     "background_restricted": false,
     "standby_bucket": "active",
     "disk_free_bytes": 18734211072,
@@ -305,6 +311,7 @@ If no location has ever been known, `timestamp` and `coords` are `null`. This ex
   "backend": "hms",
   "network": "cellular",
   "device": {
+    "device_id": "3f1c9b2e7a6d4c58",
     "background_restricted": false,
     "standby_bucket": "active",
     "disk_free_bytes": 52113408000,
@@ -344,6 +351,8 @@ geofence was added.
   "activity": { "type": "walking", "confidence": 83 },
   "battery": { "level": 0.52, "is_charging": false },
   "backend": "gms",
+  "network": "wifi",
+  "device": { "device_id": "9774d56d682e549c" },
   "extras": { "driver_id": 7 },
   "geofence": { "identifier": "home", "action": "ENTER", "extras": { "site_id": 12 } }
 }
@@ -353,11 +362,9 @@ geofence was added.
 
 An audit record, created when tracking starts or resumes. It carries the last known coords, or `null`: right after
 install it often has no coords, even on an emulator with a default location, because the first fix arrives a few
-seconds after the start. Its `device` object describes the phone, which does not change during a session:
-`manufacturer`, `model`, `os_version` (Android version), `sdk_int` (API level), `android_id`
-(`Settings.Secure.ANDROID_ID`: a 64-bit hex string, the same for one app signing key, user and phone until a factory
-reset), `low_ram_device` and `ram_total_bytes`. An app that uploads `android_id` must declare "Device or other IDs" in
-Google Play's Data safety form. Calling
+seconds after the start. Its `device` object has the `device_id` of every record and describes the phone, which does
+not change during a session: `manufacturer`, `model`, `os_version` (Android version), `sdk_int` (API level),
+`low_ram_device` and `ram_total_bytes`. Calling
 `start()` while `startGeofences()` runs (or the reverse) switches the mode and creates another `tracking_start`,
 without a `tracking_stop` in between.
 
@@ -391,11 +398,11 @@ without a `tracking_stop` in between.
   "extras": { "driver_id": 7 },
   "reason": "start",
   "device": {
+    "device_id": "9774d56d682e549c",
     "manufacturer": "samsung",
     "model": "SM-A546B",
     "os_version": "14",
     "sdk_int": 34,
-    "android_id": "9774d56d682e549c",
     "low_ram_device": false,
     "ram_total_bytes": 7740116992
   }
@@ -446,6 +453,7 @@ no records are expected until the next `tracking_start`.
   "battery": { "level": 0.41, "is_charging": false },
   "backend": "gms",
   "network": "cellular",
+  "device": { "device_id": "9774d56d682e549c" },
   "extras": { "driver_id": 7 },
   "reason": "stop"
 }
@@ -512,6 +520,8 @@ coords, or `null`.
   "activity": { "type": "still", "confidence": 88 },
   "battery": { "level": 0.66, "is_charging": false },
   "backend": "gms",
+  "network": "wifi",
+  "device": { "device_id": "9774d56d682e549c" },
   "extras": { "driver_id": 7 },
   "provider": {
     "enabled": false,
@@ -608,8 +618,8 @@ Substitution rules:
   - `provider` is inserted as the record's [`provider` object](#providerchange) (`enabled`, `gps`, `network`,
     `permission`, `accuracy`, `backend`), or `null` when the record has none, so write it bare:
     `"provider": <%= provider %>`.
-  - `device` is inserted as the record's `device` object (on `heartbeat` and `tracking_start` records), or `null`, so
-    write it bare: `"device": <%= device %>`.
+  - `device` is inserted as the record's `device` object (`device_id` on every record, more readings on `heartbeat`
+    and `tracking_start` records), or `null`, so write it bare: `"device": <%= device %>`.
 - A `null` value in a placeholder that is wrapped exactly in quotes, such as `"<%= reason %>"`, replaces the quotes
   too, so the result is JSON `null`, not the string `"null"`. This happens with `timestamp`, `backend`, `reason`,
   `geofence.*`, `provider.*` and the coordinates on records where they don't apply. Inside a longer string (for
@@ -654,7 +664,7 @@ Available placeholders:
 | `device.disk_free_bytes` | number \| null | `device.thermal_status` | string \| null |
 | `device.manufacturer` | string \| null | `device.model` | string \| null |
 | `device.os_version` | string \| null | `device.sdk_int` | number \| null |
-| `device.android_id` | string \| null | `device.low_ram_device` | boolean \| null |
+| `device.device_id` | string \| null | `device.low_ram_device` | boolean \| null |
 | `device.ram_total_bytes` | number \| null | | |
 
 Example:
@@ -905,8 +915,10 @@ a time.
 
 **One token per upload.** Every try of one upload uses the token read when the upload started, or the token refreshed
 from it. If the app sets other tokens (or removes the authorization) while an upload runs, the upload stops after its
-current request and its records stay queued; the next upload uses the new settings. So records are never sent with a
-token that belongs to another user.
+current request and its records stay queued; no attempt is counted and no wait is stored. If `http.authorization` is
+still set, a new upload with the new tokens starts about 10 s later; if it was removed, the next upload starts with the
+next trigger. So one upload never mixes tokens. An app that switches users follows the logout order in the README, so
+that one user's records are not sent with the next user's token.
 
 **Request.** `POST` to `refreshUrl`. Headers: `Content-Type` (JSON or form, see below), then `refreshHeaders`; no
 `Authorization` header is added. The body is `refreshPayload`, with every `{refreshToken}` in its string values

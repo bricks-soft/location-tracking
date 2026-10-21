@@ -51,7 +51,10 @@ class DefaultRecordFactoryTest {
     private val configStore = FakeConfigStore(runtime = runtime)
     private val device = FakeDeviceMonitor().apply { batteryValue = BatterySnapshot(0.81f, false) }
     private val providers = FakeProviderFactory(ProviderKind.GMS)
-    private val factory = DefaultRecordFactory(configStore, device, providers, clock)
+    private val deviceId = object : DeviceDetails by DeviceDetails.NONE {
+        override fun deviceId() = DEVICE_ID
+    }
+    private val factory = DefaultRecordFactory(configStore, device, providers, clock, deviceId)
 
     @After
     fun tearDown() {
@@ -368,7 +371,8 @@ class DefaultRecordFactoryTest {
         assertEquals(
             setOf(
                 "uuid", "event", "timestamp", "recorded_at", "elapsed_realtime_ms", "boot_count", "is_moving",
-                "odometer", "mock", "coords", "activity", "battery", "backend", "network", "extras", "provider",
+                "odometer", "mock", "coords", "activity", "battery", "backend", "network", "device", "extras",
+                "provider",
             ),
             json.keys().asSequence().toSet(),
         )
@@ -402,6 +406,7 @@ class DefaultRecordFactoryTest {
               "battery": { "level": 0.81, "is_charging": false },
               "backend": "gms",
               "network": "wifi",
+              "device": { "device_id": "$DEVICE_ID" },
               "extras": { "driver_id": 7 },
               "provider": { "enabled": true, "gps": true, "network": true, "permission": "always",
                             "accuracy": "precise", "backend": "gms" }
@@ -416,9 +421,11 @@ class DefaultRecordFactoryTest {
         val details = object : DeviceDetails {
             override fun forHeartbeat() = DeviceSnapshot(backgroundRestricted = true, standbyBucket = "rare", diskFreeBytes = 5L, thermalStatus = "light")
 
-            override fun forTrackingStart() = DeviceSnapshot(manufacturer = "Google", model = "Pixel 8", osVersion = "15", sdkInt = 35, androidId = "a1b2")
+            override fun forTrackingStart() = DeviceSnapshot(manufacturer = "Google", model = "Pixel 8", osVersion = "15", sdkInt = 35)
 
             override fun batteryDetails() = BatteryDetails(31.5f, "good", "usb")
+
+            override fun deviceId() = "a1b2"
         }
         val withDetails = DefaultRecordFactory(configStore, device, providers, clock, details)
         device.connectivityValue = Connectivity(connected = true, type = ConnectivityType.CELLULAR)
@@ -427,11 +434,11 @@ class DefaultRecordFactoryTest {
         val start = withDetails.create(RecordEvent.TRACKING_START, Fixtures.location(), reason = "start")
         val location = withDetails.create(RecordEvent.LOCATION, Fixtures.location())
 
-        assertEquals(details.forHeartbeat(), heartbeat.device)
+        assertEquals(details.forHeartbeat().copy(deviceId = "a1b2"), heartbeat.device)
         assertEquals(details.batteryDetails(), heartbeat.batteryDetails)
-        assertEquals(details.forTrackingStart(), start.device)
+        assertEquals(details.forTrackingStart().copy(deviceId = "a1b2"), start.device)
         assertNull(start.batteryDetails)
-        assertNull(location.device)
+        assertEquals(DeviceSnapshot(deviceId = "a1b2"), location.device)
         assertNull(location.batteryDetails)
         assertEquals(ConnectivityType.CELLULAR, location.network)
 
@@ -441,8 +448,28 @@ class DefaultRecordFactoryTest {
         assertEquals("rare", json.getJSONObject("device").getString("standby_bucket"))
         assertEquals(31.5, json.getJSONObject("battery").getDouble("temperature"), 0.001)
         assertEquals("usb", json.getJSONObject("battery").getString("plugged"))
-        assertEquals("a1b2", RecordJson.toJson(start).getJSONObject("device").getString("android_id"))
+        assertEquals("a1b2", json.getJSONObject("device").getString("device_id"))
+        assertEquals("a1b2", RecordJson.toJson(start).getJSONObject("device").getString("device_id"))
+        assertFalse(RecordJson.toJson(start).getJSONObject("device").has("android_id"))
         assertEquals(heartbeat, RecordJson.fromJson(json))
+    }
+
+    @Test
+    fun `every record has device_id, inserted records included`() {
+        val records = RecordEvent.entries.map { factory.create(it, Fixtures.location()) } +
+            factory.fromExternal(JSONObject("""{"coords":{"latitude":1.5,"longitude":-2.25}}"""))
+
+        records.forEach { record ->
+            assertEquals(record.event.wire, DEVICE_ID, RecordJson.toJson(record).getJSONObject("device").getString("device_id"))
+        }
+    }
+
+    @Test
+    fun `without a device id, a location record has no device object`() {
+        val record = DefaultRecordFactory(configStore, device, providers, clock).create(RecordEvent.LOCATION, Fixtures.location())
+
+        assertNull(record.device)
+        assertFalse(RecordJson.toJson(record).has("device"))
     }
 
     @Test
@@ -465,5 +492,9 @@ class DefaultRecordFactoryTest {
         )
 
         assertEquals(record, RecordJson.fromJson(RecordJson.toJson(record)))
+    }
+
+    private companion object {
+        const val DEVICE_ID = "9774d56d682e549c"
     }
 }

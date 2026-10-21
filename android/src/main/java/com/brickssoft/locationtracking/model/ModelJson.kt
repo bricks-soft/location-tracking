@@ -145,6 +145,7 @@ object RecordJson {
     /** The `device` object of a record: only the readings that are set. */
     fun deviceToJson(d: DeviceSnapshot): JSONObject {
         val json = JSONObject()
+        d.deviceId?.let { json.put("device_id", it) }
         d.backgroundRestricted?.let { json.put("background_restricted", it) }
         d.standbyBucket?.let { json.put("standby_bucket", it) }
         d.diskFreeBytes?.let { json.put("disk_free_bytes", it) }
@@ -153,7 +154,6 @@ object RecordJson {
         d.model?.let { json.put("model", it) }
         d.osVersion?.let { json.put("os_version", it) }
         d.sdkInt?.let { json.put("sdk_int", it) }
-        d.androidId?.let { json.put("android_id", it) }
         d.lowRamDevice?.let { json.put("low_ram_device", it) }
         d.ramTotalBytes?.let { json.put("ram_total_bytes", it) }
         return json
@@ -168,7 +168,8 @@ object RecordJson {
         model = JsonUtil.optString(json, "model"),
         osVersion = JsonUtil.optString(json, "os_version"),
         sdkInt = JsonUtil.optInt(json, "sdk_int"),
-        androidId = JsonUtil.optString(json, "android_id"),
+        // `android_id`: the name before the rename, in tracking_start records queued by earlier round-3 builds
+        deviceId = JsonUtil.optString(json, "device_id") ?: JsonUtil.optString(json, "android_id"),
         lowRamDevice = JsonUtil.optBoolean(json, "low_ram_device"),
         ramTotalBytes = JsonUtil.optLong(json, "ram_total_bytes"),
     )

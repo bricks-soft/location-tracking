@@ -209,12 +209,35 @@ class RecordJsonTest {
                 geofence = GeofenceHit("home", GeofenceAction.DWELL, """{"a":"b"}"""),
             ),
             Fixtures.record(battery = BatterySnapshot.UNKNOWN, activity = ActivitySample.UNKNOWN, bootCount = -1),
+            Fixtures.record().copy(device = DeviceSnapshot(deviceId = "9774d56d682e549c")),
+            Fixtures.record(event = RecordEvent.TRACKING_START, reason = "start").copy(
+                device = DeviceSnapshot(deviceId = "d", manufacturer = "Google", model = "Pixel 8", sdkInt = 35),
+            ),
         )
 
         for (record in records) {
             assertEquals(record, RecordJson.fromJson(RecordJson.toJson(record, sentAt)))
             assertEquals(record, RecordJson.fromJson(JSONObject(RecordJson.toJson(record).toString())))
         }
+    }
+
+    @Test
+    fun `device_id is written inside device, and the old android_id is read as device_id`() {
+        val record = Fixtures.record().copy(device = DeviceSnapshot(deviceId = "9774d56d682e549c"))
+
+        assertJsonEquals("""{"device_id":"9774d56d682e549c"}""", RecordJson.toJson(record).getJSONObject("device"))
+
+        val queuedBefore = RecordJson.toJson(Fixtures.record(event = RecordEvent.TRACKING_START, reason = "start"))
+            .put("device", JSONObject().put("android_id", "a1b2").put("model", "Pixel 8"))
+        val parsed = RecordJson.fromJson(queuedBefore)
+        assertEquals(DeviceSnapshot(deviceId = "a1b2", model = "Pixel 8"), parsed.device)
+        assertJsonEquals("""{"device_id":"a1b2","model":"Pixel 8"}""", RecordJson.toJson(parsed).getJSONObject("device"))
+    }
+
+    @Test
+    fun `a record without device readings has no device key`() {
+        assertFalse(RecordJson.toJson(Fixtures.record()).has("device"))
+        assertFalse(RecordJson.toJson(Fixtures.record().copy(device = DeviceSnapshot())).has("device"))
     }
 
     @Test

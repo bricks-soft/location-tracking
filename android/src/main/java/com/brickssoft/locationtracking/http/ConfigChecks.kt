@@ -125,7 +125,7 @@ internal object ConfigChecks {
             network = ConnectivityType.WIFI,
             device = DeviceSnapshot(
                 backgroundRestricted = false, standbyBucket = "active", diskFreeBytes = 1L, thermalStatus = "none",
-                manufacturer = "m", model = "m", osVersion = "14", sdkInt = 34, androidId = "a", lowRamDevice = false,
+                manufacturer = "m", model = "m", osVersion = "14", sdkInt = 34, deviceId = "a", lowRamDevice = false,
                 ramTotalBytes = 1L,
             ),
             batteryDetails = BatteryDetails(30f, "good", "ac"),

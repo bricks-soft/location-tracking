@@ -77,11 +77,13 @@ Round 3: the changes the owner accepted from the comparison with the reference p
   `enabledchange` has a `reason`.
 - **State:** `lastStopReason` and `lastStopAt` in `getState()`; `warnings` in the result of `ready()`, `setConfig()`
   and `reset()`.
-- **Record fields:** `network` on every record; `device` readings (`background_restricted`, `standby_bucket`,
+- **Record fields:** `network` and `device.device_id` (on Android `Settings.Secure.ANDROID_ID`) on every record,
+  `insertLocation()` records included; `device` readings (`background_restricted`, `standby_bucket`,
   `disk_free_bytes`, `thermal_status`) and battery `temperature`, `health`, `plugged` on heartbeats; the phone
-  (`manufacturer`, `model`, `os_version`, `sdk_int`, `android_id`, `low_ram_device`, `ram_total_bytes`) on
-  `tracking_start`; `stopped_at` on `tracking_stop` reason `user_stopped`. 17 new template placeholders. Apps that
-  upload `android_id` declare "Device or other IDs" in Google Play's Data safety form.
+  (`manufacturer`, `model`, `os_version`, `sdk_int`, `low_ram_device`, `ram_total_bytes`) on `tracking_start`;
+  `stopped_at` on `tracking_stop` reason `user_stopped`. 17 new template placeholders. Apps that upload records
+  declare "Device or other IDs" in Google Play's Data safety form. With `rootProperty: "."`, an `http.params` key named
+  `network` or `device` is now dropped on every record (the record's keys win).
 - **`getDeviceInfo()`:** `backendFallbackReason`, `gmsStatus`, `hmsStatus`, `hmsCoreOutdated`,
   `locationAvailableHint`, `cpuCores`, `supportedAbis`.
 - **`tracking_stop` reason `user_stopped`**, written once after the user stopped the app (Settings → Force stop, or
@@ -95,7 +97,8 @@ Round 3: the changes the owner accepted from the comparison with the reference p
   at least `Retry-After`; 15 minutes after an authorization failure, ended by new tokens), which survives restarts.
   A `413` for a batch halves the batch size.
 - **Tokens:** one upload uses one token (or the token refreshed from it); an upload stops when the app changes the
-  authorization, and a refresh that finishes after the app set new tokens does not overwrite them.
+  authorization, and a new upload with the new tokens follows about 10 s later while `http.authorization` is set
+  (none when the app removed it). A refresh that finishes after the app set new tokens does not overwrite them.
 - **Location requests:** the `android` backend uses `gps` and `network` together for `'high'` and `'balanced'`, and
   drops network fixes while a GPS fix is recent; its `getCurrentPosition` asks the providers in parallel. A fix
   without an accuracy value counts as 1,000 km inaccurate (was 0 m). With HMS, the first fix counts as a successful

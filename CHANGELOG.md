@@ -64,6 +64,51 @@ version follows the Capacitor major version (Capacitor 8), as `@bricks-soft/cap-
 Round 3: the changes the owner accepted from the comparison with the reference plugins. Decisions:
 [docs/DECISIONS.md, Round 3](docs/DECISIONS.md#round-3-comparison-with-the-reference-plugins).
 
+### Breaking changes
+
+The version stays 8.x (the major version follows Capacitor), so these are listed here. Each one is explained under
+Added, Changed or Security below.
+
+- **Calls that now reject with `INVALID_ARGUMENT`:**
+  - `insertLocation()` without `coords.accuracy`, or with an accuracy of 0 or less. The TypeScript type
+    `InsertLocationInput` makes `accuracy` required.
+  - `ready()`, `setConfig()` and `reset()` with an `http.url` that has user info (`user:password@`) or a fragment, a
+    header name or value with non-ASCII characters or line breaks (`http.headers`,
+    `http.authorization.refreshHeaders`), or a template with an unknown placeholder or one that does not render to
+    valid JSON. Before, these were accepted and failed at upload time, or the unknown placeholder became empty.
+- **Results that changed:**
+  - `getState()` and the results of `ready()`, `setConfig()` and `reset()` return `accessToken`, `refreshToken`,
+    `refreshPayload` and `refreshHeaders` masked. An app that read refreshed tokens from there takes them from the
+    `authorization` event's `response` instead.
+  - `getCurrentPosition()` rejects at once with the OS error (for example `PERMISSION_DENIED` or `UNAVAILABLE`) when
+    the OS rejects the request, instead of `TIMEOUT` after the whole timeout.
+  - The `http` event's `responseText` has at most 16,384 characters.
+  - Text passed to `log()` has tokens, JWTs and URLs removed.
+  - TypeScript: `State` has the new required fields `lastStopReason` and `lastStopAt` (code that builds a `State`
+    object, for example in tests).
+- **Uploads:**
+  - A `3xx` answer is a failed upload; redirects are not followed. The upload URL must be the final one.
+  - With `rootProperty: "."`, an `http.params` key named `network` or `device` is dropped (the record's keys win).
+  - After an authorization failure, normal records wait 15 minutes unless the app sets new tokens.
+- **Records the server receives:**
+  - New keys on every record: `network` and `device` (`device.device_id` is the Android `ANDROID_ID`). Heartbeats
+    and `tracking_start` have new fields. A server that rejects unknown keys must accept them.
+  - New `tracking_stop` reason `user_stopped`, and `service_start_failed` also on Android 11–13. A server with a
+    fixed list of reasons must accept them.
+  - A fix of the `android` backend without an accuracy value has accuracy 1,000,000 m (was 0), so the accuracy
+    filter drops it.
+- **Tracking behavior:**
+  - On Android 11–13 without "Allow all the time" location, a restore from the background (reboot, killed process)
+    stops tracking with `tracking_stop` reason `service_start_failed` (and the resume notification when enabled),
+    instead of running without location.
+  - After the user stopped the app (Force stop), a heartbeat alarm or a service restart no longer starts tracking
+    again; the next `ready()` resumes it.
+- **Backup:** the database and the logs are no longer in Auto Backup or device transfer. A restored config does not
+  turn tracking on and has no tokens: the app sets the tokens again and calls `start()`.
+- **Google Play:** records now carry `ANDROID_ID` (`device.device_id`). An app that uploads it (the default record
+  shape, or a template with `<%= record %>` or `<%= device.device_id %>`) declares "Device or other IDs" in the Data
+  safety form.
+
 ### Added
 
 - **Upload job:** a JobScheduler job uploads queued records also when no tracking session runs and after the app's

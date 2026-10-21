@@ -1827,7 +1827,9 @@ debug APK, the back office with a tunnel ([4.3](#43-reaching-it-from-a-real-phon
 6. **[auto]** `node lt-js.mjs setConfig '{"config":{"http":{"authorization":{"accessToken":"m10-new","refreshToken":"m10-new-refresh"}}}}'`:
    within 30 s the held record arrives with `authorization: Bearer m10-new`.
 7. **[auto]** Write down the Keystore of the phone: `adb shell getprop ro.hardware.keystore` and whether
-   `adb shell pm list features | grep -i strongbox` prints a line.
+   `adb shell pm list features | grep -i strongbox` prints a line. The security level of the plugin's key: run
+   `adb logcat -c` before step 1, then `adb logcat -d | grep 'In generate_key'` after it shows
+   `com.brickssoft.locationtracking.secrets.v1` with `TRUSTED_ENVIRONMENT` (TEE) or `STRONGBOX`.
 
 **Pass / fail.** Pass when steps 2–6 hold. A token in the prefs file, an upload without the token after the restart
 or the reboot, or a damaged file that crashes the app or uploads without an `authorization` event, is a fail.
@@ -1854,7 +1856,11 @@ the plugin example debug APK; the back office with a tunnel; `lt-js.mjs`. A buil
    in the open.
 3. **[auto]** `curl -s 'localhost:8787/__records?event=location,motionchange' > m11.json`. Inside: records with
    accuracy about 20–100 m (network). Outside: records with accuracy under 20 m (GPS), and no record with a network
-   accuracy while GPS fixes arrive every few seconds.
+   accuracy while GPS fixes arrive every few seconds. A phone that does not move gives no `location` record after the
+   start (`distanceFilter`); then read the fixes from `adb shell dumpsys location | grep 'last location'` once a
+   minute (`gps` and `network` lines with `hAcc`) and count `network fix dropped` in the log (`logger.logLevel`
+   `verbose`). Indoors counts only when the `gps` line has no new fix: at a place with GPS reception, network fixes
+   are dropped there too.
 4. **[auto]** Outside: `node lt-js.mjs getCurrentPosition '{"timeout":30000,"persist":false,"maximumAge":0}'`: the
    accuracy is the GPS one.
 

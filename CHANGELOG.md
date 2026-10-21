@@ -129,10 +129,12 @@ Round 3: the changes the owner accepted from the comparison with the reference p
 
 ### Known limitations
 
-- Tested on Android emulators only (API 29–35, with and without Google Play services; DECISIONS R3.4). Not verified
-  on a real phone: HMS registration errors and timing, the hardware-backed Android Keystore, the `android` backend
-  with real GPS and network fixes, and the Android 11–13 restore refusal on phone makers' builds (runbook M-09 …
-  M-12).
+- Tested on Android emulators (API 29–35, with and without Google Play services) and on one real phone, a Samsung
+  Galaxy A24 with Android 16 (DECISIONS R3.4): there the encrypted tokens with the hardware-backed (TEE) Keystore,
+  without a reboot, and the `android` backend dropping network fixes while GPS fixes arrive. Not verified on a real
+  phone: HMS registration errors and timing, the tokens after a reboot, the `android` backend with network fixes only
+  (no satellites) and outdoors while moving, and the Android 11–13 restore refusal on phone makers' builds (runbook
+  M-09 … M-12).
 - Not tested: the regular job Android uses when the expedited-job quota is used up, and how Android 11 and 12 record
   an app update (the reason boot and update restores are not checked for a user stop).
 - `heartbeat.uploadKeepAwake` (default 10 s) can end before a slow upload: on the emulator the first heartbeat after

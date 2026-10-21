@@ -483,7 +483,7 @@ General rules:
   - 5xx, 429, or an I/O error (timeout, no connection): the same upload tries again after 2, 4 and 8 s (at most 4 tries, R2-Q18; ±20 % jitter and `Retry-After` since round 3), holding the upload lock; then as below.
   - 413 for a batch of more than one record (round 3): the batch size is halved and the same records are sent again.
   - 3xx: redirects are not followed (round 3); a failed upload like other non-2xx answers.
-  - Any other status, or the last failed try: the records stay queued, and `attempts` and `last_attempt_at` are updated once per upload. Round 3 adds a stored next-try time for normal records (`http/UploadWait.kt`) and an upload job (`http/UploadJobs.kt`); see [DECISIONS.md, Round 3](DECISIONS.md#round-3-comparison-with-the-reference-plugins).
+  - Any other status, or the last failed try: the records stay queued, and `attempts` and `last_attempt_at` are updated once per upload. Round 3 adds a stored next-try time for normal records (`http/UploadWait.kt`) and an upload job (`http/UploadJobs.kt`); see [DECISIONS.md, Round 3](DECISIONS.md#round-3-comparison-report).
 - One `http` event is emitted per HTTP request (401 + refresh + retry = 2 events; one per try). An invalid `http.url` is treated as no URL.
 
 **Templates.**

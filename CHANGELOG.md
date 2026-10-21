@@ -61,8 +61,8 @@ version follows the Capacitor major version (Capacitor 8), as `@bricks-soft/cap-
   per flavor, and per-flavor manifests that remove the other provider's receivers and permission.
 
 
-Round 3: the changes the owner accepted from the comparison with the reference plugins. Decisions:
-[docs/DECISIONS.md, Round 3](docs/DECISIONS.md#round-3-comparison-with-the-reference-plugins).
+Round 3: the changes the owner accepted from the comparison report. Decisions:
+[docs/DECISIONS.md, Round 3](docs/DECISIONS.md#round-3-comparison-report).
 
 ### Breaking changes
 

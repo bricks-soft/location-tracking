@@ -129,8 +129,15 @@ Round 3: the changes the owner accepted from the comparison with the reference p
 
 ### Known limitations
 
-- Not verified on a real phone: the Android 11–13 restore refusal, the expedited upload job, HMS registration timing,
-  and the Android Keystore encryption (unit tests only).
+- Tested on Android emulators only (API 29–35, with and without Google Play services; DECISIONS R3.4). Not verified
+  on a real phone: HMS registration errors and timing, the hardware-backed Android Keystore, the `android` backend
+  with real GPS and network fixes, and the Android 11–13 restore refusal on phone makers' builds (runbook M-09 …
+  M-12).
+- Not tested: the regular job Android uses when the expedited-job quota is used up, and how Android 11 and 12 record
+  an app update (the reason boot and update restores are not checked for a user stop).
+- `heartbeat.uploadKeepAwake` (default 10 s) can end before a slow upload: on the emulator the first heartbeat after
+  entering Doze took 7.4 s to reach the server, plus 4 s for the answer. The upload then continues when the CPU next
+  wakes.
 
 Round 2: the field-force audit setup, a native API for companion plugins, and end-to-end tests on an Android
 emulator. Decisions: [docs/DECISIONS.md](docs/DECISIONS.md#round-2-field-force-audit-companion-api-and-avd-tests).

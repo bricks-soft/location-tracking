@@ -65,8 +65,8 @@ import kotlin.coroutines.cancellation.CancellationException
  *   from them ([AuthorizationManager]); if the app configured other tokens in the meantime, the upload stops and keeps
  *   its records (recommendation 2). No wait is stored and no attempt is counted. If `http.authorization` is still set,
  *   a new automatic pass runs [CHANGED_RETRY_MS] later with the new tokens (a coroutine timer, and the upload job for
- *   the case that this process dies); if it was removed, nothing is started (README, "Logging out and switching
- *   users").
+ *   the case that this process dies); automatic passes before then upload nothing, so other triggers join that pass.
+ *   If it was removed, nothing is started (README, "Logging out and switching users").
  * - 2xx deletes the records; a failure that ends the upload keeps them and marks one attempt. One `Http` event
  *   is emitted per HTTP request (every try; a 401 that triggers a token refresh and a retry yields two). At most
  *   [HttpSupport.MAX_UPLOAD_RESPONSE_BYTES] of an answer are read into the event.
@@ -90,7 +90,9 @@ import kotlin.coroutines.cancellation.CancellationException
  * after this process died: after an automatic pass that could not send due records because the device was offline
  * (or on cellular with `disableAutoSyncOnCellular`), the upload job is scheduled to run as soon as a (unmetered)
  * network is available; after a failed automatic upload it is scheduled for the stored next-try time; when the queue
- * becomes empty it is cancelled. [onTrackingStopped] schedules it at once as a safety net.
+ * becomes empty it is cancelled. [onTrackingStopped] schedules it at once as a safety net, and so does every automatic
+ * upload outside the job while tracking is off: such a process has no foreground service, so Android can freeze it
+ * (cached app freezer) or kill it during the upload and its retry waits.
  *
  * **`http.syncInterval` (seconds, 0 = off).** While tracking is on (`runtime.enabled`) with `syncInterval > 0` and
  * `autoSync`, normal records (every event that is not a priority record) are held until the oldest pending normal
@@ -180,8 +182,16 @@ class OkHttpSyncer(
 
     private val stateWatcherLaunched = AtomicBoolean(false)
 
+    /** `elapsedRealtime` (deep sleep included) when the last upload request ended, or null. */
+    @Volatile
+    private var lastExchangeEnd: Long? = null
+
     /** The timer of the pass after an upload stopped for new tokens; guarded by [uploadLock]. */
     private var changedRetry: Job? = null
+
+    /** True until [changedRetry] runs: automatic passes upload nothing meanwhile. */
+    @Volatile
+    private var changedPause = false
 
     override fun start() {
         if (!started.compareAndSet(false, true)) return
@@ -213,7 +223,7 @@ class OkHttpSyncer(
     override suspend fun runScheduledPass() {
         repeat(MAX_JOB_PASSES) {
             val result = uploadLock.withLock {
-                autoPass()
+                autoPass(fromJob = true)
                 lastPass
             }
             // "After a success with records left, it runs again at once": records that arrived during the pass.
@@ -295,12 +305,12 @@ class OkHttpSyncer(
      * One automatic pass: the upload [SyncPolicy] allows, then the timer for what stays queued. Caller holds
      * [uploadLock].
      */
-    private suspend fun autoPass() {
+    private suspend fun autoPass(fromJob: Boolean = false) {
         val number = passesStarted.incrementAndGet()
         try {
             lastPass = PassResult.NOTHING
             val lookup = try {
-                uploadPass()
+                uploadPass(fromJob)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -317,7 +327,12 @@ class OkHttpSyncer(
      * Uploads what [SyncPolicy.autoScope] allows. Returns the oldest-normal-record lookup it made if it left the
      * queue unchanged, else null.
      */
-    private suspend fun uploadPass(): OldestNormal? {
+    private suspend fun uploadPass(fromJob: Boolean): OldestNormal? {
+        if (changedPause) {
+            // Triggers during the pause after new tokens (the upload job's included) wait for the pass at its end.
+            Logger.d(TAG, "http.authorization changed: automatic uploads wait for the pass after the pause")
+            return null
+        }
         val hint = connectivityHint.getAndSet(null)
         // Connectivity regained since the last pass: retry at once. Cleared here, not in the event handler, so a pass
         // that fails while the event arrives cannot set the wait again after the handler cleared it.
@@ -360,6 +375,12 @@ class OkHttpSyncer(
             scheduler.schedule(0L, unmetered = true)
         }
         if (plan == SyncPolicy.Scope.NONE) return lookup
+        if (!fromJob && !configStore.runtime.value.enabled) {
+            // Without a tracking session nothing keeps this process running: Android 11+ freezes a cached process
+            // (seen on API 34 during the retry waits) and may kill it. The job runs as soon as possible, waits for the
+            // upload lock and keeps the process active; if this process dies, it finishes the upload.
+            scheduler.schedule(0L)
+        }
         val drained = drain(plan)
         var anySuccess = drained.anySuccess
         val failure = drained.failure
@@ -401,9 +422,11 @@ class OkHttpSyncer(
             return
         }
         Logger.i(TAG, "http.authorization changed during the upload; next upload in ${CHANGED_RETRY_MS / MS_PER_SECOND} s")
+        changedPause = true
         changedRetry?.cancel()
         changedRetry = scope.launch(dispatchers.io) {
             delay(CHANGED_RETRY_MS)
+            changedPause = false
             requestPass()
         }
         // The job replaces the waiting one; a longer stored wait keeps its time, as normal records wait for it anyway.
@@ -803,7 +826,18 @@ class OkHttpSyncer(
         val body = BodyBuilder.build(records, config, clock.now())
         val headers = HttpSupport.headers(HttpSupport.JSON_CONTENT_TYPE, config.headers, token)
         val request = HttpSupport.request(url, config.method.wire, headers, body)
-        return HttpSupport.execute(client, request, dispatchers.io, HttpSupport.MAX_UPLOAD_RESPONSE_BYTES)
+        // The client does not repeat a request after a connection failure (HttpSupport.sharedClient), so a pooled
+        // connection the server has closed would fail the try. OkHttp checks a pooled connection only after 10 s idle,
+        // on a clock that stops in deep sleep; many servers close idle connections after 5 s (Node.js, Apache).
+        val idleSince = lastExchangeEnd
+        if (idleSince != null && clock.elapsedRealtime() - idleSince > POOLED_CONNECTION_MAX_IDLE_MS) {
+            client.connectionPool.evictAll()
+        }
+        try {
+            return HttpSupport.execute(client, request, dispatchers.io, HttpSupport.MAX_UPLOAD_RESPONSE_BYTES)
+        } finally {
+            lastExchangeEnd = clock.elapsedRealtime()
+        }
     }
 
     private fun clientFor(timeoutMs: Long): OkHttpClient {
@@ -916,6 +950,9 @@ class OkHttpSyncer(
         const val MAX_JOB_PASSES = 5
 
         const val AUTH_CHANGED = "http.authorization changed during the upload"
+
+        /** Pooled connections idle longer than this are closed before an upload request (see [send]). */
+        const val POOLED_CONNECTION_MAX_IDLE_MS = 4_000L
 
         /** The wait before the pass that follows an upload stopped for new tokens (rule 2a). */
         const val CHANGED_RETRY_MS = 10_000L

@@ -125,6 +125,9 @@ class OkHttpSyncerTest {
     private val uploadScheduler = RecordingUploadScheduler()
 
     /** Records what the syncer asks of the upload job. */
+    /** The upload job at once: the safety net of an automatic upload while tracking is off. */
+    private val JOB_NOW = "schedule(0 s)"
+
     private class RecordingUploadScheduler : UploadScheduler {
         val calls = CopyOnWriteArrayList<String>()
 
@@ -576,7 +579,7 @@ class OkHttpSyncerTest {
         syncer.insert(rec(1))
         advanceUntilIdle()
         repeat(4) { takeRequest() }
-        assertEquals(listOf("schedule(30 s)"), uploadScheduler.calls)
+        assertEquals(listOf(JOB_NOW, "schedule(30 s)"), uploadScheduler.calls)
 
         clock.advance(29_000)
         syncer.insert(rec(2))
@@ -588,7 +591,7 @@ class OkHttpSyncerTest {
         advanceUntilIdle()
         assertEquals(listOf(listOf("r1"), listOf("r2"), listOf("r3")), takeUuids(3))
         assertTrue(store.all.isEmpty())
-        assertEquals(listOf("schedule(30 s)"), uploadScheduler.calls.take(1))
+        assertEquals(listOf(JOB_NOW, "schedule(30 s)"), uploadScheduler.calls.take(2))
         assertNull(nextTryStore.load())
     }
 
@@ -608,7 +611,7 @@ class OkHttpSyncerTest {
 
         assertEquals(
             listOf(24, 48, 96, 192, 384, 720, 720, 720).map { "schedule($it s)" },
-            uploadScheduler.calls.filter { it.startsWith("schedule") },
+            uploadScheduler.calls.filter { it.startsWith("schedule") && it != JOB_NOW },
         )
         assertEquals(8, nextTryStore.load()!!.failures)
     }
@@ -627,7 +630,7 @@ class OkHttpSyncerTest {
 
         // Retry-After asks for longer than the next in-upload retry: the upload ends after its first try.
         assertEquals(1, server.requestCount)
-        assertEquals(listOf("schedule(600 s)"), uploadScheduler.calls)
+        assertEquals(listOf(JOB_NOW, "schedule(600 s)"), uploadScheduler.calls)
         clock.advance(599_000)
         syncer.insert(rec(2))
         advanceUntilIdle()
@@ -747,6 +750,54 @@ class OkHttpSyncerTest {
     }
 
     @Test
+    fun `a pooled connection idle for more than 4 s is not reused, so a connection the server closed does not fail a try`() =
+        runTest {
+            // Seen on API 34 (P-R10): Node.js closes idle connections after 5 s, and the shared client repeats no
+            // request after a connection failure, so the reused connection failed with "unexpected end of stream".
+            server.enqueue(ok().setSocketPolicy(SocketPolicy.DISCONNECT_AT_END))
+            server.enqueue(ok())
+            val syncer = syncer(client = HttpSupport.sharedClient())
+            syncer.insert(rec(1))
+            advanceUntilIdle()
+            Thread.sleep(200) // the server's close reaches the client socket
+            clock.advance(5_000)
+            syncer.insert(rec(2))
+            advanceUntilIdle()
+
+            assertEquals(listOf(200, 200), httpEvents.map { it.status })
+            assertTrue(store.all.isEmpty())
+        }
+
+    @Test
+    fun `with tracking off an automatic upload schedules the job first, so a frozen or killed process cannot strand records`() =
+        runTest {
+            // Seen on API 34 (P-R03): the cached app freezer froze the process during a retry wait.
+            server.enqueue(ok())
+            val syncer = syncer()
+            syncer.insert(rec(1))
+            advanceUntilIdle()
+            assertEquals(listOf(JOB_NOW, "cancel"), uploadScheduler.calls)
+        }
+
+    @Test
+    fun `no safety-net job while tracking is on, nor in the pass the job runs`() = runTest {
+        configStore.updateRuntime { it.copy(enabled = true) }
+        server.enqueue(ok())
+        val syncer = syncer()
+        syncer.insert(rec(1))
+        advanceUntilIdle()
+        assertEquals(listOf("cancel"), uploadScheduler.calls)
+
+        configStore.updateRuntime { it.copy(enabled = false) }
+        uploadScheduler.calls.clear()
+        store.insert(rec(2))
+        server.enqueue(ok())
+        syncer.runScheduledPass()
+        assertTrue(store.all.isEmpty())
+        assertEquals(listOf("cancel"), uploadScheduler.calls)
+    }
+
+    @Test
     fun `the job runs another pass when records arrived during a successful one`() = runTest {
         val syncer = syncer()
         val inserted = AtomicBoolean(false)
@@ -833,7 +884,7 @@ class OkHttpSyncerTest {
 
         assertEquals(1, server.requestCount)
         assertEquals(1, store.attempts("r1"))
-        assertEquals(listOf("schedule(30 s)"), uploadScheduler.calls)
+        assertEquals(listOf(JOB_NOW, "schedule(30 s)"), uploadScheduler.calls)
     }
 
     @Test
@@ -1053,7 +1104,7 @@ class OkHttpSyncerTest {
         advanceUntilIdle()
         assertEquals(2, server.requestCount)
         assertEquals(NextTry.Reason.AUTHORIZATION, nextTryStore.load()!!.reason)
-        assertEquals(listOf("schedule(900 s)"), uploadScheduler.calls)
+        assertEquals(listOf(JOB_NOW, "schedule(900 s)"), uploadScheduler.calls)
 
         clock.advance(14 * 60_000L)
         syncer.insert(rec(2))
@@ -1119,7 +1170,34 @@ class OkHttpSyncerTest {
         assertEquals(listOf("Bearer userA", "Bearer userB"), tokens.toList())
         assertTrue(store.all.isEmpty())
         assertEquals(listOf(503, 200), httpEvents.map { it.status })
-        assertEquals(listOf("schedule(10 s)", "cancel"), uploadScheduler.calls)
+        assertEquals(listOf(JOB_NOW, "schedule(10 s)", JOB_NOW, "cancel"), uploadScheduler.calls)
+    }
+
+    @Test
+    fun `the upload job during the 10 s pause after new tokens uploads nothing, the pass at the end does`() = runTest {
+        // Seen on API 34 (P-R11): with tracking off the safety-net job started at once and sent the records 2 s after
+        // the stop.
+        http { it.copy(authorization = jwt(accessToken = "userA")) }
+        val tokens = CopyOnWriteArrayList<String?>()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                tokens += request.getHeader("Authorization")
+                if (tokens.size == 1) http { it.copy(authorization = jwt(accessToken = "userB")) }
+                return MockResponse().setResponseCode(if (tokens.size == 1) 503 else 200)
+            }
+        }
+        val syncer = syncer()
+        syncer.insert(rec(1))
+        advanceTimeBy(3_000) // the 503, the 2 s wait, then the stop before the retry
+
+        syncer.runScheduledPass()
+        syncer.insert(rec(2))
+        advanceTimeBy(5_000)
+        assertEquals(listOf("Bearer userA"), tokens.toList())
+
+        advanceUntilIdle()
+        assertEquals("Bearer userB", tokens.drop(1).distinct().single())
+        assertTrue(store.all.isEmpty())
     }
 
     @Test
@@ -1139,7 +1217,7 @@ class OkHttpSyncerTest {
 
         assertEquals(1, server.requestCount)
         assertEquals(listOf("r1"), store.all.map { it.uuid })
-        assertTrue(uploadScheduler.calls.isEmpty())
+        assertEquals(listOf(JOB_NOW), uploadScheduler.calls) // the safety net only, no new pass
         assertNull(nextTryStore.load())
     }
 

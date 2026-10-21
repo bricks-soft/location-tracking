@@ -767,6 +767,8 @@ access that is not a captive portal, and not blocked for the app by Doze or Data
     `disableAutoSyncOnCellular`): the job runs as soon as a network (an unmetered one) is available;
   - after a failed automatic upload: the job runs at the stored next-try time;
   - when tracking stops: the job runs at once, so the final records leave the phone;
+  - when an automatic upload starts while tracking is off: the job runs at once and finishes the upload if Android
+    freezes or ends the app's process during it (no foreground service keeps the process running then);
   - when the queue becomes empty, the job is cancelled;
 - when the app calls `sync()`, which uploads the whole queue regardless of `autoSync`, `autoSyncThreshold`,
   `syncInterval`, `disableAutoSyncOnCellular`, the stored next-try time and the reported connectivity.
@@ -916,8 +918,8 @@ a time.
 **One token per upload.** Every try of one upload uses the token read when the upload started, or the token refreshed
 from it. If the app sets other tokens (or removes the authorization) while an upload runs, the upload stops after its
 current request and its records stay queued; no attempt is counted and no wait is stored. If `http.authorization` is
-still set, a new upload with the new tokens starts about 10 s later; if it was removed, the next upload starts with the
-next trigger. So one upload never mixes tokens. An app that switches users follows the logout order in the README, so
+still set, a new upload with the new tokens starts about 10 s later, and automatic uploads wait until then (`sync()`
+does not); if it was removed, the next upload starts with the next trigger. So one upload never mixes tokens. An app that switches users follows the logout order in the README, so
 that one user's records are not sent with the next user's token.
 
 **Request.** `POST` to `refreshUrl`. Headers: `Content-Type` (JSON or form, see below), then `refreshHeaders`; no

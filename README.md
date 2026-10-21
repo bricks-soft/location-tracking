@@ -642,7 +642,7 @@ The upload rules (priority records, retries, templates, body shapes) are describ
 - One upload uses one token: the token read when the upload starts, or the token refreshed from it after a `401`.
   If the app changes the authorization during an upload, the upload stops and the records stay queued. If
   `http.authorization` is still set, a new upload with the new tokens starts about 10 s later (also when tracking is
-  off or the app's process has ended, through the upload job). If the app removed the authorization (step 3 below),
+  off or the app's process has ended, through the upload job); automatic uploads wait until then, `sync()` does not. If the app removed the authorization (step 3 below),
   nothing starts until the next trigger (a new record, the network returning, `sync()`). So an app that sets the next
   user's tokens without the logout steps below gets the queued records uploaded with them. A refresh that finishes
   after the app set new tokens does not overwrite them.
@@ -969,8 +969,8 @@ How to measure the cost on a real phone: procedure M-04 in the
   wait), and a successful upload ends both. Priority records and `sync()` are not held back.
 - **Uploads when the app is not running.** The plugin schedules an Android job (JobScheduler) for queued records: when
   the device is offline it runs as soon as a network is available, after a failed upload it runs at the stored next
-  time, and when tracking stops it is scheduled to run right away once. So records are uploaded also after the app's
-  process has ended.
+  time, and when tracking stops, or an upload starts while tracking is off, it is scheduled to run right away once. So
+  records are uploaded also after the app's process has ended, or when Android freezes it in the background.
   On Android 12+ the job is expedited when it should run at once.
 - Records are uploaded when a record is inserted (at least every heartbeat while tracking), when the network comes
   back, when tracking starts, by the upload job, and on `sync()`. With `syncInterval` above 0, a timer also uploads
@@ -1057,7 +1057,7 @@ tracking has been started (or resumed) in the app's process.
 | `notificationaction` | `{ id }` | A notification action button was tapped. |
 | `authorization` | `{ success, status, error?, response? }` | A JWT refresh was attempted, successfully or not, or the stored tokens cannot be decrypted (`success: false`, `status: 0`, `error` says to set the tokens again). `response` is the parsed JSON body of the refresh response. |
 | `locationerror` | `{ code, message, backend, retryInMs }` | The OS rejected the location request (`code` is an [error code](#error-codes) such as `PERMISSION_DENIED` or `UNAVAILABLE`). Tracking stays on and the request is made again after `retryInMs` (10 s, doubling up to 5 minutes; `null` when no retry is scheduled). |
-| `storagefull` | `{ uuid, event, diskFreeBytes }` | A record could not be stored because the phone's storage is full. `diskFreeBytes` is the free space of the app's storage, or `null`. Show the user a "storage full" message: until space is freed, records are lost. |
+| `storagefull` | `{ uuid, event, diskFreeBytes }` | A record could not be stored because the phone's storage is full. `diskFreeBytes` is the free space of the app's storage, or `null`. Show the user a "storage full" message: until space is freed, records are lost. `insertLocation()` sends no event; it rejects with `IO_ERROR`. |
 
 ## Companion plugins (native API)
 

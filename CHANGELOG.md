@@ -67,7 +67,8 @@ Round 3: the changes the owner accepted from the comparison with the reference p
 ### Added
 
 - **Upload job:** a JobScheduler job uploads queued records also when no tracking session runs and after the app's
-  process ended: when a network returns, at the next allowed time after a failure, and once when tracking stops
+  process ended: when a network returns, at the next allowed time after a failure, once when tracking stops, and at
+  the start of every upload while tracking is off, so Android cannot freeze or kill the process in the middle of it
   (expedited on Android 12+ when it should run at once). `ready()` starts the uploader.
 - **`http.maxRetryAfter`** (s, default 3600): the longest `Retry-After` of a `429` or `503` the plugin waits for.
 - **`heartbeat.uploadKeepAwake`** (s, 0–60, default 10): a heartbeat keeps the CPU awake until its upload has
@@ -92,7 +93,8 @@ Round 3: the changes the owner accepted from the comparison with the reference p
 ### Changed
 
 - **Uploads:** redirects are not followed (a `3xx` is a failed upload) and OkHttp no longer repeats a request after a
-  connection failure by itself; at most 16 KB of an upload answer is read. The 2, 4 and 8 s retries are moved by up to
+  connection failure by itself; idle connections older than 4 s are closed before an upload, so a connection the
+  server already closed does not fail it. At most 16 KB of an upload answer is read. The 2, 4 and 8 s retries are moved by up to
   20 %. After a failed automatic upload, normal records wait for a stored next-try time (30 s doubling to 15 minutes,
   at least `Retry-After`; 15 minutes after an authorization failure, ended by new tokens), which survives restarts.
   A `413` for a batch halves the batch size.

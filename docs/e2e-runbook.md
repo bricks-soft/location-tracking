@@ -1000,8 +1000,12 @@ Use this setup when a procedure says "common setup".
 
 1. **[person]** Turn on USB debugging on the phone (Settings → About phone → tap "Build number" 7 times; then
    Settings → Developer options → USB debugging) and connect it by USB. Accept the "Allow USB debugging?" dialog.
+   Over Wi-Fi instead (Android 11+, phone and host on the same network): **[auto]** `scripts/adb-wifi.sh pair qr.png`
+   shows a QR code (in the terminal and in `qr.png`); **[person]** turns on Developer options → Wireless debugging,
+   taps "Pair device with QR code" and scans it. The script pairs and connects, and prints the serial.
 2. **[auto]** `adb devices` lists the phone as `device`. With an emulator also running, use `adb -s <serial>` and
-   `E2E_SERIAL`.
+   `E2E_SERIAL`. When the phone has a screen lock: `scripts/adb-wifi.sh screen-timeout` (30 minutes; the old value is
+   saved on the phone), and `scripts/adb-wifi.sh screen-timeout-restore` at the end of the procedure.
 3. **[auto]** Record the phone: `adb shell getprop ro.product.manufacturer`, `ro.product.model`,
    `ro.build.version.release`, `ro.build.version.sdk`, `ro.build.fingerprint`, and
    `adb shell dumpsys battery | grep -E 'level|status|temperature'`.

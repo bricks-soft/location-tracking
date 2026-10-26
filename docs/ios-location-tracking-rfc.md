@@ -20,8 +20,9 @@ plugin behavior only; what an app or its server does with the records is out of 
   new window, as on Android.
 - **Geofence capacity: 20**, the native limit. Extra geofences reject with `TOO_MANY_GEOFENCES`; no rotation.
 - **`device.device_id` is `identifierForVendor`.**
-- **Core Motion confidence maps low/medium/high to 25/75/100.** With the default
-  `minimumActivityRecognitionConfidence` of 75, medium and high count; a threshold above 75 means high only.
+- **Core Motion confidence maps low/medium/high to 33/66/100**, the values Transistor reports on iOS. With the
+  default `minimumActivityRecognitionConfidence` of 75 only high counts, like Transistor's iOS default of 70; a
+  threshold of 66 or lower also accepts medium.
 
 ## Approach
 
@@ -140,8 +141,8 @@ Everything not listed behaves as on Android.
 ## Test plan
 
 1. **Unit (XCTest):** the Android unit tests for motion, filters, odometer, heartbeat window (179 s vs 180 s), polygon,
-   dwell, upload wait and templates, ported with the same inputs and outputs; confidence boundaries (thresholds 25,
-   75, 76); the deadline across mode switch, restore, reboot and clock changes.
+   dwell, upload wait and templates, ported with the same inputs and outputs; confidence boundaries (thresholds 33,
+   66, 67); the deadline across mode switch, restore, reboot and clock changes.
 2. **Storage and HTTP:** SQLite reopen and interrupted writes; real `URLSession` against the e2e kit's mock server: 2xx
    with a large body, 3xx, 401 refresh, token change mid-upload, 413, `Retry-After`, timeout, stable UUIDs on retry.
 3. **Package and bridge:** `npm pack` tarball in a fresh Capacitor 8 app via SPM and CocoaPods; every method, the

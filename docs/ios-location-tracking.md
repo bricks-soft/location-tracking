@@ -70,10 +70,10 @@ upload running for at most `heartbeat.uploadKeepAwake` seconds.
   nothing, as Android does. Starting updates in the background needs Always authorization; with When In Use, the
   restore waits until the app is next active.
 - **Check-in notification** (Android's resume notification): opt-in through `notification.resume` `enabled`, `title`
-  and `text`, plus iOS-only `delay` (s, default 600; a lower value than `heartbeat.maxInterval` + 60 is raised to it with a
-  warning, as Android clamps config). While tracking runs, one
-  local notification (`UNTimeIntervalNotificationTrigger`) stays pending `delay` ahead; each fix or record moves it
-  out (at most once a minute), so it fires only after a reboot, a memory kill or a force-quit with
+  and `text`, plus iOS-only `delay` (s, default 600; below `heartbeat.maxInterval` + 60 it is raised to that with a
+  warning, as Android's `ConfigValidator` clamps). While tracking runs, one local notification
+  (`UNTimeIntervalNotificationTrigger`) stays pending `delay` ahead; each fix or record moves it out (at most once a
+  minute), so it fires only after a reboot, a memory kill or a force-quit with
   `stopOnTerminate: false`. It is cancelled on `stop()`, `terminate` and the session's end, never scheduled past the
   deadline, and needs notification permission; a delivered one is removed when tracking starts. A tap opens the app
   and the launch restore resumes the session, recorded as `restore`: Capacitor's `NotificationRouter` owns the
@@ -92,8 +92,7 @@ approximate accuracy, stored geofences stay inactive and a `locationerror` event
 transport retries, `http.timeout` per request. Any 2xx deletes the uploaded records whatever the body says; the `http`
 event carries at most 16 KB of the response. Retry, `Retry-After`, stored backoff, token refresh, credential-change
 and 413 rules match Android. Bodies come from the host-supplied templates. When tracking is off, queued records upload
-at the next launch or in a best-effort `BGAppRefreshTask`
-(`com.brickssoft.locationtracking.refresh`).
+at the next launch or in a best-effort `BGAppRefreshTask` (`com.brickssoft.locationtracking.refresh`).
 
 **Storage.** SQLite in Application Support, excluded from backup, protected until first unlock so background
 launches can write while locked. Tokens go in the Keychain. **Native API:** Swift `LocationTrackingNative` and
@@ -123,9 +122,8 @@ TypeScript: `src/definitions.ts` adds `requestTemporaryFullAccuracy({ purposeKey
 `UNIMPLEMENTED`. `testing/e2e-kit/src/types.ts` follows. The README gains an iOS setup section.
 
 Host setup: `UIBackgroundModes` `location` and `fetch`, `BGTaskSchedulerPermittedIdentifiers` with
-`com.brickssoft.locationtracking.refresh`, the When In Use,
-Always (see Authorization) and Motion usage strings, `NSLocationTemporaryUsageDescriptionDictionary` if the precision
-method is used, and the `bootstrap()` call.
+`com.brickssoft.locationtracking.refresh`, the When In Use, Always (see Authorization) and Motion usage strings,
+`NSLocationTemporaryUsageDescriptionDictionary` if the precision method is used, and the `bootstrap()` call.
 
 ## Android parity
 
@@ -155,7 +153,7 @@ Everything not listed behaves as on Android.
   a killed stationary app can stay dark.
 - `applicationWillTerminate` is not guaranteed, and iOS may also send it when the system ends a running background
   app; with `stopOnTerminate: true` that stops tracking too.
-- DWELL is synthesized from fixes, so it fires only while the process runs.
+- DWELL is synthesized from fixes, so it fires only while the process runs, even with Always.
 - Heartbeats and uploads run only while iOS lets the app run, never before the first unlock after a reboot.
 - `identifierForVendor` changes once all of the vendor's apps are removed and one is reinstalled; servers should not
   treat it as permanent.
@@ -171,15 +169,16 @@ Everything not listed behaves as on Android.
    `NOT_READY` allowlist, listeners, watches surviving `stop()`. Existing TS and Android tests still pass.
 4. **Runtimes:** route tracking on an iOS 15 or 16 runtime and on the current iOS; geofences `UNAVAILABLE` below 17,
    `CLMonitor` on 17, service session on 18+.
-5. **Simulator scenarios (CI):** GPX routes moving and stationary, background, motion denied, approximate accuracy,
-   offline replay, terminate with `stopOnTerminate` true and false, simulator restart; the check-in notification is
-   scheduled, moved and cancelled as above.
-6. **Real iPhone (BrowserStack), Release:** locked background route by GPS changes with the blue indicator, When In
-   Use and Always prompts, approximate accuracy, force-quit, offline replay.
+5. **Simulator scenarios (CI):** GPX routes moving and stationary, background, motion unavailable, approximate
+   accuracy, offline replay, kill and terminate with `stopOnTerminate` true and false, simulator restart; the check-in
+   notification moves, cancels, fires after a kill and restores the original deadline on tap, as above.
+6. **Real iPhone (BrowserStack), Release:** background route by GPS changes with the blue indicator, When In Use,
+   Always and Motion prompts granted and denied, approximate accuracy, force-quit, offline replay.
 7. **Device QA before release**, for what needs a carried phone: with Always and `stopOnTerminate: false`, `SIGKILL`
    and move, expecting `restore` with the original deadline and one `stop_after_elapsed` after it; reboot, unlock and
-   move; the check-in notification after reboot and force-quit (no Apple document says pending requests survive a
-   reboot); motion while moving; battery over a day.
+   move, recording whether tracking restored; the check-in notification after reboot (also with the phone off past
+   the fire time) and force-quit, since no Apple document says pending requests survive a reboot; motion while
+   moving; a day of tracking: battery, and no check-in fires.
 
 ## Open
 

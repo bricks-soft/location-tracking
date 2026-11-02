@@ -74,7 +74,7 @@ whether the user really kept tracking on.
 | Platform | Status |
 |---|---|
 | Android (API 24+, Kotlin) | ✔ Supported |
-| iOS | Planned for a later phase. Until then every call rejects with "not implemented on ios". |
+| iOS 15+ | Native route tracking, heartbeat, restore, positions and HTTP sync. Geofencing follows in stage 3. |
 | Web | Stub for development only: positions through `navigator.geolocation`, an in-memory config, permissions and device info. Nothing is stored or uploaded, and tracking can't be started. Everything else rejects with `UNIMPLEMENTED`. See [Web stub](#web-stub). |
 
 ## Installation
@@ -1458,6 +1458,7 @@ version to the commit and workflow run that built it. The first version, publish
 * [`getSensors()`](#getsensors)
 * [`checkPermissions()`](#checkpermissions)
 * [`requestPermissions(...)`](#requestpermissions)
+* [`requestTemporaryFullAccuracy(...)`](#requesttemporaryfullaccuracy)
 * [`log(...)`](#log)
 * [`getLog(...)`](#getlog)
 * [`destroyLog()`](#destroylog)
@@ -2006,6 +2007,21 @@ default all four, order: location, notifications, activityRecognition, backgroun
 --------------------
 
 
+### requestTemporaryFullAccuracy(...)
+
+```typescript
+requestTemporaryFullAccuracy(options: { purposeKey: string; }) => Promise<ProviderState>
+```
+
+| Param         | Type                                 |
+| ------------- | ------------------------------------ |
+| **`options`** | <code>{ purposeKey: string; }</code> |
+
+**Returns:** <code>Promise&lt;<a href="#providerstate">ProviderState</a>&gt;</code>
+
+--------------------
+
+
 ### log(...)
 
 ```typescript
@@ -2492,6 +2508,7 @@ restart), typically on Android 14+ without "Allow all the time". A tap resumes t
 
 | Prop              | Type                 | Default                                                    |
 | ----------------- | -------------------- | ---------------------------------------------------------- |
+| **`delay`**       | <code>number</code>  |                                                            |
 | **`enabled`**     | <code>boolean</code> | <code>false</code>                                         |
 | **`title`**       | <code>string</code>  | <code>app label</code>                                     |
 | **`text`**        | <code>string</code>  | <code>'Location tracking is paused. Tap to resume.'</code> |
@@ -2590,14 +2607,14 @@ restart), typically on Android 14+ without "Allow all the time". A tap resumes t
 
 Scheduling metadata of a `heartbeat` record (snake_case = wire format).
 
-| Prop                 | Type                                                           | Description                                                            |
-| -------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| **`strategy`**       | <code>'exact' \| 'listener_with_backup' \| 'idle_paced'</code> |                                                                        |
-| **`min_interval`**   | <code>number</code>                                            | heartbeat.minInterval (s) when the heartbeat was created               |
-| **`max_interval`**   | <code>number</code>                                            | heartbeat.maxInterval (s) when the heartbeat was created               |
-| **`next_at`**        | <code>string \| null</code>                                    | when the next heartbeat is expected (ISO-8601 UTC ms); null if unknown |
-| **`battery_exempt`** | <code>boolean</code>                                           | the app is exempt from battery optimization                            |
-| **`device_idle`**    | <code>boolean</code>                                           | the device was in deep Doze                                            |
+| Prop                 | Type                                                                      | Description                                                            |
+| -------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| **`strategy`**       | <code>'exact' \| 'listener_with_backup' \| 'idle_paced' \| 'timer'</code> |                                                                        |
+| **`min_interval`**   | <code>number</code>                                                       | heartbeat.minInterval (s) when the heartbeat was created               |
+| **`max_interval`**   | <code>number</code>                                                       | heartbeat.maxInterval (s) when the heartbeat was created               |
+| **`next_at`**        | <code>string \| null</code>                                               | when the next heartbeat is expected (ISO-8601 UTC ms); null if unknown |
+| **`battery_exempt`** | <code>boolean</code>                                                      | the app is exempt from battery optimization                            |
+| **`device_idle`**    | <code>boolean</code>                                                      | the device was in deep Doze                                            |
 
 
 #### DeviceReadings
@@ -2713,7 +2730,7 @@ the computed enclosing circle.
 
 | Prop                        | Type                                                        | Description                                                                                                     |
 | --------------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| **`platform`**              | <code>'android' \| 'web'</code>                             |                                                                                                                 |
+| **`platform`**              | <code>'android' \| 'web' \| 'ios'</code>                    |                                                                                                                 |
 | **`manufacturer`**          | <code>string</code>                                         |                                                                                                                 |
 | **`model`**                 | <code>string</code>                                         |                                                                                                                 |
 | **`brand`**                 | <code>string</code>                                         |                                                                                                                 |
@@ -2898,7 +2915,7 @@ A record could not be stored because the device storage is full.
 
 #### LocationBackend
 
-<code>'gms' | 'hms' | 'android' | 'web'</code>
+<code>'gms' | 'hms' | 'android' | 'web' | 'corelocation'</code>
 
 
 #### DesiredAccuracy
@@ -2986,7 +3003,7 @@ Make all properties in T optional
 
 #### HeartbeatStrategy
 
-<code>'exact' | 'listener_with_backup' | 'idle_paced' | 'disabled'</code>
+<code>'exact' | 'listener_with_backup' | 'idle_paced' | 'timer' | 'disabled'</code>
 
 
 #### PermissionState
@@ -3013,9 +3030,9 @@ MIT, © 2026 Bricks Soft. See [LICENSE](LICENSE).
 
 ## iOS setup
 
-The iOS implementation is being delivered in stages. The current foundation supports configuration, SQLite queueing,
-HTTP sync, permissions, current positions and watches. Route tracking, heartbeat and restore follow in stage 2;
-geofences follow in stage 3. Those methods currently reject with `UNAVAILABLE`.
+The iOS implementation supports native route tracking, motion detection, heartbeat audit records, restore, check-in
+notifications, configuration, SQLite queueing, HTTP sync, permissions, current positions and watches. Geofencing follows
+in stage 3; its methods currently reject with `UNAVAILABLE`.
 
 The deployment target is iOS 15. Install `@capacitor/ios` 8 and run `npx cap sync ios`. Both SPM and CocoaPods are supported.
 In the host app's Info.plist, add:
@@ -3048,7 +3065,29 @@ Authorization is held in Keychain with the same unlock requirement. HTTP uses an
 and treats every 2xx as success; keep your upload endpoint on HTTPS. A refresh task is best effort and does not keep
 the app continuously running. `stop()` leaves position watches active; clear each watch explicitly.
 
+While moving, the route uses the configured accuracy. While stationary, it keeps continuous 100 m updates so that
+movement can resume tracking without Motion permission. Core Motion confidence is 33, 66 or 100; the default confidence
+threshold accepts only high-confidence samples. Location update intervals are controlled by iOS.
+
+Heartbeats use an in-process timer and are not backfilled after a suspension or kill. When In Use tracking must start
+in the foreground; enabled intent restores when the app next becomes active. Always authorization adds significant-change
+monitoring as a relaunch trigger. iOS does not relaunch a force-quit app for location events. If Location Services are
+switched off for the whole device, enabled tracking keeps its intent and original deadline and resumes when they are
+switched back on; a revoked app permission still stops it with `permission_denied`.
+
+Enable `notification.resume` and request `notifications` permission for a pending check-in after tracking goes quiet.
+Its iOS `delay` defaults to 600 seconds and is raised to `heartbeat.maxInterval + 60` when lower. Fixes and records move
+one pending notification, at most once a minute. Stop and session expiry cancel it. A tap opens the app and restores the
+original session deadline. The plugin leaves Capacitor's notification-center delegate in place.
+
+`stopOnTerminate` handles the best-effort termination callback. An OS kill without that callback preserves enabled intent,
+even when `stopOnTerminate` is true. `startOnBoot` is ignored. Deadlines use the continuous elapsed clock within the process.
+On restore, matching saved wall/elapsed checkpoints preserve elapsed timing; a detected reboot or clock discontinuity uses
+the original wall-clock start. A wall-clock change while the process is absent cannot be distinguished reliably from a
+reboot on current iOS, which [no longer exposes a boot-session identifier](https://developer.apple.com/documentation/ios-ipados-release-notes/ios-ipados-18-release-notes).
+Fixes are ordered by the elapsed clock at delivery, so a wall-clock correction does not make new fixes look stale.
+
 `example/ios` is the example host. Run `npm run copy-vendor` and `npx cap sync ios` from `example/` before building.
-The iOS workflow installs the npm tarball into a fresh app through each package manager and archives an unsigned Release
-IPA. Installing it on an iPhone still requires an Apple signing certificate/private key, a matching provisioning profile
+The iOS workflow installs the npm tarball into a fresh app through each package manager and archives both unsigned and ad-hoc signed Release
+IPAs. The ad-hoc identity is `-`, with no provisioning profile; it does not provide Apple device authorization. Installing it on an iPhone still requires an Apple signing certificate/private key, a matching provisioning profile
 and entitlements for its bundle identifier, or a device-cloud service that re-signs uploaded apps.

@@ -102,6 +102,13 @@ final class TrackingStore {
         }
     }
 
+    func count(event: String) throws -> Int {
+        let query = try statement("SELECT COUNT(*) FROM records WHERE json_extract(value,'$.event')=?", [event])
+        defer { sqlite3_finalize(query) }
+        guard sqlite3_step(query) == SQLITE_ROW else { throw TrackingError("IO_ERROR", "Cannot count queued records") }
+        return Int(sqlite3_column_int64(query, 0))
+    }
+
     @discardableResult func delete(_ uuid: String) throws -> Bool {
         try write("DELETE FROM records WHERE uuid=?", [uuid])
         return sqlite3_changes(db) > 0

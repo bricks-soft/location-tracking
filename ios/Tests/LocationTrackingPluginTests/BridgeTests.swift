@@ -32,6 +32,7 @@ final class BridgeTests: XCTestCase {
         XCTAssertTrue(wire["timestamp"] is NSNull)
         XCTAssertEqual(wire.number("boot_count"), -1)
         XCTAssertEqual(wire.text("backend"), "corelocation")
+        XCTAssertNil(wire["extras"])
         XCTAssertNoThrow(try jsonData(wire))
     }
     func testPermissionOrderMatchesAndroid() {
@@ -92,6 +93,30 @@ final class BridgeTests: XCTestCase {
         await withCheckedContinuation { continuation in services.whenReady { continuation.resume() } }
         XCTAssertTrue(services.isReady)
         XCTAssertFalse(services.enabled)
+    }
+    func testInsertedAndroidFixtureKeepsMetadataOptionalAccuracyAndMergedExtras() async throws {
+        let now = TrackingInstant(wall: 1790417730456, elapsed: 86400123)
+        let core = try TrackingCore(queue: .main, permissions: Permissions(), positions: Positions(), emit: { _, _ in }, record: { _ in }, url: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("external.sqlite"), clock: { now })
+        defer { core.syncer.close() }
+        try core.config.apply(["http": ["autoSync": false], "persistence": ["extras": ["driver_id": 7, "fleet": "a", "nested": ["x": 1]]]], reset: true)
+        try core.updateRuntime(["isMoving": true, "odometer": 1532.4, "activity": ["type": "in_vehicle", "confidence": 92]])
+        let input = try jsonObject(Data("""
+        {"coords":{"latitude":24.7136,"longitude":46.6753,"accuracy":5.2,"altitude":612.3,"altitude_accuracy":3.0,"speed":13.4,"speed_accuracy":0.8,"heading":271.5,"heading_accuracy":5.0},"timestamp":"2026-09-26T10:15:30.123Z","event":"motionchange","is_moving":false,"extras":{"fleet":"b","trip":12,"source":"import"}}
+        """.utf8))
+        let result: Result<TrackingJSON, Error> = await withCheckedContinuation { continuation in core.call("insertLocation", ["location": input], native: true) { continuation.resume(returning: $0) } }
+        let wire = try XCTUnwrap(core.store.locations().first)
+        XCTAssertEqual(wire.text("uuid"), try result.get().text("uuid"))
+        XCTAssertEqual(wire.text("timestamp"), "2026-09-26T10:15:30.123Z")
+        XCTAssertEqual(wire.text("recorded_at"), "2026-09-26T10:15:30.456Z")
+        XCTAssertEqual(wire.number("elapsed_realtime_ms"), now.elapsed)
+        XCTAssertFalse(wire.flag("is_moving")); XCTAssertEqual(wire.number("odometer"), 1532.4)
+        XCTAssertEqual(wire.object("coords").number("speed_accuracy"), 0.8)
+        XCTAssertEqual(wire.object("coords").number("heading_accuracy"), 5)
+        XCTAssertEqual(wire.object("extras").text("fleet"), "b")
+        XCTAssertEqual(wire.object("extras").number("driver_id"), 7)
+        XCTAssertEqual(wire.object("extras").object("nested").number("x"), 1)
+        XCTAssertEqual(wire.object("activity").number("confidence"), 92)
+        XCTAssertTrue(core.state().flag("isMoving")); XCTAssertTrue(core.state()["lastRecordAt"] is NSNull)
     }
 
     func testLiveDeliverySurvivesReadOnlyStoreWithoutStorageFull() throws {

@@ -31,6 +31,12 @@
     await plugin.ready({ config: { http: { autoSync: false, url: null } } });
     await plugin.setConfig({ config: { persistence: { extras: { simulator: true } } } });
     await plugin.reset({ config: { http: { autoSync: false } } });
+    assert((await plugin.start()).enabled, 'route starts');
+    await plugin.changePace({ isMoving: true });
+    assert((await plugin.getState()).isMoving, 'route pace changes');
+    assert((await plugin.getHeartbeatStatus()).strategy === 'timer', 'heartbeat timer armed');
+    assert(!(await plugin.stop()).enabled, 'route stops');
+    await plugin.destroyLocations();
     let received = 0;
     const listener = await plugin.addListener('location', () => received++);
     const lastRecordAt = (await plugin.getState()).lastRecordAt;
@@ -46,7 +52,7 @@
     assert((await plugin.getOdometer()).odometer === 123.5, 'odometer set');
     assert((await plugin.resetOdometer()).odometer === 0, 'odometer reset');
     await rejects('sync', 'NO_URL');
-    for (const method of ['start', 'startGeofences', 'changePace', 'getHeartbeatStatus', 'addGeofence', 'addGeofences', 'removeGeofence', 'removeGeofences', 'getGeofences', 'getGeofence', 'geofenceExists']) {
+    for (const method of ['startGeofences', 'addGeofence', 'addGeofences', 'removeGeofence', 'removeGeofences', 'getGeofences', 'getGeofence', 'geofenceExists']) {
       await rejects(method, 'UNAVAILABLE');
     }
     await plugin.isPowerSaveMode();

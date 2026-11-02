@@ -3,10 +3,13 @@
   const location = document.createElement('p');
   const accuracy = document.createElement('p');
   const result = document.createElement('p');
-  document.body.replaceChildren(location, accuracy, result);
+  const route = document.createElement('p');
+  document.body.replaceChildren(location, accuracy, result, route);
   const refresh = async () => {
     location.textContent = 'Location permission: ' + (await plugin.checkPermissions()).location;
-    accuracy.textContent = 'Provider accuracy: ' + (await plugin.getProviderState()).accuracy;
+    const provider = await plugin.getProviderState();
+    accuracy.textContent = 'Provider accuracy: ' + provider.accuracy;
+    if ((await plugin.getState()).enabled) route.textContent = 'Route: ' + provider.accuracy + ' enabled';
   };
   const button = (label, action) => {
     const element = document.createElement('button');
@@ -25,6 +28,15 @@
     result.textContent = 'Precision request started';
     await plugin.requestTemporaryFullAccuracy({ purposeKey: 'Tracking' });
     await refresh();
+  });
+  button('Start Route', async () => {
+    await plugin.ready({ config: { http: { autoSync: false }, heartbeat: { enabled: false } } });
+    try { await plugin.start(); await refresh(); }
+    catch (error) { result.textContent = 'Route error: ' + error.code; }
+  });
+  button('Stop Route', async () => {
+    await plugin.stop();
+    route.textContent = 'Route: stopped';
   });
   button('Request Position', async () => {
     await plugin.ready({ config: { http: { autoSync: false } } });

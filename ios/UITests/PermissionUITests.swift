@@ -36,6 +36,8 @@ final class PermissionUITests: XCTestCase {
         XCTAssertTrue(deny.exists)
         deny.tap()
         XCTAssertTrue(app.staticTexts["Location permission: denied"].waitForExistence(timeout: 15))
+        app.buttons["Start Route"].tap()
+        XCTAssertTrue(app.staticTexts["Route error: PERMISSION_DENIED"].waitForExistence(timeout: 15))
         app.buttons["Request Position"].tap()
         XCTAssertTrue(app.staticTexts["Position error: PERMISSION_DENIED"].waitForExistence(timeout: 15))
     }
@@ -49,6 +51,8 @@ final class PermissionUITests: XCTestCase {
         XCTAssertTrue(allow.exists)
         allow.tap()
         XCTAssertTrue(app.staticTexts["Provider accuracy: approximate"].waitForExistence(timeout: 15))
+        app.buttons["Start Route"].tap()
+        XCTAssertTrue(app.staticTexts["Route: approximate enabled"].waitForExistence(timeout: 15))
         app.buttons["Request Precision"].tap()
         let precise = app.staticTexts["Provider accuracy: precise"]
         let presented = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in alert.exists || app.alerts.firstMatch.exists || precise.exists }, object: nil)
@@ -60,5 +64,8 @@ final class PermissionUITests: XCTestCase {
             upgrade.tap()
         }
         XCTAssertTrue(precise.waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["Route: precise enabled"].waitForExistence(timeout: 15))
+        app.buttons["Stop Route"].tap()
+        XCTAssertTrue(app.staticTexts["Route: stopped"].waitForExistence(timeout: 15))
     }
 }

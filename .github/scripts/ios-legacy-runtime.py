@@ -3,6 +3,7 @@ import os
 import pathlib
 import re
 import subprocess
+from ios_simulator_launch import show_simulator, simctl_output
 
 root = pathlib.Path(os.environ['RUNNER_TEMP'])
 report = root / 'ios-legacy-runtime.txt'
@@ -19,10 +20,14 @@ def run(command, timeout=600):
             return 124
 
 def available(version):
-    data = json.loads(subprocess.check_output(['xcrun', 'simctl', 'list', 'runtimes', '-j'], timeout=60))
+    data = json.loads(simctl_output('list', 'runtimes', '-j', timeout=60))
     return [r for r in data['runtimes'] if r.get('isAvailable') and r['version'].startswith(version)]
 
 def boot(runtime):
+    if run(['xcrun', 'simctl', 'runtime', 'dyld_shared_cache', 'update', runtime['identifier']], timeout=1500) != 0:
+        with report.open('a') as output:
+            output.write('dyld shared cache unavailable for ' + runtime['version'] + '\n')
+        return None
     device = 'iPhone-13' if runtime['version'].startswith('15.') else 'iPhone-14'
     command = ['xcrun', 'simctl', 'create', 'LT Legacy', 'com.apple.CoreSimulator.SimDeviceType.' + device, runtime['identifier']]
     try:
@@ -54,6 +59,7 @@ for version in ['16.4', '15.5']:
     for runtime in available(version):
         selected = boot(runtime)
         if selected:
+            show_simulator(selected)
             with open(os.environ['GITHUB_ENV'], 'a') as output:
                 output.write('IOS_SIMULATOR=' + selected + '\nLEGACY_AVAILABLE=true\n')
             break

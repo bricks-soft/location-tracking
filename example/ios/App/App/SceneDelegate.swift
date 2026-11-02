@@ -9,6 +9,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard let windowScene = scene as? UIWindowScene else { return }
 
         window = UIWindow(windowScene: windowScene)
+        window?.frame = windowScene.coordinateSpace.bounds
         window?.rootViewController = ExampleViewController()
         window?.makeKeyAndVisible()
 
@@ -39,6 +40,20 @@ final class ExampleViewController: CAPBridgeViewController, WKScriptMessageHandl
     }
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard message.name == "stage1", let body = message.body as? [String: Any] else { return }
+        if body["success"] as? Bool == true, let webView {
+            webView.takeSnapshot(with: nil) { image, error in
+                var report = body
+                report["view"] = ["width": Double(webView.bounds.width), "height": Double(webView.bounds.height), "windowWidth": Double(webView.window?.bounds.width ?? 0), "windowHeight": Double(webView.window?.bounds.height ?? 0), "visible": webView.window?.isHidden == false]
+                do {
+                    guard let image, let data = image.pngData() else { throw error ?? NSError(domain: "ExampleSnapshot", code: 1) }
+                    let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                    try data.write(to: directory.appendingPathComponent("ios-stage1-webview.png"), options: .atomic)
+                } catch { report["success"] = false; report["error"] = "WebView snapshot failed: " + error.localizedDescription }
+                self.writeReport(report)
+            }
+        } else { writeReport(body) }
+    }
+    private func writeReport(_ body: [String: Any]) {
         do {
             let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
             let data = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])

@@ -279,11 +279,12 @@ textarea {
   background: var(--input-bg);
   color: var(--fg);
   font: inherit;
+  font-size: 16px;
 }
 
 textarea {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12.5px;
+  font-size: 16px;
   resize: vertical;
 }
 

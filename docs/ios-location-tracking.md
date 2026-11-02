@@ -2,36 +2,27 @@
 
 Status: approved. The implementation follows in one PR stacked on this one; both merge together.
 
-## Goal
-
-Implement the existing plugin API (8.1.0) natively on iOS, so that code written against the README tracks the same
-way on iOS as on Android, within the limits listed below. The package has no iOS sources today. This document covers
-plugin behavior only; what an app or its server does with the records is out of scope.
+Implement the existing plugin API (8.1.0) natively on iOS, with Android behavior as the baseline and the limits below.
+App and server policy is out of scope.
 
 ## Decisions
 
-- **When In Use is the recommended authorization**, as Android recommends tracking without background location.
-  Always is optional, for geofence events and relaunch while the app is not running. See Authorization.
-- **Same public API as Android.** No session API, no listener wrapper. The only new method is
-  `requestTemporaryFullAccuracy`. Switching users follows the README logout sequence.
+- **When In Use is recommended**; optional Always enables geofence events and relaunch while the app is not running.
+- **Same public API as Android**, plus `requestTemporaryFullAccuracy`. No session API or listener wrapper; use the README logout sequence.
 - **iOS 15.0 deployment target** (Capacitor 8's floor). Route tracking uses `CLLocationManager` on every version.
   Geofencing uses `CLMonitor` behind one `if #available(iOS 17, *)` check; below iOS 17, `startGeofences` and the
   geofence methods reject with `UNAVAILABLE`.
 - **Stationary profile: continuous.** Low-accuracy updates keep running while stationary; automatic pausing is off.
-- **Stop time:** the app passes `stopAfterElapsedMinutes`; the plugin has no civil-time cutoff. A mode switch starts a
-  new window, as on Android.
+- **Stop time:** `stopAfterElapsedMinutes`, no civil-time cutoff. A mode switch starts a new window, as on Android.
 - **Geofence capacity: 20**, the native limit. Extra geofences reject with `TOO_MANY_GEOFENCES`; no rotation.
 - **`device.device_id` is `identifierForVendor`.**
-- **Core Motion confidence maps low/medium/high to 33/66/100**, the values Transistor reports on iOS. With the
-  default `minimumActivityRecognitionConfidence` of 75 only high counts, like Transistor's iOS default of 70; a
-  threshold of 66 or lower also accepts medium.
+- **Core Motion confidence maps low/medium/high to 33/66/100**. Default threshold 75 accepts only high; ≤66 also accepts medium.
 
 ## Approach
 
-**Ownership.** A native core owns the engine, storage, uploader and Core Location objects, independent of the
-WebView. `LocationTrackingNative.bootstrap()` creates it; the host calls it from
-`application(_:didFinishLaunchingWithOptions:)`, and the plugin's `load()` calls it too (idempotent). State changes run
-on one serial queue; location managers live on the main thread.
+**Ownership.** A native core owns tracking, storage and uploads independently of the WebView. The host calls
+`LocationTrackingNative.bootstrap()` from `application(_:didFinishLaunchingWithOptions:)`; plugin `load()` also calls
+it idempotently. State changes use one serial queue; location managers live on the main thread.
 
 **Route tracking.** One `CLLocationManager` with `allowsBackgroundLocationUpdates = true` and
 `pausesLocationUpdatesAutomatically = false`. While moving it uses the configured `desiredAccuracy` with no OS
@@ -44,7 +35,7 @@ install) and `activityRecognition` to Motion, in Android's order; `{ permissions
 only. Under When In Use, updates started in the foreground continue in the background (`location` background mode,
 `allowsBackgroundLocationUpdates`) with the blue indicator. Without Always, the app loses geofence events while it is
 not running and the significant-change relaunch after a kill or reboot; tracking resumes when the app is opened or from
-the check-in notification. The README's iOS setup mirrors Android's "Apps that track only while they are in use".
+the check-in notification.
 Apps that never ask for Always still ship `NSLocationAlwaysAndWhenInUseUsageDescription`: the plugin references
 `requestAlwaysAuthorization`, and App Review requires purpose strings for APIs a library references
 ([Apple](https://developer.apple.com/documentation/uikit/requesting-access-to-protected-resources)).
@@ -73,48 +64,39 @@ upload running for at most `heartbeat.uploadKeepAwake` seconds.
   and `text`, plus iOS-only `delay` (s, default 600; below `heartbeat.maxInterval` + 60 it is raised to that with a
   warning, as Android's `ConfigValidator` clamps). While tracking runs, one local notification
   (`UNTimeIntervalNotificationTrigger`) stays pending `delay` ahead; each fix or record moves it out (at most once a
-  minute), so it fires only after a reboot, a memory kill or a force-quit with
-  `stopOnTerminate: false`. It is cancelled on `stop()`, `terminate` and the session's end, never scheduled past the
+  minute), warning when records stop, including process loss with `stopOnTerminate: false`. It is cancelled on `stop()`, `terminate` and the session's end, never scheduled past the
   deadline, and needs notification permission; a delivered one is removed when tracking starts. A tap opens the app
   and the launch restore resumes the session, recorded as `restore`: Capacitor's `NotificationRouter` owns the
   notification-center delegate, so detecting the tap would mean taking it over.
-- The deadline uses `mach_continuous_time` (sleep included) within a boot and the wall-clock start after a reboot,
-  like Android.
+- Deadlines use `mach_continuous_time` (sleep included). Restore retains elapsed timing when saved wall/elapsed
+  checkpoints match; a reboot or clock discontinuity falls back to the original wall-clock start. A clock change
+  while the process is absent cannot be distinguished reliably from reboot.
 
 **Geofences (iOS 17+).** A port of `DefaultGeofenceManager` over one named `CLMonitor`. Definitions are validated and
 stored at any time and registered when tracking starts. Circles become circular conditions; a polygon registers its
 enclosing circle and is hit-tested against fixes; DWELL is always synthesized, since `CLMonitor` has no dwell. The
-monitor is re-created under the same name at every launch. On iOS 18+, a retained `CLServiceSession` with Always
-authorization covers events while the app is not in use; with When In Use, events arrive only while it runs. With
-approximate accuracy, stored geofences stay inactive and a `locationerror` event says why.
+monitor is re-created under the same name at every launch.
+On iOS 18+, the plugin creates and retains an Always CLServiceSession only after Always permission has already been granted.
+It covers events while the app is not in use; When In Use receives events only while it runs. Approximate accuracy
+keeps stored geofences inactive and emits `locationerror`.
+After relaunch, iOS restores unchanged circles without repeating ENTER when they remain inside, even with `initialTriggerEntry: true`; Android/GMS may repeat the initial ENTER when re-registering.
 
-**HTTP sync.** A port of `OkHttpSyncer` on an ephemeral `URLSession`: redirects refused (3xx is a failed upload), no
-transport retries, `http.timeout` per request. Any 2xx deletes the uploaded records whatever the body says; the `http`
-event carries at most 16 KB of the response. Retry, `Retry-After`, stored backoff, token refresh, credential-change
-and 413 rules match Android. Bodies come from the host-supplied templates. When tracking is off, queued records upload
-at the next launch or in a best-effort `BGAppRefreshTask` (`com.brickssoft.locationtracking.refresh`).
+**HTTP sync.** Ephemeral `URLSession`, redirects refused, `http.timeout` per request. URLSession may retry internally;
+the transport adds no retry loop. The syncer retries network/429/5xx failures up to three times per batch, then applies
+stored backoff and `Retry-After`; token refresh, credential changes and 413 splitting follow Android. Any 2xx deletes
+the uploaded records; `http` carries at most 16 KB of response text. Delivery is at least once: deduplicate by UUID.
+Bodies use host templates. With tracking off, uploads run at launch or in best-effort `BGAppRefreshTask`
+`com.brickssoft.locationtracking.refresh`.
 
 **Storage.** SQLite in Application Support, excluded from backup, protected until first unlock so background
 launches can write while locked. Tokens go in the Keychain. **Native API:** Swift `LocationTrackingNative` and
 `LocationTrackingListener` mirror the Kotlin API; listeners added before `bootstrap()` see restored records first.
 
-## File map
+## Integration
 
-New Swift target `ios/Sources/LocationTrackingPlugin/`:
-
-| Files | Responsibility |
-|---|---|
-| `LocationTrackingPlugin.swift` | `CAPBridgedPlugin` method table, argument parsing, JS events, watch callbacks |
-| `Core/` | Composition root, serial queue, bootstrap, lifecycle notifications |
-| `Engine/`, `Location/` | `TrackingEngine`, `MotionStateMachine`, `ElasticDistance`, `CheckInNotifier`; route, relaunch and motion sources |
-| `Processing/`, `Record/`, `Heartbeat/` | Filters, Kalman, odometer, record factory, `RecordSink` order, heartbeat window and timer |
-| `Geofence/` | `GeofenceManager`, `GeofenceMonitor` (`CLMonitor`, service session), `PolygonMath`, `DwellTracker` |
-| `Data/`, `Config/`, `Http/` | SQLite stores, config and Keychain secrets, syncer, templates, token refresh, background task |
-| `Permission/`, `Position/`, `Device/`, `Logging/`, `Api/` | Prompts and precision, positions and watches, device readings, logger, native API |
-| `PrivacyInfo.xcprivacy` | Required-reason APIs (boot time, disk space, user defaults) |
-
-Also: root `Package.swift` and podspec, `package.json` (`files`, `capacitor.ios.src`), `ios/Tests/` (XCTest), an iOS
-host in `example/`.
+`ios/Sources/LocationTrackingPlugin/` owns the bridge, core, engine, geofences, storage, HTTP and native API.
+SPM and CocoaPods package it; `ios/Tests/` and the `example/ios` host cover native and WebView paths.
+`PrivacyInfo.xcprivacy` declares UserDefaults access. Disk-space telemetry is omitted; `storagefull` remains, with `diskFreeBytes: null`.
 
 TypeScript: `src/definitions.ts` adds `requestTemporaryFullAccuracy({ purposeKey }): Promise<ProviderState>` and widens
 `LocationBackend` (`'corelocation'`), `DeviceInfo.platform` (`'ios'`) and `HeartbeatStrategy`/`HeartbeatMeta.strategy`
@@ -139,7 +121,7 @@ Everything not listed behaves as on Android.
 | Start/stop reasons | `boot`, `reboot`, `package_replaced`, `resume_notification`, `service_start_failed`, `user_stopped` | Not produced |
 | Heartbeat strategy | `exact`, `listener_with_backup`, `idle_paced` | `timer` |
 | Geofences | 100, all versions | 20, iOS 17+ |
-| Records | `boot_count`, Android readings | `boot_count` -1; IDFV omitted while nil, never substituted; model, OS version, RAM, free disk, thermal state |
+| Records | `boot_count`, Android readings | `boot_count` -1; IDFV omitted while nil, never substituted; model, OS version, RAM, thermal state |
 | `ProviderState` | Per-provider flags | `gps` and `network` mirror the Location Services switch; `backend` `corelocation` |
 | Power methods | Battery Saver, optimization, OEM managers | Low Power Mode; `openBatteryOptimizationSettings` and `openPowerManagerSettings` resolve `{ opened: false }` |
 | `openAppSettings`, `openLocationSettings` | Own screens | Both open the app's Settings page (`openSettingsURLString`), `{ opened: true }` |
@@ -153,32 +135,29 @@ Everything not listed behaves as on Android.
   a killed stationary app can stay dark.
 - `applicationWillTerminate` is not guaranteed, and iOS may also send it when the system ends a running background
   app; with `stopOnTerminate: true` that stops tracking too.
-- DWELL is synthesized from fixes, so it fires only while the process runs, even with Always.
+- DWELL is synthesized, so it fires only while the process runs, even with Always.
+- Fix timestamps are Core Location wall time. Elapsed ordering is inferred at delivery; delayed fixes spanning a
+  clock change lack a reliable per-fix monotonic timestamp.
 - Heartbeats and uploads run only while iOS lets the app run, never before the first unlock after a reboot.
 - `identifierForVendor` changes once all of the vendor's apps are removed and one is reinstalled; servers should not
   treat it as permanent.
 
 ## Test plan
 
-1. **Unit (XCTest):** the Android unit tests for motion, filters, odometer, heartbeat window (179 s vs 180 s), polygon,
-   dwell, upload wait and templates, ported with the same inputs and outputs; confidence boundaries (thresholds 33,
-   66, 67); the deadline across mode switch, restore, reboot and clock changes.
-2. **Storage and HTTP:** SQLite reopen and interrupted writes; real `URLSession` against the e2e kit's mock server: 2xx
-   with a large body, 3xx, 401 refresh, token change mid-upload, 413, `Retry-After`, timeout, stable UUIDs on retry.
-3. **Package and bridge:** `npm pack` tarball in a fresh Capacitor 8 app via SPM and CocoaPods; every method, the
-   `NOT_READY` allowlist, listeners, watches surviving `stop()`. Existing TS and Android tests still pass.
-4. **Runtimes:** route tracking on an iOS 15 or 16 runtime and on the current iOS; geofences `UNAVAILABLE` below 17,
-   `CLMonitor` on 17, service session on 18+.
-5. **Simulator scenarios (CI):** GPX routes moving and stationary, background, motion unavailable, approximate
-   accuracy, offline replay, kill and terminate with `stopOnTerminate` true and false, simulator restart; the check-in
-   notification moves, cancels, fires after a kill and restores the original deadline on tap, as above.
-6. **Real iPhone (BrowserStack), Release:** background route by GPS changes with the blue indicator, When In Use,
-   Always and Motion prompts granted and denied, approximate accuracy, force-quit, offline replay.
-7. **Device QA before release**, for what needs a carried phone: with Always and `stopOnTerminate: false`, `SIGKILL`
-   and move, expecting `restore` with the original deadline and one `stop_after_elapsed` after it; reboot, unlock and
-   move, recording whether tracking restored; the check-in notification after reboot (also with the phone off past
-   the fire time) and force-quit, since no Apple document says pending requests survive a reboot; motion while
-   moving; a day of tracking: battery, and no check-in fires.
+1. **XCTest:** Android fixtures for motion, filters, odometer, heartbeat, polygons, dwell and templates; confidence
+   thresholds 33/66/67; deadline mode switches, restore, reboot and clock changes; delayed geofence restoration.
+2. **Storage/HTTP:** SQLite reopen/interrupted writes; real URLSession against the mock server: 2xx/large body,
+   redirects, 401 refresh, credential changes, 413, Retry-After, timeout and stable UUIDs on retry.
+3. **Package/bridge:** npm tarball in fresh Capacitor 8 SPM/CocoaPods apps; every method, NOT_READY allowlist,
+   listeners and watches surviving stop. Existing TS and Android tests must pass.
+4. **Runtimes:** routes on iOS 15/16 and current iOS; geofences unavailable below 17, CLMonitor on 17, session on 18+.
+5. **Simulator CI:** moving/stationary routes, background, denied Motion, approximate accuracy, offline replay,
+   kill/terminate with both stopOnTerminate values, restart; check-in reschedule/cancel/fire/tap and original deadline.
+6. **Real iPhone, Release (BrowserStack):** background GPS route/blue indicator, permission grants/denials,
+   approximate accuracy, force-quit and offline replay. Report device, OS, signing and simulated GPS explicitly.
+7. **Before release:** Always + stopOnTerminate false, SIGKILL/move/restore/original deadline; reboot/unlock/move;
+   check-in delivery after reboot (including power off past fire time) and force-quit; carried-device motion;
+   a full day of battery measurement and no check-in while records continue. Simulator/iPad passes do not close these gates.
 
 ## Open
 

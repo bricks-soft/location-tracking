@@ -13,7 +13,7 @@ export type RecordEvent =
   | 'tracking_stop'
   | 'providerchange';
 
-export type LocationBackend = 'gms' | 'hms' | 'android' | 'web';
+export type LocationBackend = 'gms' | 'hms' | 'android' | 'web' | 'corelocation';
 
 export interface WireCoords {
   latitude: number;
@@ -38,7 +38,7 @@ export interface WireProviderState {
 
 /** Optional `heartbeat` object of a heartbeat record (round 2). */
 export interface WireHeartbeatMeta {
-  strategy: 'exact' | 'listener_with_backup' | 'idle_paced';
+  strategy: 'exact' | 'listener_with_backup' | 'idle_paced' | 'timer';
   min_interval: number;
   max_interval: number;
   next_at: string | null;
@@ -92,7 +92,7 @@ export interface HeartbeatStatusJson {
   lastRecordAt: string | null;
   lastHeartbeatAt: string | null;
   nextHeartbeatAt: string | null;
-  strategy: 'exact' | 'listener_with_backup' | 'idle_paced' | 'disabled';
+  strategy: 'exact' | 'listener_with_backup' | 'idle_paced' | 'timer' | 'disabled';
   canScheduleExactAlarms: boolean;
   isIgnoringBatteryOptimizations: boolean;
   isDeviceIdleMode: boolean;

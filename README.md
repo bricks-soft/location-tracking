@@ -3010,3 +3010,45 @@ Make all properties in T optional
 ## License
 
 MIT, © 2026 Bricks Soft. See [LICENSE](LICENSE).
+
+## iOS setup
+
+The iOS implementation is being delivered in stages. The current foundation supports configuration, SQLite queueing,
+HTTP sync, permissions, current positions and watches. Route tracking, heartbeat and restore follow in stage 2;
+geofences follow in stage 3. Those methods currently reject with `UNAVAILABLE`.
+
+The deployment target is iOS 15. Install `@capacitor/ios` 8 and run `npx cap sync ios`. Both SPM and CocoaPods are supported.
+In the host app's Info.plist, add:
+
+```xml
+<key>UIBackgroundModes</key><array><string>location</string><string>fetch</string></array>
+<key>BGTaskSchedulerPermittedIdentifiers</key><array><string>com.brickssoft.locationtracking.refresh</string></array>
+<key>NSLocationWhenInUseUsageDescription</key><string>Explain your foreground tracking purpose.</string>
+<key>NSLocationAlwaysAndWhenInUseUsageDescription</key><string>Explain your optional background tracking purpose.</string>
+<key>NSMotionUsageDescription</key><string>Explain how motion selects the tracking profile.</string>
+<key>NSLocationTemporaryUsageDescriptionDictionary</key><dict><key>Tracking</key><string>Explain why precise location is needed.</string></dict>
+```
+
+Call the native bootstrap before `application(_:didFinishLaunchingWithOptions:)` returns, so the background refresh
+handler is registered during launch:
+
+```swift
+import LocationTrackingPlugin
+
+LocationTrackingNative.bootstrap()
+```
+
+For apps that track only while they are in use, request `{ permissions: ['location'] }`. Always is optional, and the
+Always purpose string is still required because the library references that API. `requestTemporaryFullAccuracy({
+purposeKey: 'Tracking' })` uses a key from the temporary usage dictionary and returns the actual provider accuracy.
+Android and web reject this method with `UNIMPLEMENTED`. Precision grants are controlled by iOS.
+
+Queued records and configuration use Application Support with backup exclusion and protection until first unlock.
+Authorization is held in Keychain with the same unlock requirement. HTTP uses an ephemeral session, refuses redirects,
+and treats every 2xx as success; keep your upload endpoint on HTTPS. A refresh task is best effort and does not keep
+the app continuously running. `stop()` leaves position watches active; clear each watch explicitly.
+
+`example/ios` is the example host. Run `npm run copy-vendor` and `npx cap sync ios` from `example/` before building.
+The iOS workflow installs the npm tarball into a fresh app through each package manager and archives an unsigned Release
+IPA. Installing it on an iPhone still requires an Apple signing certificate/private key, a matching provisioning profile
+and entitlements for its bundle identifier, or a device-cloud service that re-signs uploaded apps.

@@ -81,6 +81,7 @@ export interface Fault {
   status?: number;
   count?: number;
   delayMs?: number;
+  hold?: string;
   drop?: boolean;
   headers?: Record<string, string>;
   body?: string;
@@ -187,6 +188,7 @@ interface ActiveFault {
   status: number | undefined;
   remaining: number;
   delayMs: number;
+  hold: string | undefined;
   drop: boolean;
   headers: Record<string, string>;
   body: string | undefined;
@@ -250,6 +252,7 @@ export class MockBackOffice {
   private logUploadList: StoredLogUpload[] = [];
   private faults: ActiveFault[] = [];
   private refreshCount = 0;
+  private gates = new Map<string, { arrivals: number; release: Set<() => void> }>();
 
   constructor(options: MockBackOfficeOptions = {}) {
     this.host = options.host ?? '0.0.0.0';
@@ -310,6 +313,8 @@ export class MockBackOffice {
     const server = this.server;
     if (!server) return;
     this.server = undefined;
+    for (const gate of this.gates.values()) for (const release of gate.release) release();
+    this.gates.clear();
     await new Promise<void>((resolve) => {
       server.close(() => resolve());
       for (const socket of this.sockets) socket.destroy();
@@ -413,6 +418,7 @@ export class MockBackOffice {
       status: fault.status,
       remaining: count,
       delayMs: Math.max(0, fault.delayMs ?? 0),
+      hold: fault.hold,
       drop: fault.drop === true,
       headers: fault.headers ?? {},
       body: fault.body,
@@ -433,6 +439,8 @@ export class MockBackOffice {
     this.logUploadList = [];
     this.faults = [];
     this.refreshCount = 0;
+    for (const gate of this.gates.values()) for (const release of gate.release) release();
+    this.gates.clear();
   }
 
   /** The request log as text (for Artifacts): one line per request since the last reset. */
@@ -480,6 +488,16 @@ export class MockBackOffice {
 
     const fault = this.takeFault(url.pathname, () => requestRecords(entry).length);
     if (fault) {
+      if (fault.hold) {
+        const gate = this.gates.get(fault.hold) ?? { arrivals: 0, release: new Set<() => void>() };
+        this.gates.set(fault.hold, gate);
+        gate.arrivals++;
+        await new Promise<void>((resolve) => {
+          const release = () => { clearTimeout(timer); gate.release.delete(release); resolve(); };
+          const timer = setTimeout(release, 30000);
+          gate.release.add(release);
+        });
+      }
       if (fault.delayMs > 0) await sleep(fault.delayMs);
       if (fault.drop) {
         entry.fault = 'drop';
@@ -488,7 +506,7 @@ export class MockBackOffice {
         req.socket.destroy();
         return;
       }
-      if (fault.status !== undefined || fault.delayMs === 0) {
+      if (fault.status !== undefined || (fault.delayMs === 0 && !fault.hold)) {
         entry.fault = 'status';
         entry.status = fault.status ?? 500;
         const text = fault.body ?? JSON.stringify({ ok: false, fault: true });
@@ -609,6 +627,12 @@ export class MockBackOffice {
       const since = numberParam(params, 'since');
       const filterPath = params.get('path');
       return { status: 200, body: this.requests({ ...(filterPath ? { path: filterPath } : {}), ...(since !== undefined ? { since } : {}) }) };
+    }
+    if (path.startsWith('/__gates/')) {
+      const key = decodeURIComponent(path.slice('/__gates/'.length));
+      const gate = this.gates.get(key);
+      if (method === 'POST') for (const release of gate?.release ?? []) release();
+      return { status: 200, body: { arrivals: gate?.arrivals ?? 0, waiting: gate?.release.size ?? 0 } };
     }
     if (path === '/__faults' && method === 'POST') {
       const body = parseBody() as Fault | undefined;

@@ -10,7 +10,10 @@
     "android/src/main/",
     "android/build.gradle",
     "android/consumer-rules.pro",
-    "dist/"
+    "dist/",
+    "ios/Sources/",
+    "Package.swift",
+    "BricksSoftCapacitorLocationTracking.podspec"
   ],
   "author": "Bricks Soft",
   "license": "MIT",
@@ -54,6 +57,9 @@
   "capacitor": {
     "android": {
       "src": "android"
+    },
+    "ios": {
+      "src": "ios"
     }
   },
   "publishConfig": {

@@ -86,6 +86,13 @@ class PluginHandlersTest {
         Logger.sink = null
     }
 
+    @Test
+    fun `temporary full accuracy rejects UNIMPLEMENTED before and after ready`() = test {
+        assertRejects(ErrorCode.UNIMPLEMENTED) { handlers.requestTemporaryFullAccuracy() }
+        makeReady()
+        assertRejects(ErrorCode.UNIMPLEMENTED) { handlers.requestTemporaryFullAccuracy() }
+    }
+
     private fun test(block: suspend () -> Unit) = runTest(scheduler) { block() }
 
     private suspend fun makeReady() {
@@ -151,6 +158,7 @@ class PluginHandlersTest {
         "getSensors" to op { handlers.getSensors() },
         "checkPermissions" to op { handlers.checkPermissions() },
         "requestPermissions" to op { handlers.requestPermissions(JSONObject(), host) },
+        "requestTemporaryFullAccuracy" to op { handlers.requestTemporaryFullAccuracy() },
         "log" to op { handlers.log(json("""{"level":"info","message":"m"}""")) },
         "getLog" to op { handlers.getLog(JSONObject()) },
         "destroyLog" to op { handlers.destroyLog() },
@@ -191,7 +199,7 @@ class PluginHandlersTest {
     fun `allow-list matches the contract`() {
         assertEquals(
             setOf(
-                "ready", "getState", "checkPermissions", "requestPermissions", "getDeviceInfo", "getSensors", "log",
+                "ready", "getState", "checkPermissions", "requestPermissions", "requestTemporaryFullAccuracy", "getDeviceInfo", "getSensors", "log",
                 "getLog", "getProviderState", "openBatteryOptimizationSettings", "openPowerManagerSettings",
                 "openLocationSettings", "openAppSettings",
             ),
@@ -204,6 +212,10 @@ class PluginHandlersTest {
         activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         makeReady()
         for ((name, invoke) in invocations) {
+            if (name == "requestTemporaryFullAccuracy") {
+                assertRejects(ErrorCode.UNIMPLEMENTED) { invoke() }
+                continue
+            }
             try {
                 invoke()
             } catch (e: TrackingException) {

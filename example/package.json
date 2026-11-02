@@ -10,7 +10,8 @@
   "dependencies": {
     "@bricks-soft/capacitor-location-tracking": "file:..",
     "@capacitor/android": "8.5.2",
-    "@capacitor/core": "8.5.2"
+    "@capacitor/core": "8.5.2",
+    "@capacitor/ios": "8.5.2"
   },
   "devDependencies": {
     "@capacitor/cli": "8.5.2"

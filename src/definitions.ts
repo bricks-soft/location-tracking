@@ -3,7 +3,7 @@ import type { PermissionState, PluginListenerHandle } from '@capacitor/core';
 export type CallbackID = string;
 export type DesiredAccuracy = 'high' | 'balanced' | 'low' | 'passive';
 export type LocationProviderSetting = 'auto' | 'gms' | 'hms' | 'android';
-export type LocationBackend = 'gms' | 'hms' | 'android' | 'web';
+export type LocationBackend = 'gms' | 'hms' | 'android' | 'web' | 'corelocation';
 export type TrackingMode = 'location' | 'geofences';
 export type LogLevel = 'off' | 'error' | 'warn' | 'info' | 'debug' | 'verbose';
 export type ActivityType = 'still' | 'on_foot' | 'walking' | 'running' | 'on_bicycle' | 'in_vehicle' | 'unknown';
@@ -22,7 +22,7 @@ export type HttpMethod = 'POST' | 'PUT' | 'PATCH';
 export type NotificationPriority = 'min' | 'low' | 'default' | 'high' | 'max';
 export type PermissionType = 'location' | 'backgroundLocation' | 'activityRecognition' | 'notifications';
 export type ConnectivityType = 'wifi' | 'cellular' | 'ethernet' | 'other' | 'none';
-export type HeartbeatStrategy = 'exact' | 'listener_with_backup' | 'idle_paced' | 'disabled';
+export type HeartbeatStrategy = 'exact' | 'listener_with_backup' | 'idle_paced' | 'timer' | 'disabled';
 /** Rejection `code` of every failed promise. */
 export type ErrorCode =
   | 'NOT_READY'
@@ -291,6 +291,7 @@ export interface NotificationConfig {
  * (`tracking_start` reason `resume_notification`). Uses the tracking notification's small icon and color.
  */
 export interface ResumeNotificationConfig {
+  delay?: number;
   /** @default false */
   enabled?: boolean;
   /** @default app label */
@@ -477,7 +478,7 @@ export interface DeviceReadings {
 
 /** Scheduling metadata of a `heartbeat` record (snake_case = wire format). */
 export interface HeartbeatMeta {
-  strategy: 'exact' | 'listener_with_backup' | 'idle_paced';
+  strategy: 'exact' | 'listener_with_backup' | 'idle_paced' | 'timer';
   /** heartbeat.minInterval (s) when the heartbeat was created */
   min_interval: number;
   /** heartbeat.maxInterval (s) when the heartbeat was created */
@@ -679,7 +680,7 @@ export interface PowerManagerInfo {
 }
 
 export interface DeviceInfo {
-  platform: 'android' | 'web';
+  platform: 'android' | 'web' | 'ios';
   manufacturer: string;
   model: string;
   brand: string;
@@ -788,6 +789,7 @@ export interface LocationTrackingPlugin {
   checkPermissions(): Promise<PermissionStatus>;
   /** default all four, order: location, notifications, activityRecognition, backgroundLocation */
   requestPermissions(options?: { permissions?: PermissionType[] }): Promise<PermissionStatus>;
+  requestTemporaryFullAccuracy(options: { purposeKey: string }): Promise<ProviderState>;
 
   log(options: { level: Exclude<LogLevel, 'off'>; message: string }): Promise<void>;
   getLog(options?: LogQuery): Promise<{ log: string }>;

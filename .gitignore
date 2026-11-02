@@ -38,3 +38,13 @@ examples/field-force/plugins/premise-monitor/android/build
 
 # e2e (round 2)
 e2e-artifacts
+
+.build/
+.swiftpm/
+*.xcresult/
+*.tgz
+example/ios/App/App/public/
+example/ios/App/App/capacitor.config.json
+example/ios/App/Pods/
+example/ios/App/build/
+example/ios/App/CapApp-SPM/Package.resolved

@@ -13,6 +13,7 @@ struct TrackedLocation: Codable, Equatable {
     var time: Double
     var elapsed: Double? = nil
     var isMock = false
+    var session: Double? = nil
 
     var accuracyMeters: Double { accuracy.isFinite && accuracy > 0 ? accuracy : 0 }
     func isOlder(than other: TrackedLocation) -> Bool { Geo.elapsed(self, other) > 0 }

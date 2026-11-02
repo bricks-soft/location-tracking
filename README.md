@@ -74,7 +74,7 @@ whether the user really kept tracking on.
 | Platform | Status |
 |---|---|
 | Android (API 24+, Kotlin) | ✔ Supported |
-| iOS 15+ | Native route tracking, heartbeat, restore, positions and HTTP sync. Geofencing follows in stage 3. |
+| iOS 15+ | Native route tracking, heartbeat, restore, positions and HTTP sync. Geofencing on iOS 17+, up to 20 geofences. |
 | Web | Stub for development only: positions through `navigator.geolocation`, an in-memory config, permissions and device info. Nothing is stored or uploaded, and tracking can't be started. Everything else rejects with `UNIMPLEMENTED`. See [Web stub](#web-stub). |
 
 ## Installation
@@ -914,7 +914,7 @@ How to measure the cost on a real phone: procedure M-04 in the
 
 ## Geofencing
 
-- Up to **100** geofences (`TOO_MANY_GEOFENCES` beyond that). An identifier is 1–100 characters; adding a geofence
+- Up to **100** geofences on Android and **20** on iOS (`TOO_MANY_GEOFENCES` beyond that). An identifier is 1–100 characters; adding a geofence
   with an existing identifier replaces it. `loiteringDelay` must be ≥ 0. The identifier `__lt_stationary__` is
   reserved for the plugin's stationary region: `addGeofence` rejects it with `INVALID_ARGUMENT`.
 - The stationary region (see [Battery](#battery)) does not count against the 100. GMS accepts at most 100 geofences
@@ -1150,7 +1150,7 @@ Every rejected promise has a `code` (see the `ErrorCode` type) and a `message`.
 | `NO_URL` | `sync()` was called without a valid `http.url`. |
 | `HTTP_ERROR` | `sync()` got a non-2xx response. |
 | `NETWORK_ERROR` | `sync()` failed with a network or I/O error. |
-| `TOO_MANY_GEOFENCES` | Adding the geofences would exceed 100 (or the OS geofence limit reported by GMS/HMS). |
+| `TOO_MANY_GEOFENCES` | Adding the geofences would exceed 100 on Android, 20 on iOS (or the OS geofence limit reported by GMS/HMS). |
 | `NO_ACTIVITY` | `emailLog()` was called while no Activity is attached. (The `open*Settings` methods work without one.) |
 | `IO_ERROR` | Storage or file error (database, log files). |
 | `UNIMPLEMENTED` | Not available on this platform (web stub, iOS). |
@@ -3031,8 +3031,8 @@ MIT, © 2026 Bricks Soft. See [LICENSE](LICENSE).
 ## iOS setup
 
 The iOS implementation supports native route tracking, motion detection, heartbeat audit records, restore, check-in
-notifications, configuration, SQLite queueing, HTTP sync, permissions, current positions and watches. Geofencing follows
-in stage 3; its methods currently reject with `UNAVAILABLE`.
+notifications, configuration, SQLite queueing, HTTP sync, permissions, current positions and watches. Geofencing needs
+iOS 17; below it, `startGeofences` and the geofence methods reject with `UNAVAILABLE`.
 
 The deployment target is iOS 15. Install `@capacitor/ios` 8 and run `npx cap sync ios`. Both SPM and CocoaPods are supported.
 In the host app's Info.plist, add:
@@ -3079,6 +3079,14 @@ Enable `notification.resume` and request `notifications` permission for a pendin
 Its iOS `delay` defaults to 600 seconds and is raised to `heartbeat.maxInterval + 60` when lower. Fixes and records move
 one pending notification, at most once a minute. Stop and session expiry cancel it. A tap opens the app and restores the
 original session deadline. The plugin leaves Capacitor's notification-center delegate in place.
+
+Geofences use one [`CLMonitor`](https://developer.apple.com/documentation/corelocation/clmonitor), opened again under the
+same name at every launch, and are registered while tracking runs. A polygon registers its enclosing circle and is
+hit-tested against fixes while the device is inside that circle. DWELL is synthesized from the time inside, so it fires
+only while the app runs. With Always authorization on iOS 18 and later, the plugin holds a
+[`CLServiceSession`](https://developer.apple.com/documentation/corelocation/clservicesession) so events also arrive when
+the app is not in use; with When In Use they arrive only while it runs. While location accuracy is approximate, stored
+geofences stay inactive and a `locationerror` with `PERMISSION_DENIED` says so.
 
 `stopOnTerminate` handles the best-effort termination callback. An OS kill without that callback preserves enabled intent,
 even when `stopOnTerminate` is true. `startOnBoot` is ignored. Deadlines use the continuous elapsed clock within the process.

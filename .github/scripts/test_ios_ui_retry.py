@@ -39,6 +39,10 @@ class StartupOnlyTests(unittest.TestCase):
     def test_only_a_runner_that_never_started_is_retryable(self):
         self.assertTrue(startup_only(*STARTUP))
 
+    def test_the_xcode_26_wording_of_the_startup_failure_is_retryable(self):
+        hung = 'The test runner hung before establishing connection.'
+        self.assertTrue(startup_only(summary(failures=[(runner_error(), hung)]), tree(('System Failures', [case(runner_error(), 'Failed', [hung])]))))
+
     def test_executed_or_failed_tests_are_never_retryable(self):
         self.assertFalse(startup_only(*ASSERTION))
         self.assertFalse(startup_only(*MIXED))
@@ -98,22 +102,24 @@ class WrapperTests(unittest.TestCase):
         environment.pop('IOS_SIMULATOR', None)
         result = subprocess.run([sys.executable, str(SCRIPTS / 'ios-ui-run.py'), sys.executable, str(work / 'xcodebuild.py'), '-resultBundlePath', str(bundle)], env=environment, capture_output=True, text=True, timeout=120)
         attempts = int((work / 'attempts').read_text())
-        return result.returncode, attempts, bundle.exists(), (work / 'ios-permissions-runner-bootstrap.xcresult').exists()
+        return result.returncode, attempts, bundle.exists(), sorted(path.name for path in work.glob('*-runner-bootstrap*.xcresult'))
 
     def test_pure_assertion_failure_runs_once_and_fails(self):
-        self.assertEqual(self.run_wrapper([{'code': 65, 'bundle': ASSERTION}]), (65, 1, True, False))
+        self.assertEqual(self.run_wrapper([{'code': 65, 'bundle': ASSERTION}]), (65, 1, True, []))
 
-    def test_pure_startup_failure_relaunches_once_and_keeps_both_bundles(self):
-        self.assertEqual(self.run_wrapper([{'code': 65, 'bundle': STARTUP}, {'code': 0, 'bundle': PASSED}]), (0, 2, True, True))
+    def test_pure_startup_failure_relaunches_and_keeps_every_bundle(self):
+        self.assertEqual(self.run_wrapper([{'code': 65, 'bundle': STARTUP}, {'code': 0, 'bundle': PASSED}]), (0, 2, True, ['ios-permissions-runner-bootstrap.xcresult']))
+        self.assertEqual(self.run_wrapper([{'code': 65, 'bundle': STARTUP}, {'code': 65, 'bundle': STARTUP}, {'code': 0, 'bundle': PASSED}]), (0, 3, True, ['ios-permissions-runner-bootstrap-2.xcresult', 'ios-permissions-runner-bootstrap.xcresult']))
 
     def test_mixed_assertion_and_startup_failure_is_not_retried(self):
-        self.assertEqual(self.run_wrapper([{'code': 65, 'bundle': MIXED}, {'code': 0, 'bundle': PASSED}]), (65, 1, True, False))
+        self.assertEqual(self.run_wrapper([{'code': 65, 'bundle': MIXED}, {'code': 0, 'bundle': PASSED}]), (65, 1, True, []))
+        self.assertEqual(self.run_wrapper([{'code': 65, 'bundle': STARTUP}, {'code': 65, 'bundle': MIXED}, {'code': 0, 'bundle': PASSED}]), (65, 2, True, ['ios-permissions-runner-bootstrap.xcresult']))
 
-    def test_second_startup_failure_is_reported(self):
-        self.assertEqual(self.run_wrapper([{'code': 65, 'bundle': STARTUP}, {'code': 65, 'bundle': STARTUP}, {'code': 0, 'bundle': PASSED}]), (65, 2, True, True))
+    def test_a_third_startup_failure_is_reported(self):
+        self.assertEqual(self.run_wrapper([{'code': 65, 'bundle': STARTUP}] * 3 + [{'code': 0, 'bundle': PASSED}]), (65, 3, True, ['ios-permissions-runner-bootstrap-2.xcresult', 'ios-permissions-runner-bootstrap.xcresult']))
 
     def test_unreadable_result_bundle_fails_closed(self):
-        self.assertEqual(self.run_wrapper([{'code': 65, 'bundle': None}, {'code': 0, 'bundle': PASSED}]), (65, 1, True, False))
+        self.assertEqual(self.run_wrapper([{'code': 65, 'bundle': None}, {'code': 0, 'bundle': PASSED}]), (65, 1, True, []))
 
 
 if __name__ == '__main__':

@@ -23,6 +23,8 @@ final class TrackingEngine {
     private var lastAttempt: Double?
     private var checkInConfig: Data?
     private var assertion: ExecutionAssertion?
+    var geofences: GeofenceManager?
+    private var geofenceDemand = false
     lazy var timers = TrackingTimers(queue: core.queue, now: { [unowned self] in self.core.clock().elapsed }, automatic: core.automaticTimers)
     lazy var notifier = CheckInNotifier(queue: core.queue, clock: core.clock) { [weak self] in self?.core.log.write("warn", $0) }
     init(core: TrackingCore) {
@@ -41,7 +43,7 @@ final class TrackingEngine {
     func offerLastLocation(_ location: TrackedLocation?) { backendLocation = location }
     func context(provider: TrackingJSON, foreground: Bool) { self.provider = provider; self.foreground = foreground }
     func restore() throws {
-        guard core.runtime.flag("enabled") else { applyProfile(force: true); notifier.cancel(); return }
+        guard core.runtime.flag("enabled") else { applyProfile(force: true); notifier.cancel(); geofences?.releaseStale(); return }
         guard !running else { return }
         if let remaining = deadline?.remaining(minutes: geo.number("stopAfterElapsedMinutes"), now: core.clock()), remaining <= 0 { try stop(reason: "stop_after_elapsed"); return }
         guard provider["enabled"] as? Bool != false else { scheduleElapsedStop(); return }
@@ -87,12 +89,15 @@ final class TrackingEngine {
         if mode == "location" { initialFixRequest() }
         rescheduleHeartbeat(force: true)
         touchCheckIn(force: true)
+        updateGeofenceAccess()
+        geofences?.onTrackingStarted(always: provider.text("permission") == "always")
     }
     func stop(reason: String = "stop") throws {
         notifier.cancel()
         guard running || core.runtime.flag("enabled") else { return }
         running = false; timers.cancelAll(); armedHeartbeat = nil; lastAttempt = nil
         assertion?.finish(); assertion = nil
+        geofences?.onTrackingStopped()
         cancelInitialFix()
         submit("tracking_stop", bestKnown, reason: reason)
         let stopped: TrackingJSON = ["enabled": false, "isMoving": false, "lastStopReason": reason, "lastStopAt": iso(Date(timeIntervalSince1970: core.clock().wall / 1000))]
@@ -138,6 +143,8 @@ final class TrackingEngine {
         submit("providerchange", bestKnown)
         if value.flag("enabled") && value.text("permission") == "denied" { try? stop(reason: "permission_denied"); return }
         if value.flag("enabled") && (!previous.flag("enabled") || previous.text("permission") != value.text("permission")) { applyProfile(force: true) }
+        if previous.text("accuracy") != value.text("accuracy") { updateGeofenceAccess() }
+        if previous.text("permission") != value.text("permission") { geofences?.onTrackingStarted(always: value.text("permission") == "always") }
     }
     func changePace(_ moving: Bool) {
         guard running, mode == "location" else { return }
@@ -150,8 +157,17 @@ final class TrackingEngine {
         if !batch.isEmpty { touchCheckIn() }
         for raw in batch {
             guard running else { return }
-            guard case .accepted(let fix) = processor.process(raw, filter: geo.object("filter")) else { continue }
+            guard case .accepted(var fix) = processor.process(raw, filter: geo.object("filter")) else { continue }
+            fix.session = core.runtime["trackingStartedAt"] as? Double
             lastFix = fix
+            geofences?.onLocation(fix)
+            guard running else { return }
+            if mode != "location" {
+                let delta = odometer.onLocation(fix, runtime: core.runtime, threshold: geo.object("filter").number("odometerAccuracyThreshold", 20))
+                if delta > 0 { update(["odometer": core.odometer + delta]) }
+                rememberLocation(fix)
+                continue
+            }
             let wasMoving = motion.isMoving
             let oldAnchor = motion.anchor
             let actions = motion.onLocation(fix)
@@ -170,7 +186,8 @@ final class TrackingEngine {
     }
     func initialFix(_ raw: TrackedLocation?) {
         guard running, mode == "location", !motionRecorded else { return }
-        if let raw, case .accepted(let fix) = processor.process(raw, filter: geo.object("filter")) {
+        if let raw, case .accepted(var fix) = processor.process(raw, filter: geo.object("filter")) {
+            fix.session = core.runtime["trackingStartedAt"] as? Double
             if lastFix == nil || !fix.isOlder(than: lastFix!) { lastFix = fix }
             motion.setAnchor(fix)
         }
@@ -220,7 +237,7 @@ final class TrackingEngine {
     private func rememberLocation(_ fix: TrackedLocation, force: Bool = false) {
         let now = core.clock().elapsed
         guard force || lastLocationPersisted == nil || now - lastLocationPersisted! >= 10000 else { return }
-        lastLocationPersisted = now; update(["lastLocation": fix.json, "lastLocationSession": core.runtime["trackingStartedAt"] ?? NSNull()])
+        lastLocationPersisted = now; update(["lastLocation": fix.json])
     }
     private func update(_ values: TrackingJSON) {
         do { try core.updateRuntime(values) }
@@ -228,7 +245,7 @@ final class TrackingEngine {
     }
     private func applyProfile(force: Bool = false) {
         guard let source = core.routeSource else { return }
-        let profile = RouteProfile(enabled: running && mode == "location", moving: motion.isMoving, accuracy: geo.text("desiredAccuracy", "high"), activityEnabled: !config.object("activity").flag("disableMotionActivityUpdates"), sessionID: sessionID)
+        let profile = RouteProfile(enabled: running && (mode == "location" || geofenceDemand), moving: mode == "location" ? motion.isMoving : geofenceDemand, accuracy: geo.text("desiredAccuracy", "high"), activityEnabled: mode == "location" && !config.object("activity").flag("disableMotionActivityUpdates"), sessionID: sessionID)
         DispatchQueue.main.async { source.apply(profile, force: force) }
     }
     private func initialFixRequest() {
@@ -297,6 +314,28 @@ final class TrackingEngine {
         guard let text = value as? String else { return nil }
         let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter.date(from: text).map { $0.timeIntervalSince1970 * 1000 }
+    }
+    func geofenceDemandChanged(_ needs: Bool) {
+        guard geofenceDemand != needs else { return }
+        geofenceDemand = needs
+        if running { applyProfile() }
+    }
+    func recordGeofence(_ spec: GeofenceSpec, _ action: GeofenceAction, _ location: TrackedLocation?) {
+        var wire = core.makeRecord(event: "geofence", fix: location)
+        var hit: TrackingJSON = ["identifier": spec.identifier, "action": action.rawValue]
+        if let extras = spec.extras { hit["extras"] = extras }
+        wire["geofence"] = hit
+        core.deliver(wire, location: location)
+    }
+    private func updateGeofenceAccess() { geofences?.setSuspended(provider.text("accuracy") == "approximate") }
+    func geofenceFailures(_ failures: [MonitorFailure]) {
+        for failure in failures {
+            core.log.write("error", failure.message + " (" + failure.code + ")")
+            core.emit("locationerror", ["code": failure.code, "message": failure.message, "backend": "corelocation", "retryInMs": NSNull()])
+        }
+    }
+    func geofencesBlocked() {
+        core.emit("locationerror", ["code": "PERMISSION_DENIED", "message": "Geofences need precise location; stored geofences stay inactive while location accuracy is approximate", "backend": "corelocation", "retryInMs": NSNull()])
     }
     private func submit(_ event: String, _ location: TrackedLocation?, reason: String? = nil) {
         var wire = core.makeRecord(event: event, fix: location)

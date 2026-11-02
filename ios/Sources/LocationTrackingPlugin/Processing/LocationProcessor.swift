@@ -76,8 +76,8 @@ final class Odometer {
     }
     func reset(session: Double?) { anchor = nil; self.session = session }
     static func belongs(_ last: TrackedLocation, to started: Double, runtime: TrackingJSON) -> Bool {
-        guard runtime.keys.contains("lastLocationSession") else { return last.time >= started }
-        return runtime["lastLocationSession"] as? Double == started
+        guard let session = last.session else { return last.time >= started }
+        return session == started
     }
     private func passes(_ fix: TrackedLocation, _ threshold: Double) -> Bool { fix.accuracy <= threshold && Geo.valid(fix.latitude, fix.longitude) }
 }

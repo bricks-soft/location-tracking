@@ -52,8 +52,35 @@
     assert((await plugin.getOdometer()).odometer === 123.5, 'odometer set');
     assert((await plugin.resetOdometer()).odometer === 0, 'odometer reset');
     await rejects('sync', 'NO_URL');
-    for (const method of ['startGeofences', 'addGeofence', 'addGeofences', 'removeGeofence', 'removeGeofences', 'getGeofences', 'getGeofence', 'geofenceExists']) {
-      await rejects(method, 'UNAVAILABLE');
+    if (parseInt((await plugin.getDeviceInfo()).osVersion, 10) >= 17) {
+      await plugin.removeGeofences();
+      const changes = [];
+      const changeListener = await plugin.addListener('geofenceschange', (event) => changes.push(event));
+      await plugin.addGeofence({ geofence: { identifier: 'smoke-circle', latitude: 24.7136, longitude: 46.6753, radius: 150, extras: { kind: 'circle' } } });
+      await plugin.addGeofences({ geofences: [{ identifier: 'smoke-polygon', vertices: [[24.712, 46.674], [24.712, 46.677], [24.715, 46.677], [24.715, 46.674]], notifyOnDwell: true, loiteringDelay: 5000 }] });
+      await plugin.addGeofences({ geofences: [] });
+      const stored = (await plugin.getGeofences()).geofences;
+      assert(stored.map((g) => g.identifier).join() === 'smoke-circle,smoke-polygon', 'geofences stored in identifier order');
+      const polygon = stored.find((g) => g.identifier === 'smoke-polygon');
+      assert(polygon.vertices.length === 4 && polygon.radius >= 50 && polygon.notifyOnDwell === true, 'polygon stores its enclosing circle');
+      assert((await plugin.getGeofence({ identifier: 'smoke-circle' })).geofence.extras.kind === 'circle', 'get geofence');
+      assert((await plugin.getGeofence({ identifier: 'missing' })).geofence === null, 'unknown geofence is null');
+      assert((await plugin.geofenceExists({ identifier: 'smoke-polygon' })).exists, 'geofence exists');
+      await rejects('addGeofence', 'INVALID_ARGUMENT', { geofence: { identifier: 'bad', latitude: 95, longitude: 0, radius: 10 } });
+      await rejects('addGeofences', 'TOO_MANY_GEOFENCES', { geofences: Array.from({ length: 19 }, (_, i) => ({ identifier: 'extra' + i, latitude: 24.7, longitude: 46.6, radius: 100 })) });
+      await plugin.removeGeofence({ identifier: 'smoke-circle' });
+      await plugin.removeGeofences({ identifiers: [] });
+      assert((await plugin.getGeofences()).geofences.length === 1, 'remove one geofence');
+      assert((await plugin.startGeofences()).trackingMode === 'geofences', 'geofence mode starts');
+      assert(!(await plugin.stop()).enabled, 'geofence mode stops');
+      await plugin.removeGeofences();
+      assert(!(await plugin.geofenceExists({ identifier: 'smoke-polygon' })).exists, 'remove all geofences');
+      assert(changes.length === 4 && changes[3].off[0] === 'smoke-polygon', 'geofenceschange events');
+      await changeListener.remove();
+    } else {
+      for (const method of ['startGeofences', 'addGeofence', 'addGeofences', 'removeGeofence', 'removeGeofences', 'getGeofences', 'getGeofence', 'geofenceExists']) {
+        await rejects(method, 'UNAVAILABLE');
+      }
     }
     await plugin.isPowerSaveMode();
     await plugin.getBatteryOptimizationStatus();

@@ -3,6 +3,7 @@ import re
 import subprocess
 
 STARTUP_FAILURE = 'Test runner never began executing tests after launching'
+STARTUP_FAILURES = {STARTUP_FAILURE, 'The test runner hung before establishing connection.'}
 RUNNER_ERROR = re.compile(r'^\S+-Runner \(\d+\) encountered an error$')
 
 
@@ -21,14 +22,14 @@ def startup_only(summary, tests):
             return False
         if not failures or summary['failedTests'] != len(failures) or summary['totalTestCount'] != len(failures):
             return False
-        if any(failure['failureText'] != STARTUP_FAILURE or not RUNNER_ERROR.match(failure['testName']) for failure in failures):
+        if any(failure['failureText'] not in STARTUP_FAILURES or not RUNNER_ERROR.match(failure['testName']) for failure in failures):
             return False
         cases = list(test_cases(tests['testNodes']))
         if len(cases) != len(failures):
             return False
         for suite, case in cases:
             messages = [child.get('name') for child in case.get('children', []) if child.get('nodeType') == 'Failure Message']
-            if suite != 'System Failures' or case.get('result') != 'Failed' or not RUNNER_ERROR.match(case.get('name', '')) or messages != [STARTUP_FAILURE]:
+            if suite != 'System Failures' or case.get('result') != 'Failed' or not RUNNER_ERROR.match(case.get('name', '')) or len(messages) != 1 or messages[0] not in STARTUP_FAILURES:
                 return False
         return True
     except (KeyError, TypeError, AttributeError):

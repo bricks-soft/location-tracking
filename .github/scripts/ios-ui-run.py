@@ -49,9 +49,11 @@ def attempt(deadline):
 try:
     deadline = time.monotonic() + 2400
     code = attempt(deadline)
-    if code != 0 and result_bundle is not None and bundle_startup_only(result_bundle):
-        kept = result_bundle.with_name(result_bundle.stem + '-runner-bootstrap.xcresult')
-        print('The result bundle records only a test runner that never began executing tests; relaunching the same tests once and keeping ' + kept.name, flush=True)
+    for relaunch in range(1, 3):
+        if code == 0 or result_bundle is None or not bundle_startup_only(result_bundle):
+            break
+        kept = result_bundle.with_name(result_bundle.stem + '-runner-bootstrap' + ('' if relaunch == 1 else '-' + str(relaunch)) + '.xcresult')
+        print('The result bundle records only a test runner that never began executing tests; relaunching the same tests (' + str(relaunch) + ' of 2) and keeping ' + kept.name, flush=True)
         shutil.move(str(result_bundle), str(kept))
         code = attempt(deadline)
     raise SystemExit(code)

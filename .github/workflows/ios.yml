@@ -60,6 +60,11 @@ jobs:
         env:
           IOS_SCENARIO_APP: ${{ runner.temp }}/ios-ui-build/Build/Products/Debug-iphonesimulator/App.app
         run: python3 .github/scripts/ios-stage2-simulator.py
+      - name: Geofence simulator scenarios
+        if: ${{ !cancelled() }}
+        env:
+          IOS_SCENARIO_APP: ${{ runner.temp }}/ios-ui-build/Build/Products/Debug-iphonesimulator/App.app
+        run: python3 .github/scripts/ios-stage3-simulator.py
       - name: Export UI attachments
         if: ${{ !cancelled() }}
         run: |
@@ -94,7 +99,7 @@ jobs:
             ${{ runner.temp }}/ios-tests.xcresult
             ${{ runner.temp }}/ios-permissions.xcresult
             ${{ runner.temp }}/ios-checkin.xcresult
-            ${{ runner.temp }}/*-runner-bootstrap.xcresult
+            ${{ runner.temp }}/*-runner-bootstrap*.xcresult
             ${{ runner.temp }}/ios-precise-host-launch-*.log
             ${{ runner.temp }}/backoffice.log
             ${{ runner.temp }}/native-launch.log
@@ -103,6 +108,7 @@ jobs:
             ${{ runner.temp }}/ui-samples
             ${{ runner.temp }}/app-thread-*.txt
             ${{ runner.temp }}/ios-stage2
+            ${{ runner.temp }}/ios-stage3
   package:
     runs-on: macos-26
     timeout-minutes: 45
@@ -233,6 +239,11 @@ jobs:
         env:
           IOS_SCENARIO_APP: ${{ runner.temp }}/ios-legacy-ui-build/Build/Products/Debug-iphonesimulator/App.app
         run: python3 .github/scripts/ios-stage2-simulator.py
+      - name: Legacy geofence availability
+        if: ${{ !cancelled() && env.LEGACY_AVAILABLE == 'true' }}
+        env:
+          IOS_SCENARIO_APP: ${{ runner.temp }}/ios-legacy-ui-build/Build/Products/Debug-iphonesimulator/App.app
+        run: python3 .github/scripts/ios-stage3-simulator.py
       - name: Export legacy UI attachments
         if: ${{ !cancelled() && env.LEGACY_AVAILABLE == 'true' }}
         run: |
@@ -271,7 +282,8 @@ jobs:
             ${{ runner.temp }}/legacy-launch.log
             ${{ runner.temp }}/ios-legacy-permissions.xcresult
             ${{ runner.temp }}/ios-legacy-checkin.xcresult
-            ${{ runner.temp }}/*-runner-bootstrap.xcresult
+            ${{ runner.temp }}/*-runner-bootstrap*.xcresult
             ${{ runner.temp }}/ios-precise-host-launch-*.log
             ${{ runner.temp }}/ui-samples
             ${{ runner.temp }}/ios-stage2
+            ${{ runner.temp }}/ios-stage3

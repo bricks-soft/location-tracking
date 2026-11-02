@@ -24,6 +24,7 @@ final class PermissionUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["Request Location"].waitForExistence(timeout: 30))
         XCTAssertTrue(app.staticTexts["Location permission: prompt"].exists)
+        XCTAssertFalse(XCUIApplication(bundleIdentifier: "com.apple.springboard").alerts.firstMatch.waitForExistence(timeout: 5), "a launch without a permission request must not prompt")
         return app
     }
     func testLocationPromptDenial() {

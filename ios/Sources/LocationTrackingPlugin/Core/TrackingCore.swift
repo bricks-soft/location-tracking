@@ -26,7 +26,7 @@ final class TrackingCore {
     private let monitor = NWPathMonitor()
     lazy var syncer = Syncer(queue: queue, store: store, config: config, emit: emit)
 
-    init(queue: DispatchQueue, permissions: Permissions, positions: Positions, emit: @escaping (String, TrackingJSON) -> Void, record: @escaping (TrackingJSON) -> Void, url: URL? = nil, clock: @escaping () -> TrackingInstant = TrackingClock.now, automaticTimers: Bool = true) throws {
+    init(queue: DispatchQueue, permissions: Permissions, positions: Positions, emit: @escaping (String, TrackingJSON) -> Void, record: @escaping (TrackingJSON) -> Void, url: URL? = nil, clock: @escaping () -> TrackingInstant = TrackingClock.now, automaticTimers: Bool = true, geofenceBackend: GeofenceBackend? = nil) throws {
         self.clock = clock; self.automaticTimers = automaticTimers
         self.queue = queue; self.permissions = permissions; self.positions = positions; self.emit = emit; self.record = record
         let path = try url ?? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("LocationTracking/tracking.sqlite")
@@ -47,6 +47,26 @@ final class TrackingCore {
             self.emit("connectivitychange", ["connected": self.syncer.connected, "type": self.network])
         }
         monitor.start(queue: queue)
+        if let geofenceBackend { attachGeofences(geofenceBackend) }
+        else if #available(iOS 17.0, *) {
+            let manager = permissions.manager
+            attachGeofences(GeofenceMonitor.shared(queue: queue) { manager.authorizationStatus })
+        }
+    }
+    var geofences: GeofenceManager? { engine.geofences }
+    private func attachGeofences(_ backend: GeofenceBackend) {
+        let manager = GeofenceManager(store: SQLiteGeofenceStore(store: store), backend: backend, queue: queue, now: { [unowned self] in self.clock().wall }, automaticTimers: automaticTimers, initialTriggerEntry: { [unowned self] in self.config.value.object("geofence").flag("initialTriggerEntry", true) }, enabled: { [unowned self] in self.runtime.flag("enabled") }, storedLocation: { [unowned self] in TrackedLocation.from(self.runtime.object("lastLocation")) }, notify: { [unowned self] in self.engine.recordGeofence($0, $1, $2) }, changed: { [unowned self] on, off in self.emit("geofenceschange", ["on": on.map(\.json), "off": off]) }, log: { [unowned self] level, message in self.log.write(level, "Geofences: " + message) })
+        manager.demandChanged = { [unowned self] in self.engine.geofenceDemandChanged($0) }
+        manager.blocked = { [unowned self] in self.engine.geofencesBlocked() }
+        if let monitor = backend as? GeofenceMonitor {
+            monitor.transitions = { [weak manager] in manager?.onTransitions($0) }
+            monitor.failures = { [weak self] in self?.engine.geofenceFailures($0) }
+        }
+        engine.geofences = manager
+    }
+    private func geofenceManager() throws -> GeofenceManager {
+        guard let geofences else { throw TrackingError("UNAVAILABLE", "Geofencing requires iOS 17") }
+        return geofences
     }
     deinit { monitor.cancel() }
     static let allowed = Set(["ready", "getState", "checkPermissions", "requestPermissions", "requestTemporaryFullAccuracy", "getDeviceInfo", "getSensors", "log", "getLog", "getProviderState", "openBatteryOptimizationSettings", "openPowerManagerSettings", "openLocationSettings", "openAppSettings"])
@@ -70,13 +90,15 @@ final class TrackingCore {
                 var result = state(); result["warnings"] = warnings
                 callback(.success(result)); syncer.automatic()
             case "getState": callback(.success(state()))
-            case "start":
+            case "start", "startGeofences":
+                let mode = method == "start" ? "location" : "geofences"
+                if mode == "geofences" { _ = try geofenceManager() }
                 DispatchQueue.main.async {
                     let provider = self.permissions.provider
                     let foreground = UIApplication.shared.applicationState != .background
                     let lastLocation = self.routeSource?.lastLocation
                     self.queue.async {
-                        do { self.engine.context(provider: provider, foreground: foreground); self.engine.offerLastLocation(lastLocation); try self.engine.start(); callback(.success(self.state())) }
+                        do { self.engine.context(provider: provider, foreground: foreground); self.engine.offerLastLocation(lastLocation); try self.engine.start(mode: mode); callback(.success(self.state())) }
                         catch { callback(.failure(error)) }
                     }
                 }
@@ -115,8 +137,10 @@ final class TrackingCore {
                                 let fix = try result.get()
                                 if watch && self.config.value.object("geolocation").object("filter").flag("rejectMockLocations") && fix.sourceInformation?.isSimulatedBySoftware == true { return }
                                 let extras = self.config.value.object("persistence").object("extras").merging(options.object("extras")) { _, new in new }
-                                let wire = self.makeRecord(event: watch ? "watch_position" : "current_position", fix: TrackedLocation(fix), extras: extras, provider: provider)
-                                if options.flag("persist", !watch) { self.deliver(wire, location: TrackedLocation(fix)) }
+                                var location = TrackedLocation(fix)
+                                if self.runtime.flag("enabled") { location.session = self.runtime["trackingStartedAt"] as? Double }
+                                let wire = self.makeRecord(event: watch ? "watch_position" : "current_position", fix: location, extras: extras, provider: provider)
+                                if options.flag("persist", !watch) { self.deliver(wire, location: location) }
                                 callback(.success(wire))
                             } catch { callback(.failure(error)) }
                         }
@@ -155,7 +179,32 @@ final class TrackingCore {
                 log.write(try options.requiringString("level"), message); callback(.success([:]))
             case "getLog": callback(.success(["log": log.read(options)]))
             case "destroyLog": try log.clear(); callback(.success([:]))
-            case "startGeofences", "addGeofence", "addGeofences", "removeGeofence", "removeGeofences", "getGeofences", "getGeofence", "geofenceExists": throw TrackingError("UNAVAILABLE", "Geofencing is delivered in iOS stage 3 and requires iOS 17")
+            case "addGeofence": try geofenceManager().add([GeofenceSpec.parse(options.requiringObject("geofence"))]); callback(.success([:]))
+            case "addGeofences":
+                let manager = try geofenceManager()
+                guard let array = options["geofences"] as? [Any] else { throw TrackingError("INVALID_ARGUMENT", "geofences must be an array") }
+                let specs = try array.enumerated().map { index, item -> GeofenceSpec in
+                    guard let object = item as? TrackingJSON else { throw TrackingError("INVALID_ARGUMENT", "geofences[\(index)] must be an object") }
+                    return try GeofenceSpec.parse(object)
+                }
+                if !specs.isEmpty { try manager.add(specs) }
+                callback(.success([:]))
+            case "removeGeofence": try geofenceManager().remove([options.requiringString("identifier")]); callback(.success([:]))
+            case "removeGeofences":
+                let manager = try geofenceManager()
+                if options["identifiers"] == nil || options["identifiers"] is NSNull { try manager.removeAll() }
+                else {
+                    guard let array = options["identifiers"] as? [Any] else { throw TrackingError("INVALID_ARGUMENT", "identifiers must be an array") }
+                    let ids = try array.enumerated().map { index, item -> String in
+                        guard let id = item as? String, !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw TrackingError("INVALID_ARGUMENT", "identifiers[\(index)] must be a non-empty string") }
+                        return id
+                    }
+                    if !ids.isEmpty { try manager.remove(ids) }
+                }
+                callback(.success([:]))
+            case "getGeofences": callback(.success(["geofences": try geofenceManager().list().map(\.json)]))
+            case "getGeofence": callback(.success(["geofence": try geofenceManager().get(options.requiringString("identifier"))?.json ?? NSNull()]))
+            case "geofenceExists": callback(.success(["exists": try geofenceManager().get(options.requiringString("identifier")) != nil]))
             case "uploadLog": try logExport.upload(log.read([:]), options: options, completion: callback)
             case "emailLog":
                 let text = log.read([:])
@@ -209,7 +258,7 @@ final class TrackingCore {
         next["lastRecordAt"] = wire["recorded_at"]
         next["lastRecordElapsed"] = wire["elapsed_realtime_ms"] ?? clock().elapsed
         next["clockCheckpoint"] = clock().json
-        if let location { next["lastLocation"] = location.json; next["lastLocationSession"] = runtime["trackingStartedAt"] ?? NSNull() }
+        if let location { next["lastLocation"] = location.json }
         if wire.text("event") == "heartbeat" { next["lastHeartbeatAt"] = wire["recorded_at"] }
         return next
     }
@@ -226,6 +275,11 @@ final class TrackingCore {
         case "location", "current_position", "watch_position": emit("location", wire)
         case "motionchange": emit("location", wire); emit("motionchange", ["isMoving": wire.flag("is_moving"), "location": wire])
         case "heartbeat": emit("heartbeat", ["location": wire])
+        case "geofence":
+            let hit = wire.object("geofence")
+            var payload: TrackingJSON = ["identifier": hit["identifier"] ?? NSNull(), "action": hit["action"] ?? NSNull(), "location": wire]
+            if let extras = hit["extras"] { payload["extras"] = extras }
+            emit("geofence", payload)
         default: break
         }
         engine.recorded()

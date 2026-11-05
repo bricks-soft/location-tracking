@@ -1,9 +1,12 @@
+require 'tmpdir'
 require 'xcodeproj'
 
-project_path = File.join(ENV.fetch('RUNNER_TEMP'), 'ios-consumer/ios/App/App.xcodeproj')
+temp = ENV['RUNNER_TEMP'].to_s.empty? ? File.join(Dir.tmpdir, 'location-tracking-ios') : ENV['RUNNER_TEMP']
+
+project_path = File.join(temp, 'ios-consumer/ios/App/App.xcodeproj')
 project = Xcodeproj::Project.open(project_path)
 app = project.targets.find { |target| target.name == 'App' }
-info_path = File.join(ENV.fetch('RUNNER_TEMP'), 'ios-consumer/ios/App/App/Info.plist')
+info_path = File.join(temp, 'ios-consumer/ios/App/App/Info.plist')
 info = Xcodeproj::Plist.read_from_path(info_path)
 info['NSLocationDefaultAccuracyReduced'] = true
 Xcodeproj::Plist.write_to_path(info, info_path)
@@ -16,7 +19,7 @@ Dir.glob(File.join(Dir.pwd, 'ios/Tests/LocationTrackingPluginTests/*.swift')).ea
   tests.source_build_phase.add_file_reference(group.new_file(path))
 end
 package = project.new(Xcodeproj::Project::Object::XCLocalSwiftPackageReference)
-package.relative_path = File.join(ENV.fetch('RUNNER_TEMP'), 'ios-consumer/node_modules/@bricks-soft/capacitor-location-tracking')
+package.relative_path = File.join(temp, 'ios-consumer/node_modules/@bricks-soft/capacitor-location-tracking')
 project.root_object.package_references << package
 [app, tests].each do |target|
   product = project.new(Xcodeproj::Project::Object::XCSwiftPackageProductDependency)
@@ -76,7 +79,7 @@ ui_scheme.save_as(project_path, 'Permissions', true)
 scenario = project.main_group.new_group('ScenarioHost')
 app.source_build_phase.add_file_reference(scenario.new_file(File.join(Dir.pwd, 'ios/HostTests/ScenarioHost.swift')))
 project.save
-app_delegate = File.join(ENV.fetch('RUNNER_TEMP'), 'ios-consumer/ios/App/App/AppDelegate.swift')
+app_delegate = File.join(temp, 'ios-consumer/ios/App/App/AppDelegate.swift')
 File.write(app_delegate, File.read(app_delegate).sub('        LocationTrackingNative.bootstrap()', "        ScenarioHost.install()\n        LocationTrackingNative.bootstrap()"))
-scene_delegate = File.join(ENV.fetch('RUNNER_TEMP'), 'ios-consumer/ios/App/App/SceneDelegate.swift')
+scene_delegate = File.join(temp, 'ios-consumer/ios/App/App/SceneDelegate.swift')
 File.write(scene_delegate, File.read(scene_delegate).sub('window?.rootViewController = ExampleViewController()', 'window?.rootViewController = ScenarioHost.enabled ? ScenarioViewController() : ExampleViewController()'))

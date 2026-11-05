@@ -8,7 +8,7 @@ import textwrap
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
-from ios_ui_retry import STARTUP_FAILURE, startup_only
+from ui_retry import STARTUP_FAILURE, startup_only
 
 SCRIPTS = pathlib.Path(__file__).parent
 
@@ -90,7 +90,7 @@ FAKE_XCRUN = textwrap.dedent('''
 
 
 class WrapperTests(unittest.TestCase):
-    def run_wrapper(self, outcomes):
+    def run_wrapper(self, outcomes, runner_temp=True):
         work = pathlib.Path(tempfile.mkdtemp())
         binary = work / 'bin'
         binary.mkdir()
@@ -100,9 +100,17 @@ class WrapperTests(unittest.TestCase):
         bundle = work / 'ios-permissions.xcresult'
         environment = dict(os.environ, RUNNER_TEMP=str(work), FAKE_STATE=str(work / 'attempts'), FAKE_OUTCOMES=json.dumps(outcomes), PATH=str(binary) + os.pathsep + os.environ['PATH'])
         environment.pop('IOS_SIMULATOR', None)
-        result = subprocess.run([sys.executable, str(SCRIPTS / 'ios-ui-run.py'), sys.executable, str(work / 'xcodebuild.py'), '-resultBundlePath', str(bundle)], env=environment, capture_output=True, text=True, timeout=120)
+        if not runner_temp:
+            environment.pop('RUNNER_TEMP')
+            environment['TMPDIR'] = str(work)
+        result = subprocess.run([sys.executable, str(SCRIPTS / 'ui_run.py'), sys.executable, str(work / 'xcodebuild.py'), '-resultBundlePath', str(bundle)], env=environment, capture_output=True, text=True, timeout=120)
         attempts = int((work / 'attempts').read_text())
+        self.samples = (work if runner_temp else work / 'location-tracking-ios') / 'ui-samples'
         return result.returncode, attempts, bundle.exists(), sorted(path.name for path in work.glob('*-runner-bootstrap*.xcresult'))
+
+    def test_runs_without_actions_in_a_temporary_directory(self):
+        self.assertEqual(self.run_wrapper([{'code': 0, 'bundle': PASSED}], runner_temp=False), (0, 1, True, []))
+        self.assertTrue((self.samples / 'simulator.log').exists())
 
     def test_pure_assertion_failure_runs_once_and_fails(self):
         self.assertEqual(self.run_wrapper([{'code': 65, 'bundle': ASSERTION}]), (65, 1, True, []))

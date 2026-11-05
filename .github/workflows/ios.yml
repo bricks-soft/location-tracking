@@ -1,16 +1,30 @@
+# iOS checks on GitHub-hosted macOS runners. Every step calls .github/scripts/ios/check.sh, which also runs the same
+# steps on a Mac without Actions (`check.sh all`; scripts/release.sh calls it on macOS).
+#
+#   swift     XCTest, the permission and check-in UI tests and the shared e2e scenarios (e2e/plugin, P-S01 to P-S06)
+#             on the newest iOS simulator.
+#   package   a fresh tarball consumer with SPM and with CocoaPods: unsigned and ad-hoc Release builds, and the WebView
+#             bridge smoke (P-S07) on the simulator.
+#   legacy    the swift job's steps on an iOS 15 or 16 simulator (Xcode 16 on macos-15).
+#
+# Started by hand only (Actions tab -> iOS -> Run workflow, or `gh workflow run ios.yml --ref <branch>`): macOS runners
+# cost the most Actions minutes (docs/DECISIONS.md, "CI workflows"). Never add push, pull_request or schedule triggers.
 name: iOS
+
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
+
 permissions:
   contents: read
+
 concurrency:
-  group: ios-validation-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   swift:
     runs-on: macos-26
-    timeout-minutes: 75
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -18,53 +32,29 @@ jobs:
           node-version: 22
           check-latest: true
           cache: npm
-      - run: npm ci
-      - run: npm test
-      - name: Harness unit tests
-        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
-      - name: Start mock back office
-        run: |
-          cd testing/e2e-kit
-          npm ci
-          node src/cli/backoffice.ts --host 127.0.0.1 > "$RUNNER_TEMP/backoffice.log" 2>&1 &
-      - name: Prepare XCTest application host
-        run: |
-          node .github/scripts/ios-consumer.mjs SPM
-          ruby .github/scripts/ios-test-host.rb
-          ruby .github/scripts/ios-simulator-signing.rb
-      - name: Build XCTest
-        run: xcodebuild build-for-testing -project "$RUNNER_TEMP/ios-consumer/ios/App/App.xcodeproj" -scheme Stage1 -destination 'generic/platform=iOS Simulator' -derivedDataPath "$RUNNER_TEMP/ios-unit-build" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
-      - name: Select simulator
-        run: python3 .github/scripts/ios-simulator.py
+          cache-dependency-path: |
+            package-lock.json
+            testing/e2e-kit/package-lock.json
+            e2e/plugin/package-lock.json
+      - name: Build the plugin and the XCTest host
+        run: bash .github/scripts/ios/check.sh build
       - name: XCTest
-        run: xcodebuild test-without-building -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1 -project "$RUNNER_TEMP/ios-consumer/ios/App/App.xcodeproj" -scheme Stage1 -derivedDataPath "$RUNNER_TEMP/ios-unit-build" -destination "platform=iOS Simulator,id=$IOS_SIMULATOR" -resultBundlePath "$RUNNER_TEMP/ios-tests.xcresult" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
-      - name: Seed location for permission dialogs
-        run: |
-          xcrun simctl boot "$IOS_SIMULATOR" || true
-          xcrun simctl bootstatus "$IOS_SIMULATOR" -b
-          xcrun simctl location "$IOS_SIMULATOR" set '24.7136,46.6753'
-      - name: Build and install UI applications
-        run: |
-          xcodebuild build-for-testing -project "$RUNNER_TEMP/ios-consumer/ios/App/App.xcodeproj" -scheme Permissions -derivedDataPath "$RUNNER_TEMP/ios-ui-build" -destination "platform=iOS Simulator,id=$IOS_SIMULATOR" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
-          python3 .github/scripts/ios-ui-prepare.py "$RUNNER_TEMP/ios-ui-build/Build/Products/Debug-iphonesimulator"
-      - name: Permission UI tests
-        run: python3 .github/scripts/ios-ui-run.py xcodebuild test-without-building -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1 -project "$RUNNER_TEMP/ios-consumer/ios/App/App.xcodeproj" -scheme Permissions -only-testing:PermissionUITests/PermissionUITests -derivedDataPath "$RUNNER_TEMP/ios-ui-build" -destination "platform=iOS Simulator,id=$IOS_SIMULATOR" -resultBundlePath "$RUNNER_TEMP/ios-permissions.xcresult" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
-      - name: Erase simulator and install the precise-default host
+        run: bash .github/scripts/ios/check.sh xctest
+      - name: Build and install the UI test applications
         if: ${{ !cancelled() }}
-        run: python3 .github/scripts/ios-precise-host.py "$RUNNER_TEMP/ios-ui-build/Build/Products/Debug-iphonesimulator"
+        run: bash .github/scripts/ios/check.sh ui-build
+      - name: Permission UI tests
+        if: ${{ !cancelled() }}
+        run: bash .github/scripts/ios/check.sh ui-permissions
+      - name: Erase the simulator and install the precise-default host
+        if: ${{ !cancelled() }}
+        run: bash .github/scripts/ios/check.sh precise-host
       - name: Check-in notification UI test
         if: ${{ !cancelled() }}
-        run: python3 .github/scripts/ios-ui-run.py xcodebuild test-without-building -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1 -project "$RUNNER_TEMP/ios-consumer/ios/App/App.xcodeproj" -scheme Permissions -only-testing:PermissionUITests/CheckInUITests -derivedDataPath "$RUNNER_TEMP/ios-ui-build" -destination "platform=iOS Simulator,id=$IOS_SIMULATOR" -resultBundlePath "$RUNNER_TEMP/ios-checkin.xcresult" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
-      - name: Route and lifecycle simulator scenarios
+        run: bash .github/scripts/ios/check.sh ui-checkin
+      - name: Shared e2e scenarios on the simulator
         if: ${{ !cancelled() }}
-        env:
-          IOS_SCENARIO_APP: ${{ runner.temp }}/ios-ui-build/Build/Products/Debug-iphonesimulator/App.app
-        run: python3 .github/scripts/ios-stage2-simulator.py
-      - name: Geofence simulator scenarios
-        if: ${{ !cancelled() }}
-        env:
-          IOS_SCENARIO_APP: ${{ runner.temp }}/ios-ui-build/Build/Products/Debug-iphonesimulator/App.app
-        run: python3 .github/scripts/ios-stage3-simulator.py
+        run: bash .github/scripts/ios/check.sh e2e
       - name: Export UI attachments
         if: ${{ !cancelled() }}
         run: |
@@ -73,12 +63,7 @@ jobs:
               xcrun xcresulttool export attachments --path "$RUNNER_TEMP/ios-$bundle.xcresult" --output-path "$RUNNER_TEMP/ui-attachments/$bundle"
             fi
           done
-      - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: ios-ui-evidence
-          path: ${{ runner.temp }}/ui-attachments
-      - name: Native launch diagnostics
+      - name: Diagnostics
         if: failure()
         run: |
           xcrun xcresulttool export diagnostics --path "$RUNNER_TEMP/ios-tests.xcresult" --output-path "$RUNNER_TEMP/native-diagnostics" || true
@@ -87,10 +72,7 @@ jobs:
               xcrun xcresulttool export diagnostics --path "$RUNNER_TEMP/ios-$bundle.xcresult" --output-path "$RUNNER_TEMP/ui-diagnostics/$bundle" || true
             fi
           done
-          for task_pid in $(pgrep -x App || true); do
-            sample "$task_pid" 3 -file "$RUNNER_TEMP/app-thread-$task_pid.txt" || true
-          done
-          xcrun simctl spawn "$IOS_SIMULATOR" log show --last 10m --style compact --predicate 'process == "App" OR process == "SpringBoard" OR process == "splashboardd" OR process == "amfid" OR process == "runningboardd"' > "$RUNNER_TEMP/native-launch.log" 2>&1 || true
+          xcrun simctl spawn "$IOS_SIMULATOR" log show --last 10m --style compact --predicate 'process == "App" OR process == "SpringBoard" OR process == "runningboardd"' > "$RUNNER_TEMP/native-launch.log" 2>&1 || true
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
@@ -105,10 +87,10 @@ jobs:
             ${{ runner.temp }}/native-launch.log
             ${{ runner.temp }}/native-diagnostics
             ${{ runner.temp }}/ui-diagnostics
+            ${{ runner.temp }}/ui-attachments
             ${{ runner.temp }}/ui-samples
-            ${{ runner.temp }}/app-thread-*.txt
-            ${{ runner.temp }}/ios-stage2
-            ${{ runner.temp }}/ios-stage3
+            ${{ runner.temp }}/e2e-artifacts
+
   package:
     runs-on: macos-26
     timeout-minutes: 45
@@ -118,172 +100,81 @@ jobs:
         manager: [SPM, CocoaPods]
     steps:
       - uses: actions/checkout@v4
-      - name: Select and boot simulator before the builds
-        run: python3 .github/scripts/ios-simulator.py
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           check-latest: true
           cache: npm
-      - run: npm ci
-      - name: Fresh tarball consumer
-        run: node .github/scripts/ios-consumer.mjs ${{ matrix.manager }}
-      - name: Build unsigned release
-        run: |
-          cd "$RUNNER_TEMP/ios-consumer/ios/App"
-          if [ -d App.xcworkspace ]; then
-            xcodebuild -workspace App.xcworkspace -scheme App -configuration Release -sdk iphoneos -archivePath "$RUNNER_TEMP/LTExample.xcarchive" archive CODE_SIGNING_ALLOWED=NO
-          else
-            xcodebuild -project App.xcodeproj -scheme App -configuration Release -sdk iphoneos -archivePath "$RUNNER_TEMP/LTExample.xcarchive" archive CODE_SIGNING_ALLOWED=NO
-          fi
-          mkdir -p "$RUNNER_TEMP/ipa/Payload"
-          cp -R "$RUNNER_TEMP/LTExample.xcarchive/Products/Applications/App.app" "$RUNNER_TEMP/ipa/Payload/"
-          cd "$RUNNER_TEMP/ipa"
-          zip -qry "$RUNNER_TEMP/location-tracking-example-unsigned.ipa" Payload
-      - name: Sign Release with ad-hoc identity
-        run: python3 .github/scripts/ios-release-adhoc.py
-      - name: Prepare simulator signing
-        run: ruby .github/scripts/ios-simulator-signing.rb
-      - name: Build simulator consumer
-        run: |
-          cd "$RUNNER_TEMP/ios-consumer/ios/App"
-          if [ -d App.xcworkspace ]; then
-            xcodebuild -workspace App.xcworkspace -scheme App -configuration Debug -sdk iphonesimulator -destination "platform=iOS Simulator,id=$IOS_SIMULATOR" -derivedDataPath "$RUNNER_TEMP/ios-simulator" build CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
-          else
-            xcodebuild -project App.xcodeproj -scheme App -configuration Debug -sdk iphonesimulator -destination "platform=iOS Simulator,id=$IOS_SIMULATOR" -derivedDataPath "$RUNNER_TEMP/ios-simulator" build CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
-          fi
-      - name: WebView bridge and position smoke
-        run: python3 .github/scripts/ios-smoke.py
+          cache-dependency-path: |
+            package-lock.json
+            testing/e2e-kit/package-lock.json
+            e2e/plugin/package-lock.json
+      - name: Release builds and the WebView bridge smoke (${{ matrix.manager }})
+        run: bash .github/scripts/ios/check.sh package ${{ matrix.manager }}
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: ios-bridge-${{ matrix.manager }}
-          path: ${{ runner.temp }}/ios-smoke*
-      - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: ios-example-unsigned-${{ matrix.manager }}
-          path: ${{ runner.temp }}/location-tracking-example-unsigned.ipa
-      - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: ios-example-adhoc-${{ matrix.manager }}
+          name: ios-package-${{ matrix.manager }}
           path: |
+            ${{ runner.temp }}/location-tracking-example-unsigned.ipa
             ${{ runner.temp }}/location-tracking-example-adhoc.ipa
             ${{ runner.temp }}/ios-release-adhoc-codesign.txt
             ${{ runner.temp }}/release-entitlements.plist
-  legacy-runtime:
-    name: ${{ matrix.label }}
-    runs-on: ${{ matrix.runner }}
-    continue-on-error: ${{ matrix.required == 'false' }}
-    env:
-      LEGACY_REQUIRED: ${{ matrix.required }}
-    timeout-minutes: ${{ matrix.required == 'true' && 90 || 20 }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-15
-            label: Required iOS 15 or 16 XCTest
-            required: 'true'
-          - runner: macos-26
-            label: Optional legacy runtime probe
-            required: 'false'
+            ${{ runner.temp }}/e2e-artifacts-${{ matrix.manager }}
+
+  legacy:
+    name: iOS 15 or 16
+    runs-on: macos-15
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
-      - name: Obtain and boot iOS 15 or 16
-        run: python3 .github/scripts/ios-legacy-runtime.py
       - uses: actions/setup-node@v4
-        if: env.LEGACY_AVAILABLE == 'true'
         with:
           node-version: 22
           check-latest: true
-      - name: Prepare legacy XCTest host
-        if: env.LEGACY_AVAILABLE == 'true'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            testing/e2e-kit/package-lock.json
+            e2e/plugin/package-lock.json
+      - name: Obtain and boot iOS 15 or 16
+        run: python3 .github/scripts/ios/legacy_runtime.py
+      - name: Build the plugin and the XCTest host
+        run: bash .github/scripts/ios/check.sh build
+      - name: XCTest
+        run: bash .github/scripts/ios/check.sh xctest
+      - name: Build and install the UI test applications
+        if: ${{ !cancelled() }}
+        run: bash .github/scripts/ios/check.sh ui-build
+      - name: Permission UI tests
+        if: ${{ !cancelled() }}
+        run: bash .github/scripts/ios/check.sh ui-permissions
+      - name: Erase the simulator and install the precise-default host
+        if: ${{ !cancelled() }}
+        run: bash .github/scripts/ios/check.sh precise-host
+      - name: Check-in notification UI test
+        if: ${{ !cancelled() }}
+        run: bash .github/scripts/ios/check.sh ui-checkin
+      - name: Shared e2e scenarios on the simulator
+        if: ${{ !cancelled() }}
+        run: bash .github/scripts/ios/check.sh e2e
+      - name: Diagnostics
+        if: failure()
         run: |
-          npm ci
-          node .github/scripts/ios-consumer.mjs SPM
-          ruby .github/scripts/ios-test-host.rb
-          ruby .github/scripts/ios-simulator-signing.rb
-          cd testing/e2e-kit
-          npm ci
-          node src/cli/backoffice.ts --host 127.0.0.1 > "$RUNNER_TEMP/backoffice.log" 2>&1 &
-      - name: Build and install legacy test host
-        if: env.LEGACY_AVAILABLE == 'true'
-        run: |
-          xcodebuild build-for-testing -project "$RUNNER_TEMP/ios-consumer/ios/App/App.xcodeproj" -scheme Stage1 -destination "platform=iOS Simulator,id=$IOS_SIMULATOR" -derivedDataPath "$RUNNER_TEMP/ios-legacy-build" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
-          xcrun simctl install "$IOS_SIMULATOR" "$RUNNER_TEMP/ios-legacy-build/Build/Products/Debug-iphonesimulator/App.app"
-          xcrun simctl get_app_container "$IOS_SIMULATOR" com.brickssoft.locationtracking.example app
-      - name: Legacy XCTest
-        if: env.LEGACY_AVAILABLE == 'true'
-        run: xcodebuild test-without-building -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1 -project "$RUNNER_TEMP/ios-consumer/ios/App/App.xcodeproj" -scheme Stage1 -derivedDataPath "$RUNNER_TEMP/ios-legacy-build" -destination "platform=iOS Simulator,id=$IOS_SIMULATOR" -resultBundlePath "$RUNNER_TEMP/ios-legacy.xcresult" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
-      - name: Seed legacy location
-        if: env.LEGACY_AVAILABLE == 'true'
-        run: xcrun simctl location "$IOS_SIMULATOR" set '24.7136,46.6753'
-      - name: Build and install legacy UI applications
-        if: env.LEGACY_AVAILABLE == 'true'
-        run: |
-          xcodebuild build-for-testing -project "$RUNNER_TEMP/ios-consumer/ios/App/App.xcodeproj" -scheme Permissions -derivedDataPath "$RUNNER_TEMP/ios-legacy-ui-build" -destination "platform=iOS Simulator,id=$IOS_SIMULATOR" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
-          python3 .github/scripts/ios-ui-prepare.py "$RUNNER_TEMP/ios-legacy-ui-build/Build/Products/Debug-iphonesimulator"
-      - name: Legacy permission UI tests
-        if: env.LEGACY_AVAILABLE == 'true'
-        run: python3 .github/scripts/ios-ui-run.py xcodebuild test-without-building -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1 -project "$RUNNER_TEMP/ios-consumer/ios/App/App.xcodeproj" -scheme Permissions -only-testing:PermissionUITests/PermissionUITests -derivedDataPath "$RUNNER_TEMP/ios-legacy-ui-build" -destination "platform=iOS Simulator,id=$IOS_SIMULATOR" -resultBundlePath "$RUNNER_TEMP/ios-legacy-permissions.xcresult" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
-      - name: Erase legacy simulator and install the precise-default host
-        if: ${{ !cancelled() && env.LEGACY_AVAILABLE == 'true' }}
-        run: python3 .github/scripts/ios-precise-host.py "$RUNNER_TEMP/ios-legacy-ui-build/Build/Products/Debug-iphonesimulator"
-      - name: Legacy check-in notification UI test
-        if: ${{ !cancelled() && env.LEGACY_AVAILABLE == 'true' }}
-        run: python3 .github/scripts/ios-ui-run.py xcodebuild test-without-building -parallel-testing-enabled NO -maximum-concurrent-test-simulator-destinations 1 -project "$RUNNER_TEMP/ios-consumer/ios/App/App.xcodeproj" -scheme Permissions -only-testing:PermissionUITests/CheckInUITests -derivedDataPath "$RUNNER_TEMP/ios-legacy-ui-build" -destination "platform=iOS Simulator,id=$IOS_SIMULATOR" -resultBundlePath "$RUNNER_TEMP/ios-legacy-checkin.xcresult" CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-
-      - name: Legacy route and lifecycle scenarios
-        if: ${{ !cancelled() && env.LEGACY_AVAILABLE == 'true' }}
-        env:
-          IOS_SCENARIO_APP: ${{ runner.temp }}/ios-legacy-ui-build/Build/Products/Debug-iphonesimulator/App.app
-        run: python3 .github/scripts/ios-stage2-simulator.py
-      - name: Legacy geofence availability
-        if: ${{ !cancelled() && env.LEGACY_AVAILABLE == 'true' }}
-        env:
-          IOS_SCENARIO_APP: ${{ runner.temp }}/ios-legacy-ui-build/Build/Products/Debug-iphonesimulator/App.app
-        run: python3 .github/scripts/ios-stage3-simulator.py
-      - name: Export legacy UI attachments
-        if: ${{ !cancelled() && env.LEGACY_AVAILABLE == 'true' }}
-        run: |
-          for bundle in permissions checkin; do
-            if [ -d "$RUNNER_TEMP/ios-legacy-$bundle.xcresult" ]; then
-              xcrun xcresulttool export attachments --path "$RUNNER_TEMP/ios-legacy-$bundle.xcresult" --output-path "$RUNNER_TEMP/legacy-ui-attachments/$bundle"
-            fi
-          done
-      - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() && env.LEGACY_AVAILABLE == 'true' }}
-        with:
-          name: ios-legacy-ui-evidence-${{ matrix.runner }}
-          path: ${{ runner.temp }}/legacy-ui-attachments
-      - name: Verify required legacy coverage
-        if: matrix.required == 'true'
-        run: test "$LEGACY_AVAILABLE" = true && test -d "$RUNNER_TEMP/ios-legacy.xcresult"
-      - name: Legacy diagnostics
-        if: failure() && env.LEGACY_AVAILABLE == 'true'
-        run: |
-          xcrun xcresulttool export diagnostics --path "$RUNNER_TEMP/ios-legacy.xcresult" --output-path "$RUNNER_TEMP/legacy-diagnostics" || true
-          for bundle in permissions checkin; do
-            if [ -d "$RUNNER_TEMP/ios-legacy-$bundle.xcresult" ]; then
-              xcrun xcresulttool export diagnostics --path "$RUNNER_TEMP/ios-legacy-$bundle.xcresult" --output-path "$RUNNER_TEMP/legacy-ui-diagnostics/$bundle" || true
-            fi
-          done
-          xcrun simctl spawn "$IOS_SIMULATOR" log show --last 10m --style compact --predicate 'process == "App" OR process == "SpringBoard" OR process == "splashboardd" OR process == "installd" OR process == "runningboardd"' > "$RUNNER_TEMP/legacy-launch.log" 2>&1
+          xcrun xcresulttool export diagnostics --path "$RUNNER_TEMP/ios-tests.xcresult" --output-path "$RUNNER_TEMP/native-diagnostics" || true
+          xcrun simctl spawn "$IOS_SIMULATOR" log show --last 10m --style compact --predicate 'process == "App" OR process == "SpringBoard" OR process == "installd" OR process == "runningboardd"' > "$RUNNER_TEMP/native-launch.log" 2>&1 || true
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: ios-legacy-${{ matrix.runner }}
+          name: ios-legacy
           path: |
             ${{ runner.temp }}/ios-legacy-runtime.txt
-            ${{ runner.temp }}/ios-legacy.xcresult
-            ${{ runner.temp }}/legacy-diagnostics
-            ${{ runner.temp }}/legacy-ui-diagnostics
-            ${{ runner.temp }}/legacy-launch.log
-            ${{ runner.temp }}/ios-legacy-permissions.xcresult
-            ${{ runner.temp }}/ios-legacy-checkin.xcresult
+            ${{ runner.temp }}/ios-tests.xcresult
+            ${{ runner.temp }}/ios-permissions.xcresult
+            ${{ runner.temp }}/ios-checkin.xcresult
             ${{ runner.temp }}/*-runner-bootstrap*.xcresult
             ${{ runner.temp }}/ios-precise-host-launch-*.log
+            ${{ runner.temp }}/native-diagnostics
+            ${{ runner.temp }}/native-launch.log
             ${{ runner.temp }}/ui-samples
-            ${{ runner.temp }}/ios-stage2
-            ${{ runner.temp }}/ios-stage3
+            ${{ runner.temp }}/e2e-artifacts

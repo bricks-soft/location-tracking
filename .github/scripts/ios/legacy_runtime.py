@@ -3,11 +3,10 @@ import os
 import pathlib
 import re
 import subprocess
-from ios_simulator_launch import show_simulator, simctl_output
+from common import export, root, show_simulator, simctl_output, summary
 
-root = pathlib.Path(os.environ['RUNNER_TEMP'])
+root = root()
 report = root / 'ios-legacy-runtime.txt'
-required = os.environ.get('LEGACY_REQUIRED') == 'true'
 
 def run(command, timeout=600):
     with report.open('a') as output:
@@ -60,17 +59,15 @@ for version in ['16.4', '15.5']:
         selected = boot(runtime)
         if selected:
             show_simulator(selected)
-            with open(os.environ['GITHUB_ENV'], 'a') as output:
-                output.write('IOS_SIMULATOR=' + selected + '\nLEGACY_AVAILABLE=true\n')
+            export({'IOS_SIMULATOR': selected, 'IOS_DESTINATION': 'platform=iOS Simulator,id=' + selected})
             break
     if selected:
         break
 if not selected:
     with report.open('a') as output:
         output.write('\nNo iOS 15/16 runtime booted within the probe deadlines.\n')
-summary = '\n'.join(report.read_text().replace('\r', '\n').splitlines()[-60:])
-print(summary)
-with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
-    output.write('```\n' + summary + '\n```\n')
-if required and not selected:
-    raise SystemExit('Required legacy XCTest runtime is unavailable')
+tail = '\n'.join(report.read_text().replace('\r', '\n').splitlines()[-60:])
+print(tail)
+summary('```\n' + tail + '\n```\n')
+if not selected:
+    raise SystemExit('No iOS 15 or 16 runtime is available')

@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import { cpSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const root = process.cwd();
 const manager = process.argv[2];
-const consumer = join(process.env.RUNNER_TEMP, 'ios-consumer');
+const consumer = join(process.env.RUNNER_TEMP || join(tmpdir(), 'location-tracking-ios'), 'ios-consumer');
 const run = (command, args, cwd = consumer) => execFileSync(command, args, { cwd, stdio: 'inherit' });
 const packed = JSON.parse(execFileSync('npm', ['pack', '--json'], { cwd: root, encoding: 'utf8' }));
 mkdirSync(consumer, { recursive: true });

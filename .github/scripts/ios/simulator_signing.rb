@@ -1,6 +1,9 @@
+require 'tmpdir'
 require 'xcodeproj'
 
-root = File.join(ENV.fetch('RUNNER_TEMP'), 'ios-consumer/ios/App')
+temp = ENV['RUNNER_TEMP'].to_s.empty? ? File.join(Dir.tmpdir, 'location-tracking-ios') : ENV['RUNNER_TEMP']
+
+root = File.join(temp, 'ios-consumer/ios/App')
 project = Xcodeproj::Project.open(File.join(root, 'App.xcodeproj'))
 app = project.targets.find { |target| target.name == 'App' }
 identifier = 'LTTEST0001.com.brickssoft.locationtracking.example'

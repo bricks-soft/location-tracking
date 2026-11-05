@@ -4,9 +4,10 @@ import shutil
 import subprocess
 import sys
 import time
-from ios_ui_retry import bundle_startup_only
+from common import root
+from ui_retry import bundle_startup_only
 
-directory = pathlib.Path(os.environ['RUNNER_TEMP'], 'ui-samples')
+directory = root() / 'ui-samples'
 directory.mkdir(exist_ok=True)
 log = (directory / 'simulator.log').open('a')
 logger = None

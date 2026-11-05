@@ -48,3 +48,6 @@ example/ios/App/App/capacitor.config.json
 example/ios/App/Pods/
 example/ios/App/build/
 example/ios/App/CapApp-SPM/Package.resolved
+
+# Python
+__pycache__/

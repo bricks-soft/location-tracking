@@ -1,10 +1,11 @@
-import os
 import pathlib
 import plistlib
 import shutil
 import subprocess
 
-root = pathlib.Path(os.environ['RUNNER_TEMP'])
+from common import root
+
+root = root()
 source = root / 'LTExample.xcarchive/Products/Applications/App.app'
 payload = root / 'adhoc/Payload'
 payload.mkdir(parents=True)

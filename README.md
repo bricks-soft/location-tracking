@@ -1363,7 +1363,9 @@ field-force suite on API 34, and the long scenarios (with the `include-long` inp
 `.github/workflows/typescript.yml` runs on every push: it type-checks the kit and runs its unit tests, type-checks and
 dry-runs both suites, and runs the field-force Node tests. `.github/workflows/android.yml`, also started by hand only,
 runs the Android unit tests, builds the example apps and checks that the Google Play build of the field-force app
-supports 16 KB memory pages (`.github/scripts/check-16kb.py`).
+supports 16 KB memory pages (`.github/scripts/check-16kb.py`). `.github/workflows/ios.yml`, started by hand only, runs
+XCTest, the UI tests and the shared scenarios P-S01 to P-S07 on iOS simulators; on a Mac the same steps run with
+`.github/scripts/ios/check.sh all` ([docs/e2e-runbook.md](docs/e2e-runbook.md), 6.11).
 
 The field-force suite, together with the field-force app and the kit, is written so that it can move into the Bricks
 app as its integration test. The contract behind the tests (scenario ids, debug commands, mock back office) is
@@ -1397,13 +1399,15 @@ Each later release, with `scripts/release.sh` (bash; run it from the repository 
 1. While you work, write the changes under `## [Unreleased]` in `CHANGELOG.md`.
 2. `scripts/release.sh check <version>` runs every check and changes nothing: `master` is clean and equal to
    `origin/master`; the version is new and greater than the one on npm, and its major version is Capacitor's; the
-   versions in `package.json`, `package-lock.json` and `src/web/device.ts` agree; `[Unreleased]` is not empty; git
+   versions in `package.json`, `package-lock.json`, `src/web/device.ts` and
+   `ios/Sources/LocationTrackingPlugin/Core/PluginInfo.swift` agree; `[Unreleased]` is not empty; git
    can sign; `npm run docgen` leaves the README unchanged; the changes since the last tag contain none of the
    private-name patterns (a file outside the repository, see the script); the steps of `typescript.yml` and
-   `android.yml` pass on this computer; and `npm pack` contains only the files listed in `package.json`.
+   `android.yml` pass on this computer, and on macOS those of `ios.yml` (elsewhere it warns that the iOS checks were
+   skipped); and `npm pack` contains only the files listed in `package.json`.
 3. `scripts/release.sh run <version>` runs the checks, renames `[Unreleased]` to `[<version>] - <date>`, runs
-   `npm version <version> --no-git-tag-version` (it sets `package.json`, `package-lock.json` and `PLUGIN_VERSION` in
-   `src/web/device.ts`; `android/build.gradle` reads `package.json` itself), and makes a signed commit and a signed tag
+   `npm version <version> --no-git-tag-version` (it sets `package.json`, `package-lock.json`, `PLUGIN_VERSION` in
+   `src/web/device.ts` and `PluginInfo.version` in Swift; `android/build.gradle` reads `package.json` itself), and makes a signed commit and a signed tag
    `v<version>`. After you type `yes`, it pushes both and creates the GitHub release with the CHANGELOG section as
    notes. The release starts the workflow (it can also be started by hand from the Actions tab), which builds, runs
    `npm test` and runs `npm stage publish`; the script waits for it.

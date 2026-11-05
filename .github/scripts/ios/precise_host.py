@@ -4,10 +4,11 @@ import pathlib
 import plistlib
 import subprocess
 import sys
-from ios_simulator_launch import launch_and_wait, show_simulator, simctl_output
+import time
+from common import root, show_simulator, simctl_output
 
 identifier = os.environ['IOS_SIMULATOR']
-root = pathlib.Path(os.environ['RUNNER_TEMP'])
+root = root()
 bundle = 'com.brickssoft.locationtracking.example'
 products = pathlib.Path(sys.argv[1])
 app = products / 'App.app'
@@ -26,15 +27,29 @@ simctl_output('boot', identifier, timeout=300)
 simctl_output('bootstatus', identifier, '-b', timeout=600)
 show_simulator(identifier)
 simctl_output('location', identifier, 'set', '24.7136,46.6753')
-subprocess.run([sys.executable, str(pathlib.Path(__file__).with_name('ios-ui-prepare.py')), str(products)], check=True, timeout=600)
-ready_file = pathlib.Path(simctl_output('get_app_container', identifier, bundle, 'data')) / 'Library/Application Support/Stage2/ready.json'
-ready_file.unlink(missing_ok=True)
+subprocess.run([sys.executable, str(pathlib.Path(__file__).with_name('ui_prepare.py')), str(products)], check=True, timeout=600)
+ready_file = pathlib.Path(simctl_output('get_app_container', identifier, bundle, 'data')) / 'Library/Application Support/E2E/ready.json'
+
+
+def ready_within(pid, seconds):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            if json.loads(ready_file.read_text()).get('pid') == pid:
+                return True
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        time.sleep(0.5)
+    return False
+
+
 for attempt in range(3):
-    try:
-        launch_and_wait(identifier, bundle, ['--ios-stage2-scenario'], lambda: json.loads(ready_file.read_text()) if ready_file.exists() else None, root / ('ios-precise-host-launch-' + str(attempt) + '.log'), timeout=600)
+    ready_file.unlink(missing_ok=True)
+    launched = simctl_output('launch', '--terminate-running-process', identifier, bundle, '--e2e-scenario', timeout=600)
+    (root / ('ios-precise-host-launch-' + str(attempt) + '.log')).write_text(launched + '\n')
+    if ready_within(int(launched.rsplit(':', 1)[-1]), 600):
         break
-    except (RuntimeError, TimeoutError) as error:
-        print('Host launch readiness attempt ' + str(attempt + 1) + ' failed: ' + str(error), flush=True)
+    print('Host launch readiness attempt ' + str(attempt + 1) + ' failed', flush=True)
 else:
     raise RuntimeError('The precise-default host never became ready after the simulator erase')
 subprocess.run(['xcrun', 'simctl', 'terminate', identifier, bundle], check=False, timeout=120)

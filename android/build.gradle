@@ -64,7 +64,9 @@ android {
             all {
                 maxHeapSize = '1024m'
                 maxParallelForks = 1
-                jvmArgs '-XX:+UseSerialGC', '-XX:+EnableDynamicAgentLoading'
+                // IPv4 only: where `localhost` is also ::1 (GitHub's Ubuntu runners), OkHttp tries ::1 after a failed try
+                // to MockWebServer (bound to 127.0.0.1), and the client does not fall back to the next address.
+                jvmArgs '-XX:+UseSerialGC', '-XX:+EnableDynamicAgentLoading', '-Djava.net.preferIPv4Stack=true'
                 testLogging {
                     events 'failed'
                     exceptionFormat 'full'

@@ -5,8 +5,8 @@ import LocationTrackingPlugin
 
 final class ScenarioHost: NSObject, LocationTrackingListener {
     static var current: ScenarioHost?
-    static var modeURL: URL { try! FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("Stage2/enabled") }
-    static var enabled: Bool { ProcessInfo.processInfo.arguments.contains("--ios-stage2-scenario") || FileManager.default.fileExists(atPath: modeURL.path) }
+    static var modeURL: URL { try! FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("E2E/enabled") }
+    static var enabled: Bool { ProcessInfo.processInfo.arguments.contains("--e2e-scenario") || FileManager.default.fileExists(atPath: modeURL.path) }
     private var subscription: NativeSubscription?
     private var timer: DispatchSourceTimer?
     private let commandQueue = DispatchQueue(label: "Scenario.commands")
@@ -14,12 +14,15 @@ final class ScenarioHost: NSObject, LocationTrackingListener {
     private var lastCommand = ""
     private(set) var audit: [TrackingJSON] = []
     private(set) var latest: TrackingJSON = [:]
+    private var captured: Set<String> = []
+    private var events: [TrackingJSON] = []
     var changed: (() -> Void)?
     let directory: URL
     override init() {
-        directory = try! FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("Stage2")
+        directory = try! FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("E2E")
         super.init()
         try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        if let data = try? Data(contentsOf: directory.appendingPathComponent("command.json")), let stale = (try? JSONSerialization.jsonObject(with: data) as? TrackingJSON)?["id"] as? String { lastCommand = stale }
         try! Data("enabled".utf8).write(to: Self.modeURL, options: .atomic)
         subscription = LocationTrackingNative.addListener(self)
         let timer = DispatchSource.makeTimerSource(queue: commandQueue)
@@ -30,7 +33,12 @@ final class ScenarioHost: NSObject, LocationTrackingListener {
     }
     static func install() { if enabled && current == nil { current = ScenarioHost() } }
     func onRecord(_ record: TrackingJSON) { DispatchQueue.main.async { self.audit.append(record); self.snapshot { _ in } } }
-    func onEvent(_ name: String, payload: TrackingJSON) { if name == "enabledchange" { DispatchQueue.main.async { self.snapshot { _ in } } } }
+    func onEvent(_ name: String, payload: TrackingJSON) {
+        DispatchQueue.main.async {
+            if self.captured.contains(name) { self.events.append(["name": name, "payload": payload, "receivedAt": Date().timeIntervalSince1970 * 1000]) }
+            if name == "enabledchange" { self.snapshot { _ in } }
+        }
+    }
     func invoke(_ method: String, _ options: TrackingJSON = [:], completion: @escaping (TrackingJSON) -> Void) {
         LocationTrackingNative.call(method, options: options) { result in
             DispatchQueue.main.async {
@@ -50,6 +58,8 @@ final class ScenarioHost: NSObject, LocationTrackingListener {
         }
         DispatchQueue.main.async {
             if method == "snapshot" { self.snapshot { finish(["success": true, "value": $0]) } }
+            else if method == "captureEvents" { self.captured.formUnion((command["options"] as? TrackingJSON)?["names"] as? [String] ?? []); finish(["success": true, "value": true]) }
+            else if method == "drainEvents" { let drained = self.events; self.events = []; finish(["success": true, "value": drained]) }
             else if method == "willTerminate" { NotificationCenter.default.post(name: UIApplication.willTerminateNotification, object: UIApplication.shared); self.invoke("getState", completion: finish) }
             else { self.invoke(method, command["options"] as? TrackingJSON ?? [:], completion: finish) }
         }

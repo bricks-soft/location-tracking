@@ -4,7 +4,7 @@ import CoreLocation
 final class CheckInUITests: XCTestCase {
     override func tearDown() {
         let app = XCUIApplication()
-        app.launchArguments = ["--ios-stage2-scenario"]
+        app.launchArguments = ["--e2e-scenario"]
         app.launch()
         let alert = XCUIApplication(bundleIdentifier: "com.apple.springboard").alerts.firstMatch
         if alert.exists { alert.buttons.firstMatch.tap() }
@@ -20,7 +20,7 @@ final class CheckInUITests: XCTestCase {
         continueAfterFailure = false
         if #available(iOS 16.4, *) { XCUIDevice.shared.location = XCUILocation(location: CLLocation(latitude: 24.7136, longitude: 46.6753)) }
         let app = XCUIApplication()
-        app.launchArguments = ["--ios-stage2-scenario"]
+        app.launchArguments = ["--e2e-scenario"]
         app.launch(); app.terminate(); app.resetAuthorizationStatus(for: .location); app.launch()
         XCTAssertTrue(app.buttons["Start check-in"].waitForExistence(timeout: 30))
         app.buttons["Start check-in"].tap()

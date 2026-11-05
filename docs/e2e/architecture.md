@@ -517,6 +517,7 @@ throws `Error('not implemented: …')`. The signatures in `src/*.ts` are the con
 |---|---|
 | `env.ts` | `APP_IDS {plugin, fieldForce}`, `EMULATOR_HOST`, `readEnv(): E2eEnv`, `appIdFor(id, env)` |
 | `catalogue.ts` | `CATALOGUE`, `catalogueEntry(id)`, `catalogueOf(suite)` (mirror of §9) |
+| `driver.ts` | `PlatformDriver` (`reset`, `launch`, `kill`, `pid`, `call`, `captureEvents`, `drainEvents`, `setPosition`, `drive`, `startRoute`, `background`, `foreground`, `restartDevice`, `readAppFile`); `ScenarioContext.driver` is an `AndroidDriver` (adb + WebView) or an `IosDriver` (`simctl` + the test host's file channel; also `snapshot`, `willTerminate`, `webSmoke`) by `E2E_PLATFORM` |
 | `adb.ts` | `Adb` (`serial`, `exec`, `shell`, `emu`, `root`, `isRoot`, `getprop`, `apiLevel`, `dumpsys`, `waitForBoot`, `reboot`, `install({replace,grant})`, `uninstall`, `isInstalled`, `clearData`, `startApp`, `forceStop`, `stopApp`, `amKill`, `killHard` (root), `pidof`, `broadcast`, `grant`, `revoke`, `setAppOp`, `forward`, `removeForward`, `runAsCat`, `pull`, `bugreport`, `screenshot`, `setLocationEnabled`, `isLocationEnabled`, `geoFix(lat, lon)`, `playRoute(points, {speedMps, intervalMs})`, `addTestProvider`, `setTestLocation`, `removeTestProvider`, `batteryUnplug`, `batteryReset`, `batterySetLevel`, `setAirplaneMode`, `setWifi`, `setData`, `setAutoTime`, `setTime(ms)` (root), `setTimezone`, `deviceTime`, `setFontScale`, `keyHome`, `screenOff`, `screenOn`); `adb.deviceIdle` (`forceIdle`, `unforce`, `step`, `state`, `whitelistAdd`, `whitelistRemove`, `tempWhitelist`); `adb.logcat` (`clear`, `dump`, `crashBuffer`) |
 | `webview.ts` | `WebViewDriver.connect(adb, appId)`, `evaluate<T>(expr)`, `callPlugin<T>(plugin, method, args)` (rejects with `PluginCallError{code}`), `captureEvents(plugin, names)`, `drainEvents(): CapturedEvent[]`, `reload()`, `close()` |
 | `commands.ts` | `E2eCommands(adb, appId)`: `send<T>(cmd, args, {timeoutMs, foreground})` (rejects with `E2eCommandError{code}`) and typed helpers for every §6 command (`ready`, `setConfig`, `start`, …, `premiseStart`, `premiseAuditLog`) |
@@ -666,6 +667,18 @@ tighten it). Default timeout 10 minutes.
 | P-R11 | 503 answered 8 s late while the app sets new tokens → no retry with the old token, new upload with the new token about 10 s later (2a, R3-Q8); `/auth/refresh` answered 8 s late while the app sets new tokens → the app's tokens kept (2b) | |
 | P-R12 | `/data` filled with one file → `storagefull` event (16g, best effort) | root |
 | P-R13 | every record of a session (`tracking_start`, `motionchange`, `location`, `heartbeat`, `tracking_stop`) has `device.device_id` = the app's `ANDROID_ID`, no `android_id` (A1, R3-Q7) | |
+
+*E. Android and iOS — `shared.test.ts`* (platforms in `requires.platforms`; runbook 6.11)
+
+| Id | Scenario | Needs |
+|---|---|---|
+| P-S01 | route: `tracking_start` device readings, moving, background records, stationary, a background heartbeat; iOS: check-in scheduled, moved by activity, cancelled by `stop` | Android, iOS |
+| P-S02 | unreachable server: records queue; the reachable server receives them with their UUIDs and `sent_at` | Android, iOS |
+| P-S03 | SIGKILL with `stopOnTerminate` true and false: `tracking_start: restore`; iOS: session start kept, native listener sees the restore first, `willTerminate` honours `stopOnTerminate` | Android, iOS |
+| P-S04 | device restart while tracking: Android `tracking_start: boot`; iOS `restore` at the next launch with the session start kept | Android, iOS |
+| P-S05 | geofences: 21 reject `TOO_MANY_GEOFENCES`, circle and polygon ENTER/EXIT, DWELL after the loitering delay, `initialTriggerEntry` false, crossings while the app was killed | iOS 17+ |
+| P-S06 | geofence methods reject `UNAVAILABLE` | iOS 15, 16 |
+| P-S07 | the JS API through the Capacitor bridge of the example app (WebView smoke) | iOS |
 
 **Field-force suite** (`examples/field-force/e2e/field-force.test.ts`, unit 14; app contract in §10).
 

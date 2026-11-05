@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Runs one AVD end-to-end suite (docs/e2e/architecture.md §8-§9) against the emulator that is already running.
+# Runs one end-to-end suite (docs/e2e/architecture.md §8-§9) against the Android emulator or iOS simulator that is
+# already running (E2E_PLATFORM).
 #
 # .github/workflows/e2e-android.yml calls it from the `script:` of reactivecircus/android-emulator-runner, which runs
 # every script line as a separate `sh -c` command; everything that needs shell constructs therefore lives here.
@@ -13,8 +14,11 @@
 # Environment (inputs). Relative paths are resolved against the current working directory.
 #   E2E_SUITE_DIR          required: suite directory (e2e/plugin or examples/field-force/e2e). `npm ci` must already
 #                          have run in it and in testing/e2e-kit.
-#   E2E_APK                required unless E2E_DRY_RUN=1: debug APK of the app under test. Installed with
+#   E2E_PLATFORM           android (default) or ios. Scenarios run only on the platforms they are tagged with.
+#   E2E_APK                Android, required unless E2E_DRY_RUN=1: debug APK of the app under test. Installed with
 #                          `adb install -r -g` before the suite starts, and exported to the suite as an absolute path.
+#   E2E_IOS_APP            iOS, optional: the simulator .app of the app under test, installed with `simctl install`.
+#   E2E_SIMULATOR          iOS: simulator udid (default: the only booted simulator).
 #   E2E_ARTIFACTS_DIR      default <E2E_SUITE_DIR>/e2e-artifacts (the kit's default). Exported as an absolute path. The
 #                          kit writes one directory per failed scenario into it; this script writes `_run/` (Outputs).
 #   E2E_TEST_NAME_PATTERN  optional: a JavaScript regular expression passed to `node --test-name-pattern`. Test names
@@ -123,6 +127,40 @@ run_suite() {
 
 if [ "$dry_run" = "1" ]; then
   export E2E_DRY_RUN=1
+  status=0
+  run_suite || status=$?
+  exit "$status"
+fi
+
+# ---- iOS simulator -----------------------------------------------------------------------------------------------
+
+if [ "${E2E_PLATFORM:-android}" = "ios" ]; then
+  command -v xcrun >/dev/null || die "E2E_PLATFORM=ios needs Xcode (xcrun)"
+  simulator="${E2E_SIMULATOR:-booted}"
+  xcrun simctl boot "$simulator" >/dev/null 2>&1 || true
+  xcrun simctl bootstatus "$simulator" -b >/dev/null || die "simulator $simulator did not boot"
+  {
+    echo "simulator: $simulator"
+    xcodebuild -version 2>/dev/null | tr '\n' ' '
+    echo
+    xcrun simctl list devices | grep -E "\(Booted\)" || true
+  } >"$run_dir/device.txt"
+  log "device:"
+  sed 's/^/  /' "$run_dir/device.txt"
+  if [ -n "${E2E_IOS_APP:-}" ]; then
+    E2E_IOS_APP="$(absolute "$E2E_IOS_APP")"
+    [ -d "$E2E_IOS_APP" ] || die "app not found: $E2E_IOS_APP"
+    log "installing $E2E_IOS_APP"
+    xcrun simctl install "$simulator" "$E2E_IOS_APP" || die "simctl install failed"
+  fi
+  xcrun simctl spawn "$simulator" log stream --style compact --level info \
+    --predicate 'process == "App" OR process == "locationd" OR process == "runningboardd"' \
+    </dev/null >"$run_dir/device-log.txt" 2>&1 &
+  stream_pid=$!
+  # shellcheck disable=SC2329 # EXIT trap
+  finish_ios() { kill "$stream_pid" 2>/dev/null || true; }
+  trap finish_ios EXIT
+  export E2E_PLATFORM E2E_SIMULATOR="$simulator"
   status=0
   run_suite || status=$?
   exit "$status"

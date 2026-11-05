@@ -324,8 +324,8 @@ export class MockBackOffice {
   }
 
   /** URL of [path] as the emulator sees it: `http://10.0.2.2:<port><path>`. */
-  url(pathFromEmulator = '/locations'): string {
-    return `http://${EMULATOR_HOST}:${this.port}${pathFromEmulator}`;
+  url(pathFromEmulator = '/locations', host: string = EMULATOR_HOST): string {
+    return `http://${host}:${this.port}${pathFromEmulator}`;
   }
 
   /** URL of [path] from the host: `http://127.0.0.1:<port><path>`. */

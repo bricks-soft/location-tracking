@@ -1,4 +1,5 @@
 // SCAFFOLD (working): environment of an e2e run. Owned by Unit 7 (e2e-kit) from round 2 on.
+import type { Platform } from './driver.ts';
 
 /** Application ids of the two apps under test. */
 export const APP_IDS = {
@@ -32,6 +33,8 @@ export interface E2eEnv {
   adbPath: string;
   /** `E2E_BUGREPORT=1`: also collect a full bugreport on failure (slow, large). */
   bugreport: boolean;
+  platform: Platform;
+  simulator: string;
 }
 
 function flag(value: string | undefined): boolean {
@@ -56,7 +59,15 @@ export function readEnv(env: NodeJS.ProcessEnv = process.env): E2eEnv {
     artifactsDir: nonEmpty(env['E2E_ARTIFACTS_DIR']) ?? `${process.cwd()}/e2e-artifacts`,
     adbPath: nonEmpty(env['E2E_ADB']) ?? (androidHome ? `${androidHome}/platform-tools/adb` : 'adb'),
     bugreport: flag(env['E2E_BUGREPORT']),
+    platform: platformOf(env['E2E_PLATFORM']),
+    simulator: nonEmpty(env['E2E_SIMULATOR']) ?? 'booted',
   };
+}
+
+function platformOf(value: string | undefined): Platform {
+  const platform = nonEmpty(value) ?? 'android';
+  if (platform !== 'android' && platform !== 'ios') throw new Error(`E2E_PLATFORM must be android or ios, got '${platform}'`);
+  return platform;
 }
 
 /** The app a scenario drives: `E2E_APP_ID`, else by id prefix (`P-` plugin example, `F-` field-force). */

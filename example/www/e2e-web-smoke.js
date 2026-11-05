@@ -5,7 +5,7 @@
   const assert = (value, name) => {
     if (!value) throw new Error(name);
     results.push(name);
-    window.webkit.messageHandlers.stage1.postMessage({ phase: name, checks: results });
+    window.webkit.messageHandlers.e2e.postMessage({ phase: name, checks: results });
   };
   const rejects = async (name, code, args) => {
     try {
@@ -112,8 +112,8 @@
     await rejects('emailLog', 'UNAVAILABLE', { email: 'simulator@example.invalid' });
     await plugin.destroyLog();
     assert((await plugin.getLog()).log === '', 'destroy logs');
-    window.webkit.messageHandlers.stage1.postMessage({ success: true, checks: results });
+    window.webkit.messageHandlers.e2e.postMessage({ success: true, checks: results });
   } catch (error) {
-    window.webkit.messageHandlers.stage1.postMessage({ success: false, checks: results, error: String(error), code: error.code || null });
+    window.webkit.messageHandlers.e2e.postMessage({ success: false, checks: results, error: String(error), code: error.code || null });
   }
 })();

@@ -7,6 +7,8 @@ It covers:
 
 - the automated suites on an Android emulator (AVD): the plugin suite (`e2e/plugin`, against the plugin's example app
   `example/`) and the field-force suite (`examples/field-force/e2e`, against the field-force example app);
+- the shared scenarios P-S01 … P-S07 of the plugin suite, which also run on an iOS simulator
+  ([6.11](#611-shared-android-and-ios-scenarios-p-s01--p-s07));
 - the manual procedures **M-01 … M-12**, which need a real phone, a real drive, a real night or a release build.
 
 The contract behind the tests (scenario ids, debug commands, mock back office, kit API) is
@@ -829,6 +831,9 @@ cd e2e/plugin && NODE_OPTIONS='--test-name-pattern=^P-P08' npm run test:e2e
 | `E2E_ARTIFACTS_DIR` | `./e2e-artifacts` (in the suite directory) | Where failure artifacts go. |
 | `E2E_ADB` | `$ANDROID_HOME/platform-tools/adb` | The adb binary. |
 | `E2E_BUGREPORT` | off | `1` also saves a full bugreport on failure (slow: about 1 minute and 20 MB or more). |
+| `E2E_PLATFORM` | `android` | `ios` runs the scenarios tagged for iOS on a simulator ([6.11](#611-shared-android-and-ios-scenarios-p-s01--p-s07)). |
+| `E2E_SIMULATOR` | the only booted simulator | iOS: simulator udid. |
+| `E2E_IOS_APP` | none | iOS: simulator `.app` that `run-e2e.sh` installs first. |
 
 ### 6.7 Dry run without a device
 
@@ -945,6 +950,41 @@ E2E_OLD_APK=~/lt-runs/plugin-example-previous.apk E2E_TEST_NAME_PATTERN='P-R' E2
 ```
 
 Results of the round-3 run: [DECISIONS.md](DECISIONS.md), R3.4.
+
+### 6.11 Shared Android and iOS scenarios (P-S01 … P-S07)
+
+`e2e/plugin/shared.test.ts` holds the scenarios written once for both platforms. Each declares its platforms in
+`requires.platforms`; where the platforms behave differently, the body checks `ctx.platform` (iOS only: the check-in
+notification, `willTerminate`, the session start kept by a restore; a restart restores at boot on Android and at the
+next launch on iOS). The scenario talks to the app through `ctx.driver`:
+
+| | Android (`AndroidDriver`) | iOS (`IosDriver`) |
+|---|---|---|
+| Plugin calls and events | WebView over the DevTools protocol (`Capacitor.Plugins.LocationTracking`) | The test host's file channel: `Library/Application Support/E2E/command.json` and `response.json`, answered by `ios/HostTests/ScenarioHost.swift` through `LocationTrackingNative` |
+| Launch, kill, pid | `am start`, `kill -9`, `pidof` | `simctl launch`, `SIGKILL` of the simulator process, `ready.json` |
+| Position and routes | `geo fix` (held every 2 s), `playRoute` | `simctl location set` and `start` |
+| Background, restart | Home key, `reboot` | Settings to the front, `simctl shutdown` and `boot` |
+
+| Id | Platforms | Needs |
+|---|---|---|
+| P-S01 … P-S04 | Android, iOS | iOS: the check-in UI test ran first (it grants notifications) |
+| P-S05 | iOS 17+ | |
+| P-S06 | iOS 15, 16 | |
+| P-S07 | iOS | the example app (WebView smoke), not the test host |
+
+On Android they run like every other plugin scenario ([6.4](#64-the-same-run-as-ci-githubscriptsrun-e2esh)), for
+example `E2E_TEST_NAME_PATTERN='P-S0[1-4]\b'`. On a Mac with Xcode, `.github/scripts/ios/check.sh` builds the test host
+and runs the iOS steps of `.github/workflows/ios.yml` in order; its `e2e` step is:
+
+```bash
+E2E_PLATFORM=ios E2E_SIMULATOR=<udid> E2E_SUITE_DIR=e2e/plugin E2E_BACKEND_PORT=8790 \
+  E2E_IOS_APP=$RUNNER_TEMP/ios-ui-build/Build/Products/Debug-iphonesimulator/App.app \
+  E2E_TEST_NAME_PATTERN='P-S0[1-6]\b' .github/scripts/run-e2e.sh
+```
+
+`check.sh` writes to `$RUNNER_TEMP`, or to `$TMPDIR/location-tracking-ios` outside Actions. On iOS,
+`$E2E_ARTIFACTS_DIR/<id>/` holds `snapshot.json` (state, queue, pending check-in, records the native listener saw),
+`app.log`, `screenshot.png` and crash reports; `_run/device-log.txt` is the simulator log of the whole run.
 
 ---
 

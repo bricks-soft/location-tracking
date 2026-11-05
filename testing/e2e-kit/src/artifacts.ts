@@ -8,8 +8,9 @@ import { errorText, shellQuote } from './util.ts';
 export interface ArtifactsOptions {
   /** per-scenario directory, e.g. `<E2E_ARTIFACTS_DIR>/<scenario id>` */
   dir: string;
-  adb: Adb;
+  adb?: Adb;
   appId: string;
+  device?: (artifacts: Artifacts) => Promise<string[]>;
   /** the back office, if the scenario started one */
   backOffice?: () => MockBackOffice | undefined;
   /** also take a bugreport (E2E_BUGREPORT=1) */
@@ -71,9 +72,34 @@ export class Artifacts {
     return this.writeText(name, `${JSON.stringify(value, null, 2)}\n`);
   }
 
+  private async collectDevice(reason: string): Promise<string[]> {
+    const written: string[] = [];
+    const errors: string[] = [];
+    const item = async (name: string, produce: () => Promise<string[] | string | undefined>) => {
+      try {
+        const paths = await produce();
+        if (Array.isArray(paths)) written.push(...paths);
+        else if (paths) written.push(paths);
+      } catch (error) {
+        errors.push(`${name}: ${errorText(error)}`);
+      }
+    };
+    await item('reason.txt', () => this.writeText('reason.txt', `${new Date().toISOString()}\n${reason}\n`));
+    const device = this.options.device;
+    if (device) await item('device', () => device(this));
+    const office = this.options.backOffice?.();
+    if (office) {
+      await item('backoffice.log', () => this.writeText('backoffice.log', office.logText()));
+      await item('records.json', () => this.writeJson('records.json', office.records()));
+    }
+    if (errors.length > 0) await item('collect-errors.txt', () => this.writeText('collect-errors.txt', `${errors.join('\n')}\n`));
+    return written;
+  }
+
   /** Collects everything listed above; resolves with the written paths. */
   async collect(reason: string): Promise<string[]> {
     const { adb, appId } = this.options;
+    if (!adb) return this.collectDevice(reason);
     const written: string[] = [];
     const errors: string[] = [];
     const item = async (name: string, produce: () => Promise<string | undefined>) => {

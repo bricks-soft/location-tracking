@@ -31,15 +31,15 @@ final class ExampleViewController: CAPBridgeViewController, WKScriptMessageHandl
         super.capacitorDidLoad()
         guard let configuration = webView?.configuration else { return }
         let permissionTest = ProcessInfo.processInfo.arguments.contains("--ios-permission-smoke")
-        if ProcessInfo.processInfo.arguments.contains("--ios-stage1-smoke") || permissionTest {
-            configuration.userContentController.add(self, name: "stage1")
-            configuration.userContentController.addUserScript(WKUserScript(source: "window.addEventListener('error', function(e) { window.webkit.messageHandlers.stage1.postMessage({success:false,error:String(e.message)}); }); localStorage.setItem('lt.e2e', '1'); window.webkit.messageHandlers.stage1.postMessage({phase:'document-start'});", injectionTime: .atDocumentStart, forMainFrameOnly: true))
-            let script = permissionTest ? "ios-permission-smoke.js" : "ios-smoke.js"
-            configuration.userContentController.addUserScript(WKUserScript(source: "var s = document.createElement('script'); s.src = '\(script)'; s.onerror = function() { window.webkit.messageHandlers.stage1.postMessage({success:false,error:'Could not load smoke script'}); }; document.body.appendChild(s);", injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        if ProcessInfo.processInfo.arguments.contains("--e2e-web-smoke") || permissionTest {
+            configuration.userContentController.add(self, name: "e2e")
+            configuration.userContentController.addUserScript(WKUserScript(source: "window.addEventListener('error', function(e) { window.webkit.messageHandlers.e2e.postMessage({success:false,error:String(e.message)}); }); localStorage.setItem('lt.e2e', '1'); window.webkit.messageHandlers.e2e.postMessage({phase:'document-start'});", injectionTime: .atDocumentStart, forMainFrameOnly: true))
+            let script = permissionTest ? "ios-permission-smoke.js" : "e2e-web-smoke.js"
+            configuration.userContentController.addUserScript(WKUserScript(source: "var s = document.createElement('script'); s.src = '\(script)'; s.onerror = function() { window.webkit.messageHandlers.e2e.postMessage({success:false,error:'Could not load smoke script'}); }; document.body.appendChild(s);", injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         }
     }
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.name == "stage1", let body = message.body as? [String: Any] else { return }
+        guard message.name == "e2e", let body = message.body as? [String: Any] else { return }
         if body["success"] as? Bool == true, let webView {
             webView.takeSnapshot(with: nil) { image, error in
                 var report = body
@@ -47,7 +47,7 @@ final class ExampleViewController: CAPBridgeViewController, WKScriptMessageHandl
                 do {
                     guard let image, let data = image.pngData() else { throw error ?? NSError(domain: "ExampleSnapshot", code: 1) }
                     let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                    try data.write(to: directory.appendingPathComponent("ios-stage1-webview.png"), options: .atomic)
+                    try data.write(to: directory.appendingPathComponent("e2e-web-smoke.png"), options: .atomic)
                 } catch { report["success"] = false; report["error"] = "WebView snapshot failed: " + error.localizedDescription }
                 self.writeReport(report)
             }
@@ -57,7 +57,7 @@ final class ExampleViewController: CAPBridgeViewController, WKScriptMessageHandl
         do {
             let directory = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
             let data = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
-            try data.write(to: directory.appendingPathComponent(body["success"] == nil ? "ios-stage1-state.json" : "ios-stage1-smoke.json"), options: .atomic)
+            try data.write(to: directory.appendingPathComponent(body["success"] == nil ? "e2e-web-state.json" : "e2e-web-smoke.json"), options: .atomic)
         } catch { assertionFailure("Could not save simulator smoke results") }
     }
 }

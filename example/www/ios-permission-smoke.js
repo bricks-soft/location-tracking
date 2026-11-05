@@ -24,11 +24,6 @@
     await plugin.requestPermissions({ permissions: ['location'] });
     await refresh();
   });
-  button('Request Precision', async () => {
-    result.textContent = 'Precision request started';
-    await plugin.requestTemporaryFullAccuracy({ purposeKey: 'Tracking' });
-    await refresh();
-  });
   button('Start Route', async () => {
     await plugin.ready({ config: { http: { autoSync: false }, heartbeat: { enabled: false } } });
     try { await plugin.start(); await refresh(); }

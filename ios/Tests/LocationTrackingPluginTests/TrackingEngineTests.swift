@@ -9,7 +9,7 @@ final class TrackingEngineTests: XCTestCase {
     var records: [TrackingJSON] = []
     var events: [(String, TrackingJSON)] = []
     var url: URL!
-    let provider: TrackingJSON = ["permission": "when_in_use", "enabled": true, "accuracy": "precise", "backend": "corelocation"]
+    let provider: TrackingJSON = ["permission": "when_in_use", "enabled": true, "accuracy": "precise", "backend": "ios"]
     var origin: TrackedLocation { EngineFixtures.location(accuracy: 5, speed: 0, time: now.wall) }
     func prepare(_ patch: TrackingJSON = [:]) throws {
         url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("engine.sqlite")
@@ -140,8 +140,8 @@ final class TrackingEngineTests: XCTestCase {
         core.engine.providerChanged(["enabled": true, "permission": "denied"])
         XCTAssertEqual(core.state().text("lastStopReason"), "permission_denied")
     }
-    let servicesOff: TrackingJSON = ["enabled": false, "gps": false, "network": false, "permission": "denied", "accuracy": "none", "backend": "corelocation"]
-    let revoked: TrackingJSON = ["enabled": true, "gps": true, "network": true, "permission": "denied", "accuracy": "none", "backend": "corelocation"]
+    let servicesOff: TrackingJSON = ["enabled": false, "gps": false, "network": false, "permission": "denied", "accuracy": "none", "backend": "ios"]
+    let revoked: TrackingJSON = ["enabled": true, "gps": true, "network": true, "permission": "denied", "accuracy": "none", "backend": "ios"]
     func coldLaunch(_ state: TrackingJSON) throws {
         core.engine.timers.cancelAll(); core.syncer.close(); core = nil; records = []
         try reopen(); core.engine.context(provider: state, foreground: true); try core.engine.restore()
@@ -307,7 +307,7 @@ final class TrackingEngineTests: XCTestCase {
         core.engine.geofenceFailures([MonitorFailure(id: "home", code: "TOO_MANY_GEOFENCES", message: "geofence 'home': Core Location suspended monitoring because the app monitors too many conditions")])
         let failure = try XCTUnwrap(events.last { $0.0 == "locationerror" }?.1)
         XCTAssertEqual(failure.text("code"), "TOO_MANY_GEOFENCES"); XCTAssertTrue(failure.text("message").contains("'home'"))
-        XCTAssertEqual(failure.text("backend"), "corelocation"); XCTAssertTrue(failure["retryInMs"] is NSNull)
+        XCTAssertEqual(failure.text("backend"), "ios"); XCTAssertTrue(failure["retryInMs"] is NSNull)
     }
     func testTerminationPolicyAndOSKillWithoutCallback() throws {
         try prepare(["app": ["stopOnTerminate": false]])
@@ -382,7 +382,7 @@ final class TrackingEngineTests: XCTestCase {
         XCTAssertEqual(wire.text("timestamp"), "2026-09-26T10:15:30.123Z")
         XCTAssertEqual(wire.text("recorded_at"), "2026-09-26T10:15:30.456Z")
         XCTAssertEqual(wire.number("elapsed_realtime_ms"), 86400123)
-        XCTAssertEqual(wire.number("boot_count"), -1); XCTAssertEqual(wire.text("backend"), "corelocation")
+        XCTAssertEqual(wire.number("boot_count"), -1); XCTAssertEqual(wire.text("backend"), "ios")
         XCTAssertTrue(wire.flag("is_moving")); XCTAssertEqual(wire.number("odometer"), 1532.4)
         XCTAssertEqual(wire.object("activity").text("type"), "in_vehicle"); XCTAssertEqual(wire.object("activity").number("confidence"), 92)
         XCTAssertEqual(wire.object("extras").number("driver_id"), 7)

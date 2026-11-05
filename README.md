@@ -1458,7 +1458,6 @@ version to the commit and workflow run that built it. The first version, publish
 * [`getSensors()`](#getsensors)
 * [`checkPermissions()`](#checkpermissions)
 * [`requestPermissions(...)`](#requestpermissions)
-* [`requestTemporaryFullAccuracy(...)`](#requesttemporaryfullaccuracy)
 * [`log(...)`](#log)
 * [`getLog(...)`](#getlog)
 * [`destroyLog()`](#destroylog)
@@ -2007,21 +2006,6 @@ default all four, order: location, notifications, activityRecognition, backgroun
 --------------------
 
 
-### requestTemporaryFullAccuracy(...)
-
-```typescript
-requestTemporaryFullAccuracy(options: { purposeKey: string; }) => Promise<ProviderState>
-```
-
-| Param         | Type                                 |
-| ------------- | ------------------------------------ |
-| **`options`** | <code>{ purposeKey: string; }</code> |
-
-**Returns:** <code>Promise&lt;<a href="#providerstate">ProviderState</a>&gt;</code>
-
---------------------
-
-
 ### log(...)
 
 ```typescript
@@ -2506,13 +2490,13 @@ Posted when Android refuses to restore tracking from the background (after a reb
 restart), typically on Android 14+ without "Allow all the time". A tap resumes the session
 (`tracking_start` reason `resume_notification`). Uses the tracking notification's small icon and color.
 
-| Prop              | Type                 | Default                                                    |
-| ----------------- | -------------------- | ---------------------------------------------------------- |
-| **`delay`**       | <code>number</code>  |                                                            |
-| **`enabled`**     | <code>boolean</code> | <code>false</code>                                         |
-| **`title`**       | <code>string</code>  | <code>app label</code>                                     |
-| **`text`**        | <code>string</code>  | <code>'Location tracking is paused. Tap to resume.'</code> |
-| **`channelName`** | <code>string</code>  | <code>'Paused location tracking'</code>                    |
+| Prop              | Type                 | Description                                                                                                                                                    | Default                                                    |
+| ----------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| **`delay`**       | <code>number</code>  | iOS only (Android warns about an unknown key): seconds from the last activity to the check-in notification; raised to `heartbeat.maxInterval + 60` when lower. | <code>600</code>                                           |
+| **`enabled`**     | <code>boolean</code> |                                                                                                                                                                | <code>false</code>                                         |
+| **`title`**       | <code>string</code>  |                                                                                                                                                                | <code>app label</code>                                     |
+| **`text`**        | <code>string</code>  |                                                                                                                                                                | <code>'Location tracking is paused. Tap to resume.'</code> |
+| **`channelName`** | <code>string</code>  |                                                                                                                                                                | <code>'Paused location tracking'</code>                    |
 
 
 #### GeofenceConfig
@@ -2915,7 +2899,7 @@ A record could not be stored because the device storage is full.
 
 #### LocationBackend
 
-<code>'gms' | 'hms' | 'android' | 'web' | 'corelocation'</code>
+<code>'gms' | 'hms' | 'android' | 'web' | 'ios'</code>
 
 
 #### DesiredAccuracy
@@ -3043,7 +3027,6 @@ In the host app's Info.plist, add:
 <key>NSLocationWhenInUseUsageDescription</key><string>Explain your foreground tracking purpose.</string>
 <key>NSLocationAlwaysAndWhenInUseUsageDescription</key><string>Explain your optional background tracking purpose.</string>
 <key>NSMotionUsageDescription</key><string>Explain how motion selects the tracking profile.</string>
-<key>NSLocationTemporaryUsageDescriptionDictionary</key><dict><key>Tracking</key><string>Explain why precise location is needed.</string></dict>
 ```
 
 Call the native bootstrap before `application(_:didFinishLaunchingWithOptions:)` returns, so the background refresh
@@ -3056,9 +3039,10 @@ LocationTrackingNative.bootstrap()
 ```
 
 For apps that track only while they are in use, request `{ permissions: ['location'] }`. Always is optional, and the
-Always purpose string is still required because the library references that API. `requestTemporaryFullAccuracy({
-purposeKey: 'Tracking' })` uses a key from the temporary usage dictionary and returns the actual provider accuracy.
-Android and web reject this method with `UNIMPLEMENTED`. Precision grants are controlled by iOS.
+Always purpose string is still required because the library references that API. When the user grants approximate
+location, `ProviderState.accuracy` is `'approximate'` and a `providerchange` event follows; stored geofences stay inactive
+and a `PERMISSION_DENIED` `locationerror` says why. Explain it in the app and call `openAppSettings()` so the user can
+turn on Precise Location, which stays on.
 
 Queued records and configuration use Application Support with backup exclusion and protection until first unlock.
 Authorization is held in Keychain with the same unlock requirement. HTTP uses an ephemeral session, refuses redirects,

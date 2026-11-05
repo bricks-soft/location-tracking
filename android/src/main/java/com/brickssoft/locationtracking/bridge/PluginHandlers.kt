@@ -92,10 +92,6 @@ internal class PluginHandlers(
     private fun configResultJson(state: State): JSONObject =
         stateJson(state).put("warnings", JSONArray(ConfigChecks.warnings(state.config)))
 
-    fun requestTemporaryFullAccuracy(): JSONObject {
-        throw TrackingException(ErrorCode.UNIMPLEMENTED, "Temporary full accuracy is only available on iOS")
-    }
-
     fun getState(): JSONObject {
         gate("getState")
         return stateJson(services.engine.state())
@@ -537,7 +533,6 @@ internal class PluginHandlers(
             "getState",
             "checkPermissions",
             "requestPermissions",
-            "requestTemporaryFullAccuracy",
             "getDeviceInfo",
             "getSensors",
             "log",

@@ -83,7 +83,7 @@ appear only when they apply. The examples below show `provider` only on `provide
 | `coords` | object \| null | The fix (see below). `null` if no location has ever been known. |
 | `activity` | object | `{ "type": "still" \| "on_foot" \| "walking" \| "running" \| "on_bicycle" \| "in_vehicle" \| "unknown", "confidence": 0-100 }`. |
 | `battery` | object | `{ "level": 0..1 (or -1 if unknown), "is_charging": boolean }`. `heartbeat` records also have `temperature` (°C), `health` (`good`, `overheat`, `dead`, `over_voltage`, `cold`, `failure`, `unknown`) and `plugged` (`ac`, `usb`, `wireless`, `dock`, `none`) when the phone reports them. |
-| `backend` | string \| null | Location backend in use: `gms`, `hms` or `android`. |
+| `backend` | string \| null | Location backend in use: `gms`, `hms` or `android` on Android, `ios` on iOS, `web` in a browser. |
 | `network` | string | Connection type when the record was created: `wifi`, `cellular`, `ethernet`, `other` or `none`. A network blocked for the app (Doze, Data Saver) is `none`. |
 | `extras` | object | Optional. `persistence.extras`, merged with the extras passed to the call that created the record (for example `getCurrentPosition({ extras })`); the call's keys win. Absent when both are empty. |
 | `geofence` | object | Only for `geofence`: `{ "identifier", "action": "ENTER" \| "EXIT" \| "DWELL", "extras"? }`. |
@@ -541,7 +541,7 @@ coords, or `null`.
 | `network` | boolean | The network (Wi-Fi/cell) provider is enabled. |
 | `permission` | `always` \| `when_in_use` \| `denied` | App location permission. `when_in_use` means "Allow only while using the app". |
 | `accuracy` | `precise` \| `approximate` \| `none` | Location accuracy granted to the app (Android 12+ lets users grant approximate only). |
-| `backend` | `gms` \| `hms` \| `android` | Location backend in use. |
+| `backend` | `gms` \| `hms` \| `android` \| `ios` \| `web` | Location backend in use. |
 
 ## Body shapes
 

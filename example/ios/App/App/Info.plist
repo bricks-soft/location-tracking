@@ -30,11 +30,6 @@
 	<true/>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>Restore tracking and receive geofence events when the example is not open.</string>
-	<key>NSLocationTemporaryUsageDescriptionDictionary</key>
-	<dict>
-		<key>Tracking</key>
-		<string>Use precise positions for the tracking example.</string>
-	</dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Track positions while you use the location tracking example.</string>
 	<key>NSMotionUsageDescription</key>

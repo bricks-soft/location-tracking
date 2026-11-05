@@ -29,7 +29,7 @@ final class Permissions: NSObject, CLLocationManagerDelegate {
         let status = manager.authorizationStatus
         let authorized = status == .authorizedAlways || status == .authorizedWhenInUse
         let enabled = LocationServices.shared.enabled
-        return ["enabled": enabled, "gps": enabled, "network": enabled, "permission": status == .authorizedAlways ? "always" : authorized ? "when_in_use" : "denied", "accuracy": authorized ? (manager.accuracyAuthorization == .fullAccuracy ? "precise" : "approximate") : "none", "backend": "corelocation"]
+        return ["enabled": enabled, "gps": enabled, "network": enabled, "permission": status == .authorizedAlways ? "always" : authorized ? "when_in_use" : "denied", "accuracy": authorized ? (manager.accuracyAuthorization == .fullAccuracy ? "precise" : "approximate") : "none", "backend": "ios"]
     }
     func status(_ completion: @escaping (TrackingJSON) -> Void) {
         let location: String
@@ -98,15 +98,5 @@ final class Permissions: NSObject, CLLocationManagerDelegate {
         if awaitingAlways {
             if manager.authorizationStatus == .authorizedAlways { finishAuthorization() }
         } else if manager.authorizationStatus != .notDetermined { finishAuthorization() }
-    }
-    func temporary(_ purpose: String, completion: @escaping (Result<TrackingJSON, Error>) -> Void) {
-        guard (Bundle.main.object(forInfoDictionaryKey: "NSLocationTemporaryUsageDescriptionDictionary") as? [String: String])?[purpose] != nil else { completion(.failure(TrackingError("INVALID_ARGUMENT", "purposeKey must exist in NSLocationTemporaryUsageDescriptionDictionary"))); return }
-        guard manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse else { completion(.failure(TrackingError("PERMISSION_DENIED", "Location permission is required"))); return }
-        if manager.accuracyAuthorization == .fullAccuracy { completion(.success(provider)); return }
-        manager.requestTemporaryFullAccuracyAuthorization(withPurposeKey: purpose) { error in
-            DispatchQueue.main.async {
-                completion(.success(self.provider))
-            }
-        }
     }
 }

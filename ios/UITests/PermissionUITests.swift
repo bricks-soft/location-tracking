@@ -42,7 +42,7 @@ final class PermissionUITests: XCTestCase {
         app.buttons["Request Position"].tap()
         XCTAssertTrue(app.staticTexts["Position error: PERMISSION_DENIED"].waitForExistence(timeout: 15))
     }
-    func testApproximatePermissionAndTemporaryPrecision() {
+    func testApproximatePermissionStartsRoute() {
         let app = launch()
         app.buttons["Request Location"].tap()
         let alert = XCUIApplication(bundleIdentifier: "com.apple.springboard").alerts.firstMatch
@@ -54,18 +54,6 @@ final class PermissionUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Provider accuracy: approximate"].waitForExistence(timeout: 15))
         app.buttons["Start Route"].tap()
         XCTAssertTrue(app.staticTexts["Route: approximate enabled"].waitForExistence(timeout: 15))
-        app.buttons["Request Precision"].tap()
-        let precise = app.staticTexts["Provider accuracy: precise"]
-        let presented = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in alert.exists || app.alerts.firstMatch.exists || precise.exists }, object: nil)
-        XCTAssertEqual(XCTWaiter.wait(for: [presented], timeout: 15), .completed)
-        if !precise.exists {
-            let prompt = alert.exists ? alert : app.alerts.firstMatch
-            let upgrade = prompt.buttons.matching(NSPredicate(format: "(label CONTAINS[c] 'precise' OR label BEGINSWITH[c] 'allow' OR label == 'OK') AND NOT label CONTAINS[c] 'keep'")).firstMatch
-            XCTAssertTrue(upgrade.waitForExistence(timeout: 10), prompt.debugDescription)
-            upgrade.tap()
-        }
-        XCTAssertTrue(precise.waitForExistence(timeout: 15))
-        XCTAssertTrue(app.staticTexts["Route: precise enabled"].waitForExistence(timeout: 15))
         app.buttons["Stop Route"].tap()
         XCTAssertTrue(app.staticTexts["Route: stopped"].waitForExistence(timeout: 15))
     }

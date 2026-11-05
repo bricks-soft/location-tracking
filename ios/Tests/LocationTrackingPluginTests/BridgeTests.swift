@@ -6,7 +6,7 @@ import CoreLocation
 final class BridgeTests: XCTestCase {
     func testMethodTableCoversTypeScriptSurface() {
         let names = Set(LocationTrackingPlugin().pluginMethods.compactMap { $0.name })
-        let expected = Set(["ready", "setConfig", "reset", "getState", "start", "startGeofences", "stop", "changePace", "getCurrentPosition", "watchPosition", "clearWatch", "getOdometer", "setOdometer", "resetOdometer", "getLocations", "getCount", "insertLocation", "destroyLocations", "destroyLocation", "sync", "addGeofence", "addGeofences", "removeGeofence", "removeGeofences", "getGeofences", "getGeofence", "geofenceExists", "getHeartbeatStatus", "getProviderState", "isPowerSaveMode", "getBatteryOptimizationStatus", "openBatteryOptimizationSettings", "getPowerManagerInfo", "openPowerManagerSettings", "openLocationSettings", "openAppSettings", "getDeviceInfo", "getSensors", "checkPermissions", "requestPermissions", "requestTemporaryFullAccuracy", "log", "getLog", "destroyLog", "uploadLog", "emailLog"])
+        let expected = Set(["ready", "setConfig", "reset", "getState", "start", "startGeofences", "stop", "changePace", "getCurrentPosition", "watchPosition", "clearWatch", "getOdometer", "setOdometer", "resetOdometer", "getLocations", "getCount", "insertLocation", "destroyLocations", "destroyLocation", "sync", "addGeofence", "addGeofences", "removeGeofence", "removeGeofences", "getGeofences", "getGeofence", "geofenceExists", "getHeartbeatStatus", "getProviderState", "isPowerSaveMode", "getBatteryOptimizationStatus", "openBatteryOptimizationSettings", "getPowerManagerInfo", "openPowerManagerSettings", "openLocationSettings", "openAppSettings", "getDeviceInfo", "getSensors", "checkPermissions", "requestPermissions", "log", "getLog", "destroyLog", "uploadLog", "emailLog"])
         XCTAssertEqual(names, expected)
     }
     func testNotReadyAndNativeBypass() throws {
@@ -24,14 +24,14 @@ final class BridgeTests: XCTestCase {
         core.syncer.close()
     }
     func testAllowlistMatchesAndroidWithPrecisionAddition() {
-        XCTAssertEqual(TrackingCore.allowed, Set(["ready", "getState", "checkPermissions", "requestPermissions", "requestTemporaryFullAccuracy", "getDeviceInfo", "getSensors", "log", "getLog", "getProviderState", "openBatteryOptimizationSettings", "openPowerManagerSettings", "openLocationSettings", "openAppSettings"]))
+        XCTAssertEqual(TrackingCore.allowed, Set(["ready", "getState", "checkPermissions", "requestPermissions", "getDeviceInfo", "getSensors", "log", "getLog", "getProviderState", "openBatteryOptimizationSettings", "openPowerManagerSettings", "openLocationSettings", "openAppSettings"]))
     }
     func testRecordShapeOmitsUnavailableIDAndCoordinatesAreNullable() {
         let wire = RecordFactory.make(event: "current_position", fix: nil, extras: [:], odometer: 0, provider: [:], network: "none")
         XCTAssertTrue(wire["coords"] is NSNull)
         XCTAssertTrue(wire["timestamp"] is NSNull)
         XCTAssertEqual(wire.number("boot_count"), -1)
-        XCTAssertEqual(wire.text("backend"), "corelocation")
+        XCTAssertEqual(wire.text("backend"), "ios")
         XCTAssertNil(wire["extras"])
         XCTAssertNoThrow(try jsonData(wire))
     }

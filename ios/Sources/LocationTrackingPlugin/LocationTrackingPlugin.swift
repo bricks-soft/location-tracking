@@ -45,7 +45,6 @@ public final class LocationTrackingPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "getSensors", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "checkPermissions", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestPermissions", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "requestTemporaryFullAccuracy", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "log", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getLog", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "destroyLog", returnType: CAPPluginReturnPromise),
@@ -142,7 +141,6 @@ public final class LocationTrackingPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc public func getSensors(_ call: CAPPluginCall) { invoke("getSensors", call) }
     @objc public override func checkPermissions(_ call: CAPPluginCall) { invoke("checkPermissions", call) }
     @objc public override func requestPermissions(_ call: CAPPluginCall) { invoke("requestPermissions", call) }
-    @objc public func requestTemporaryFullAccuracy(_ call: CAPPluginCall) { invoke("requestTemporaryFullAccuracy", call) }
     @objc public func log(_ call: CAPPluginCall) { invoke("log", call) }
     @objc public func getLog(_ call: CAPPluginCall) { invoke("getLog", call) }
     @objc public func destroyLog(_ call: CAPPluginCall) { invoke("destroyLog", call) }

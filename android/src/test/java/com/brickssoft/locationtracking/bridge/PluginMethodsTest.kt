@@ -90,7 +90,7 @@ class PluginMethodsTest {
             "getProviderState", "isPowerSaveMode", "getBatteryOptimizationStatus", "openBatteryOptimizationSettings",
             "getPowerManagerInfo", "openPowerManagerSettings", "openLocationSettings", "openAppSettings",
             "getDeviceInfo", "getSensors",
-            "checkPermissions", "requestPermissions", "requestTemporaryFullAccuracy",
+            "checkPermissions", "requestPermissions",
             "log", "getLog", "destroyLog", "uploadLog", "emailLog",
             "addListener", "removeAllListeners",
         )

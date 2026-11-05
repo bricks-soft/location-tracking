@@ -19,7 +19,7 @@
   try {
     plugin = window.capacitorLocationTracking.LocationTracking;
     await rejects('getCount', 'NOT_READY');
-    assert((await plugin.getState()).backend === 'corelocation', 'state before ready');
+    assert((await plugin.getState()).backend === 'ios', 'state before ready');
     assert((await plugin.getProviderState()).permission !== 'denied', 'simulator location permission');
     assert((await plugin.getDeviceInfo()).platform === 'ios', 'device platform');
     assert(typeof (await plugin.getSensors()).accelerometer === 'boolean', 'sensor availability');
@@ -27,7 +27,6 @@
     assert((await plugin.getLog()).log.includes('Simulator bridge smoke'), 'log before ready');
     await plugin.checkPermissions();
     await plugin.requestPermissions({ permissions: ['location'] });
-    assert((await plugin.requestTemporaryFullAccuracy({ purposeKey: 'Tracking' })).accuracy === 'precise', 'temporary accuracy returns actual precision');
     await plugin.ready({ config: { http: { autoSync: false, url: null } } });
     await plugin.setConfig({ config: { persistence: { extras: { simulator: true } } } });
     await plugin.reset({ config: { http: { autoSync: false } } });

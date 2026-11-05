@@ -13,7 +13,7 @@ export type RecordEvent =
   | 'tracking_stop'
   | 'providerchange';
 
-export type LocationBackend = 'gms' | 'hms' | 'android' | 'web' | 'corelocation';
+export type LocationBackend = 'gms' | 'hms' | 'android' | 'web' | 'ios';
 
 export interface WireCoords {
   latitude: number;

@@ -1359,10 +1359,11 @@ Node ignores it.)
 CI runs the emulator suites through `.github/scripts/run-e2e.sh` in `.github/workflows/e2e-android.yml`, only when
 started by hand (Actions tab or `gh workflow run`; pushes and pull requests start no run, to save Actions minutes):
 the plugin suite on API 34 (with smaller runs on API 29 and 35), P-P08 on an image without Google Play services, the
-field-force suite on API 34, and the long scenarios (with the `include-long` input). The build workflow
-`.github/workflows/ci.yml`, also started by hand only, type-checks the kit and runs its unit tests,
-type-checks and dry-runs both suites, runs the field-force Node tests, and checks that the Google Play build of the
-field-force app supports 16 KB memory pages (`.github/scripts/check-16kb.py`).
+field-force suite on API 34, and the long scenarios (with the `include-long` input).
+`.github/workflows/typescript.yml` runs on every push: it type-checks the kit and runs its unit tests, type-checks and
+dry-runs both suites, and runs the field-force Node tests. `.github/workflows/android.yml`, also started by hand only,
+runs the Android unit tests, builds the example apps and checks that the Google Play build of the field-force app
+supports 16 KB memory pages (`.github/scripts/check-16kb.py`).
 
 The field-force suite, together with the field-force app and the kit, is written so that it can move into the Bricks
 app as its integration test. The contract behind the tests (scenario ids, debug commands, mock back office) is
@@ -1398,8 +1399,8 @@ Each later release, with `scripts/release.sh` (bash; run it from the repository 
    `origin/master`; the version is new and greater than the one on npm, and its major version is Capacitor's; the
    versions in `package.json`, `package-lock.json` and `src/web/device.ts` agree; `[Unreleased]` is not empty; git
    can sign; `npm run docgen` leaves the README unchanged; the changes since the last tag contain none of the
-   private-name patterns (a file outside the repository, see the script); the steps of `ci.yml` pass on this
-   computer; and `npm pack` contains only the files listed in `package.json`.
+   private-name patterns (a file outside the repository, see the script); the steps of `typescript.yml` and
+   `android.yml` pass on this computer; and `npm pack` contains only the files listed in `package.json`.
 3. `scripts/release.sh run <version>` runs the checks, renames `[Unreleased]` to `[<version>] - <date>`, runs
    `npm version <version> --no-git-tag-version` (it sets `package.json`, `package-lock.json` and `PLUGIN_VERSION` in
    `src/web/device.ts`; `android/build.gradle` reads `package.json` itself), and makes a signed commit and a signed tag

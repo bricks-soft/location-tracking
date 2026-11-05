@@ -12,7 +12,7 @@ Each entry says **what** was decided and **why**. Entries are grouped by who dec
 Parts 1–5 are round 1 (the first pull request, #1). [Round 2](#round-2-field-force-audit-companion-api-and-avd-tests)
 (field-force audit, companion API and emulator tests) follows the same structure in R2.1–R2.5.
 [Round 3](#round-3-comparison-report) (comparison report) has R3.1–R3.4; entries
-it changed are marked "Changed in round 3".
+it changed are marked "Changed in round 3". [CI workflows](#ci-workflows) changes R2-Q15.
 
 "Record" below means one row in the local SQLite queue, which is also one object in an HTTP upload body
 (see [wire-format.md](wire-format.md)). Line references point at the files as merged.
@@ -866,3 +866,12 @@ Result templates of the real-phone run (runbook section 8):
 | Verdict | 12a not verified (the place had GPS); the drop rule of 12b holds with real fixes; outdoor half not done |
 
 M-09 and M-12: not run (no Huawei phone, no Android 11–13 phone).
+
+## CI workflows
+
+The owner changed R2-Q15 (both workflows start only by hand) on 2026-11-05, when the iOS workflow was being reviewed.
+
+| Decision | Why | Where |
+|---|---|---|
+| `ci.yml` is split: the TypeScript checks (plugin build and tests, the kit's type check and unit tests, type checks and dry runs of both suites, the field-force Node tests) move to `typescript.yml`, which starts on every push. The rest becomes `android.yml` (workflow "Android"), still started by hand only. | The TypeScript checks need no Android SDK or emulator and take a few minutes on Linux, so they can run on every push. The name `android.yml` sits next to `e2e-android.yml` and the iOS workflow; "CI" sounded like it covered every platform. | `.github/workflows/typescript.yml`, `.github/workflows/android.yml` |
+| Native checks (Android, iOS) run on the developer's computer before a pull request is finalized, and start on GitHub by hand only when needed. | Same reason as R2-Q15: native runners (and macOS above all) cost the most Actions minutes. `scripts/release.sh` runs the same steps before each release. | `CLAUDE.md`, `scripts/release.sh` |

@@ -1,0 +1,67 @@
+name: TypeScript
+
+# Starts on every push: these checks need no Android SDK or emulator and take a few minutes on Linux. The native checks
+# (android.yml, e2e-android.yml) start by hand only (docs/DECISIONS.md, "CI workflows").
+on:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push to the same branch cancels the older run.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # The e2e kit and the suites run their .ts files directly (type stripping needs Node >= 22.18), so do not
+          # accept an older Node 22 from the runner's tool cache.
+          node-version: 22
+          check-latest: true
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            examples/field-force/package-lock.json
+            testing/e2e-kit/package-lock.json
+            e2e/plugin/package-lock.json
+            examples/field-force/e2e/package-lock.json
+
+      - name: Build and test TypeScript
+        run: |
+          npm ci
+          npm test
+
+      - name: e2e kit (typecheck and unit tests)
+        working-directory: testing/e2e-kit
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+
+      - name: Plugin e2e suite (typecheck and dry run)
+        working-directory: e2e/plugin
+        run: |
+          npm ci
+          npm run typecheck
+          npm run dry-run
+
+      - name: Field-force e2e suite (typecheck and dry run)
+        working-directory: examples/field-force/e2e
+        run: |
+          npm ci
+          npm run typecheck
+          npm run dry-run
+
+      - name: Field-force app Node tests
+        working-directory: examples/field-force
+        run: |
+          npm ci
+          npm test

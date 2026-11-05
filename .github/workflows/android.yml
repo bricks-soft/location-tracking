@@ -1,8 +1,9 @@
-name: CI
+name: Android
 
-# Started by hand only (Actions tab -> CI -> Run workflow, or `gh workflow run ci.yml --ref <branch>`): the owner
-# decided that pushes and pull requests do not start runs, to save Actions minutes (docs/DECISIONS.md R2.1).
-# The same checks run locally: run the steps below from the repository root.
+# Native checks: Android unit tests, the example app builds and the 16 KB check. Run them on your computer before a pull
+# request is finalized (scripts/release.sh runs the same steps). On GitHub they start by hand only (Actions tab ->
+# Android -> Run workflow, or `gh workflow run android.yml --ref <branch>`), to save Actions minutes
+# (docs/DECISIONS.md, "CI workflows"). The TypeScript checks run on every push in typescript.yml.
 on:
   workflow_dispatch:
 
@@ -23,8 +24,6 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # The e2e kit and the suites run their .ts files directly (type stripping needs Node >= 22.18), so do not
-          # accept an older Node 22 from the runner's tool cache.
           node-version: 22
           check-latest: true
           cache: npm
@@ -32,9 +31,6 @@ jobs:
             package-lock.json
             example/package-lock.json
             examples/field-force/package-lock.json
-            testing/e2e-kit/package-lock.json
-            e2e/plugin/package-lock.json
-            examples/field-force/e2e/package-lock.json
 
       - uses: actions/setup-java@v4
         with:
@@ -48,31 +44,9 @@ jobs:
       - name: Use the preinstalled Android SDK
         run: echo "ANDROID_HOME=${ANDROID_HOME:-$ANDROID_SDK_ROOT}" >> "$GITHUB_ENV"
 
-      - name: Build and test TypeScript
-        run: |
-          npm ci
-          npm test
-
-      - name: e2e kit (typecheck and unit tests)
-        working-directory: testing/e2e-kit
-        run: |
-          npm ci
-          npm run typecheck
-          npm test
-
-      - name: Plugin e2e suite (typecheck and dry run)
-        working-directory: e2e/plugin
-        run: |
-          npm ci
-          npm run typecheck
-          npm run dry-run
-
-      - name: Field-force e2e suite (typecheck and dry run)
-        working-directory: examples/field-force/e2e
-        run: |
-          npm ci
-          npm run typecheck
-          npm run dry-run
+      # npm ci builds dist/ (the prepare script), which the example apps install from file:.
+      - name: Install and build the plugin
+        run: npm ci
 
       - name: Android unit tests
         working-directory: android
@@ -90,7 +64,6 @@ jobs:
         working-directory: examples/field-force
         run: |
           npm ci
-          npm test
           npm run sync
           cd android
           gradle assembleDebug --console=plain

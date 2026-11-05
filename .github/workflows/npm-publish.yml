@@ -10,7 +10,7 @@
 # https://docs.npmjs.com/trusted-publishers
 # https://docs.npmjs.com/staged-publishing
 #
-# Unlike ci.yml, this workflow starts on its own (on a release), because releases are rare.
+# Unlike android.yml, this workflow starts on its own (on a release), because releases are rare.
 
 name: npm package
 

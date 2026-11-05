@@ -864,11 +864,11 @@ The manual dispatch has two inputs: `test-name-pattern` (a regular expression fo
 "Field-force suite (API 34)" jobs; empty = the whole suite; the subset and P-P08 jobs keep their own patterns) and
 `include-long` (also run the long jobs).
 
-The build workflow `.github/workflows/ci.yml` (job `build`) also runs only when started by hand: TypeScript build and
-tests, the kit's type check and unit tests, type checks and dry runs of both suites, the Android unit tests, both
-example apps' debug builds, the field-force Node tests (`npm test`), the PremiseMonitor unit tests, the field-force
-release build and the 16 KB check ([M-07](#m-07-play-build-gms-only-16-kb-page-size-alignment)). It uploads both debug
-APKs as `debug-apks`.
+`.github/workflows/typescript.yml` runs on every push: TypeScript build and tests, the kit's type check and unit
+tests, type checks and dry runs of both suites, and the field-force Node tests (`npm test`).
+`.github/workflows/android.yml` (job `build`) also runs only when started by hand: the Android unit tests, both
+example apps' debug builds, the PremiseMonitor unit tests, the field-force release build and the 16 KB check
+([M-07](#m-07-play-build-gms-only-16-kb-page-size-alignment)). It uploads both debug APKs as `debug-apks`.
 
 **[auto]** Start a run by hand and fetch its artifacts with the GitHub CLI:
 

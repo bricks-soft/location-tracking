@@ -866,9 +866,10 @@ success. The subset runs pass the pattern through `NODE_OPTIONS='--test-name-pat
 `.github/scripts/run-e2e.sh` holds the device steps. After the CI runs of round 2 the owner decided that both
 workflows start only by hand (no pull request, push or `schedule` trigger), to save Actions minutes; the suites run on
 local emulators with `run-e2e.sh`. The 16 KB check runs in the build job of
-`.github/workflows/ci.yml` with `.github/scripts/check-16kb.py` (a committed Python ELF reader instead of
+`.github/workflows/android.yml` with `.github/scripts/check-16kb.py` (a committed Python ELF reader instead of
 `llvm-readelf`): it fails the job for the field-force release APK (GMS) and only reports for the example's
-`gms,hms` debug APK. The build job also runs the field-force Node tests (`npm test` in `examples/field-force`).
+`gms,hms` debug APK. The field-force Node tests (`npm test` in `examples/field-force`) run in
+`.github/workflows/typescript.yml` on every push.
 
 **Runbook (unit 15, `docs/e2e-runbook.md`).** How an AI agent runs the automated suites on a local AVD (setup, the
 commands above, reading artifacts), and step-by-step procedures with pass criteria for M-01…M-08 using the standalone

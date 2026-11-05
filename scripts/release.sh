@@ -13,7 +13,7 @@
 # Checks: tools (Node of npm-publish.yml, gh login, JDK, Android SDK); git (master, clean, equal to origin/master,
 # tag and release free); versions (new, greater than npm latest, major = Capacitor's, package.json =
 # package-lock.json = src/web/device.ts); CHANGELOG ([Unreleased] first and not empty); git can sign; private names;
-# the steps of .github/workflows/ci.yml on this computer (about 10 minutes, mostly Gradle); README = npm run docgen;
+# the steps of .github/workflows/typescript.yml and android.yml on this computer (about 10 minutes, mostly Gradle); README = npm run docgen;
 # npm pack contents; no tracked file changed by the builds.
 #
 # Private names: the changes and commit messages since the last tag must match none of the extended regular
@@ -108,7 +108,7 @@ check_private() {
 }
 
 run_tests() {
-  step "tests (the steps of .github/workflows/ci.yml)"
+  step "tests (the steps of .github/workflows/typescript.yml and android.yml)"
   npm ci && npm test
   (cd testing/e2e-kit && npm ci && npm run typecheck && npm test)
   (cd e2e/plugin && npm ci && npm run typecheck && npm run dry-run)

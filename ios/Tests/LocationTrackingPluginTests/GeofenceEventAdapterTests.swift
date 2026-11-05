@@ -62,6 +62,14 @@ final class GeofenceEventAdapterTests: XCTestCase {
         XCTAssertEqual(actions("home", .satisfied), ["ENTER"])
         XCTAssertEqual(adapter.handle("home", .unknown, failures: [("TOO_MANY_GEOFENCES", "limit")]).1.count, 1)
     }
+    func testARegistrationOfAnUnchangedConditionTakesItsCurrentStateAsTheInitialDetermination() {
+        XCTAssertEqual(adapter.registered("home", initialTriggerEntry: false, current: .unsatisfied).0.map { $0.action.rawValue + ($0.initial ? ":initial" : "") }, ["EXIT:initial"])
+        XCTAssertEqual(actions("home", .satisfied), ["ENTER"])
+        XCTAssertEqual(adapter.registered("home", initialTriggerEntry: false, current: .satisfied).0.count, 0)
+        XCTAssertEqual(actions("home", .unsatisfied), ["EXIT"])
+        XCTAssertEqual(adapter.registered("home", initialTriggerEntry: true, current: .satisfied).0.map(\.action), [.enter])
+        XCTAssertEqual(actions("home", .satisfied), [])
+    }
     func testRemovedAndUnknownIdentifiersAreIgnored() {
         adapter.registered("home", initialTriggerEntry: true)
         adapter.removed("home")
@@ -158,6 +166,28 @@ final class GeofenceMonitorTests: XCTestCase {
         client.emit("home", .satisfied)
         await waitForHits(1)
         XCTAssertEqual(hits, ["home:ENTER"])
+    }
+    func testReAddingAnUnchangedCircleKeepsItsStateSoTheNextCrossingIsReported() async {
+        let client = FakeMonitorClient()
+        let (monitor, manager) = relaunch(client, FakeGeofenceStore())
+        manager.onTrackingStarted()
+        try? manager.add([GeofenceFixtures.circle("away", latitude: lat, longitude: lng, radius: 100)])
+        await idle(monitor)
+        client.emit("away", .unsatisfied)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        client.saved["away"] = saved(.unsatisfied)
+        try? manager.add([GeofenceFixtures.circle("away", latitude: lat, longitude: lng, radius: 100)])
+        await idle(monitor)
+        XCTAssertEqual(client.added, ["away", "away"])
+        client.emit("away", .satisfied)
+        await waitForHits(1)
+        XCTAssertEqual(hits, ["away:ENTER"], "Core Location sends no event for an unchanged condition, so the re-added geofence keeps its outside state")
+        client.saved["away"] = saved(.satisfied)
+        try? manager.add([GeofenceFixtures.circle("away", latitude: lat, longitude: lng, radius: 100)])
+        await idle(monitor)
+        client.emit("away", .unsatisfied)
+        await waitForHits(2)
+        XCTAssertEqual(hits, ["away:ENTER", "away:EXIT"], "a geofence re-added while inside still reports the exit")
     }
     func testAPersistedInsideCircleLeftWhileTheAppWasGoneReportsExit() async {
         let client = FakeMonitorClient()

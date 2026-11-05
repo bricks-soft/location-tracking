@@ -43,6 +43,11 @@ final class GeofenceEventAdapter {
         expected.remove(id); ready.insert(id)
     }
 
+    func registered(_ id: String, initialTriggerEntry: Bool, current: MonitorState) -> ([OsGeofenceTransition], [MonitorFailure]) {
+        registered(id, initialTriggerEntry: initialTriggerEntry)
+        return process(id, current, [])
+    }
+
     func removed(_ id: String) {
         known[id] = nil; initialTrigger[id] = nil; reported[id] = nil; held[id] = nil
         expected.remove(id); ready.remove(id)

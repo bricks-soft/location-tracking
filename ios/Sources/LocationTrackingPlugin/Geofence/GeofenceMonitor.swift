@@ -120,7 +120,12 @@ final class GeofenceMonitor: GeofenceBackend, @unchecked Sendable {
     }
 
     private func register(_ region: OsGeofence, _ client: MonitorClient) async {
-        await onQueue { self.adapter.registered(region.id, initialTriggerEntry: region.initialTriggerEntry) }
+        let saved = await client.condition(region.id)
+        let current = saved.flatMap { Self.same($0, region) && ($0.state == .satisfied || $0.state == .unsatisfied) ? $0.state : nil }
+        await onQueue {
+            if let current { self.publish(self.adapter.registered(region.id, initialTriggerEntry: region.initialTriggerEntry, current: current)) }
+            else { self.adapter.registered(region.id, initialTriggerEntry: region.initialTriggerEntry) }
+        }
         await client.add(region)
     }
 

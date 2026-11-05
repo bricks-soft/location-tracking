@@ -5,7 +5,12 @@ final class BackgroundUpload {
     private let completion: (Bool) -> Void
     private var completed = false
     init(syncer: Syncer, completion: @escaping (Bool) -> Void) { self.syncer = syncer; self.completion = completion }
-    func start() { syncer.automatic { [self] result in finish((try? result.get()) != nil) } }
+    func start() {
+        syncer.whenConnectivityKnown { [self] in
+            guard !completed else { return }
+            syncer.automatic { [self] result in finish((try? result.get()) != nil) }
+        }
+    }
     func expire() {
         guard !completed else { return }
         finish(false)

@@ -339,6 +339,35 @@ final class HTTPTests: XCTestCase {
         XCTAssertEqual(events.filter { $0.0 == "http" }.compactMap { $0.1["uuids"] as? [String] }, [["rejected"], ["later"]])
         syncer.close()
     }
+    func testBackgroundUploadWaitsForTheFirstNetworkResult() async throws {
+        try await prepare(["autoSync": true])
+        syncer.connectivityKnown = false
+        var result: Bool?
+        let upload = BackgroundUpload(syncer: syncer) { result = $0 }
+        upload.start()
+        try await observeNoAdditionalHTTP(for: 0.2)
+        XCTAssertNil(result, "a cold-launch refresh must not finish before the first network result")
+        syncer.connectivity(connected: true, cellular: false)
+        try await waitUntil("background upload") { result != nil }
+        XCTAssertEqual(result, true)
+        XCTAssertEqual(try store.count, 0)
+        syncer.close()
+    }
+    func testCompletionRequestedDuringAFailingPassWaitsForTheFollowUpPass() async throws {
+        try await prepare(["autoSync": true])
+        _ = try await control("__faults", ["path": "/locations", "hold": "race", "drop": true])
+        _ = try await control("__faults", ["path": "/locations", "drop": true, "count": 3])
+        syncer.automatic()
+        try await waitForRequest()
+        try store.insert(["uuid": "beat", "event": "heartbeat", "recorded_at": iso()])
+        var queuedAtCompletion: [String]?
+        syncer.automatic { _ in queuedAtCompletion = (try? self.store.locations().map { $0.text("uuid") }) ?? [] }
+        try await release()
+        try await waitUntil("heartbeat upload completion", seconds: 40) { queuedAtCompletion != nil }
+        XCTAssertEqual(queuedAtCompletion, [], "the heartbeat's completion must follow the pass that uploads it")
+        XCTAssertTrue(events.contains { $0.0 == "http" && $0.1.flag("success") && ($0.1["uuids"] as? [String]) == ["beat"] })
+        syncer.close()
+    }
     func testStartupWaitsForInitialNetworkResultAndManualStillBypasses() async throws {
         try await prepare(["autoSync": true, "disableAutoSyncOnCellular": true])
         syncer.connectivityKnown = false

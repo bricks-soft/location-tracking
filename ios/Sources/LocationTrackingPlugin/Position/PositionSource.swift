@@ -22,12 +22,7 @@ final class PositionSource: NSObject, CLLocationManagerDelegate {
         self.interval = max(0, options.number("interval", 1000)) / 1000
         super.init()
         manager.delegate = self
-        switch options.text("desiredAccuracy", "high") {
-        case "balanced": manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        case "low": manager.desiredAccuracy = kCLLocationAccuracyKilometer
-        case "passive": manager.desiredAccuracy = kCLLocationAccuracyThreeKilometers
-        default: manager.desiredAccuracy = kCLLocationAccuracyBest
-        }
+        manager.desiredAccuracy = RouteSource.accuracy(options.text("desiredAccuracy", "high"))
         manager.distanceFilter = kCLDistanceFilterNone
         manager.pausesLocationUpdatesAutomatically = false
         let modes = Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String] ?? []

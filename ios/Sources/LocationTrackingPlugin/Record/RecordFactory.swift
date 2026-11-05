@@ -16,7 +16,7 @@ struct RecordFactory {
                 "elapsed_realtime_ms": continuousMilliseconds(), "boot_count": -1, "is_moving": false, "odometer": odometer,
                 "mock": fix?.sourceInformation?.isSimulatedBySoftware ?? false, "coords": coords, "activity": ["type": "unknown", "confidence": 0],
                 "battery": readings.battery,
-                "backend": "ios", "extras": extras, "provider": provider, "network": network, "device": readings.device]
+                "backend": PluginInfo.backend, "extras": extras, "provider": provider, "network": network, "device": readings.device]
         if extras.isEmpty { wire.removeValue(forKey: "extras") }
         if readings.device.isEmpty { wire.removeValue(forKey: "device") }
         return wire

@@ -44,7 +44,7 @@ public enum LocationTrackingNative {
                     DispatchQueue.main.async {
                         LocationServices.shared.whenReady {
                             queue.async {
-                                guard case .success(let core) = result else { task.setTaskCompleted(success: false); return }
+                                guard case .success(let core) = result else { task.setTaskCompleted(success: false); scheduleRefresh(); return }
                                 let upload = BackgroundUpload(syncer: core.syncer) { success in
                                     task.expirationHandler = nil
                                     task.setTaskCompleted(success: success)

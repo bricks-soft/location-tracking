@@ -71,7 +71,7 @@ final class TrackingCore {
     deinit { monitor.cancel() }
     static let allowed = Set(["ready", "getState", "checkPermissions", "requestPermissions", "getDeviceInfo", "getSensors", "log", "getLog", "getProviderState", "openBatteryOptimizationSettings", "openPowerManagerSettings", "openLocationSettings", "openAppSettings"])
     func state() -> TrackingJSON {
-        ["enabled": runtime.flag("enabled"), "trackingMode": runtime.text("trackingMode", "location"), "isMoving": runtime.flag("isMoving"), "odometer": odometer, "backend": "ios", "lastRecordAt": runtime["lastRecordAt"] ?? NSNull(), "lastStopReason": runtime["lastStopReason"] ?? NSNull(), "lastStopAt": runtime["lastStopAt"] ?? NSNull(), "config": config.masked]
+        ["enabled": runtime.flag("enabled"), "trackingMode": runtime.text("trackingMode", "location"), "isMoving": runtime.flag("isMoving"), "odometer": odometer, "backend": PluginInfo.backend, "lastRecordAt": runtime["lastRecordAt"] ?? NSNull(), "lastStopReason": runtime["lastStopReason"] ?? NSNull(), "lastStopAt": runtime["lastStopAt"] ?? NSNull(), "config": config.masked]
     }
     func call(_ method: String, _ options: TrackingJSON, native: Bool = false, callback: @escaping (Result<TrackingJSON, Error>) -> Void) {
         do {
@@ -166,7 +166,7 @@ final class TrackingCore {
                 DispatchQueue.main.async { UIApplication.shared.open(URL(string: UIApplication.openSettingsURLString)!) { callback(.success(["opened": $0])) } }
             case "getDeviceInfo":
                 DispatchQueue.main.async {
-                    callback(.success(["platform": "ios", "manufacturer": "Apple", "model": UIDevice.current.model, "brand": "Apple", "osVersion": UIDevice.current.systemVersion, "sdkInt": 0, "pluginVersion": "8.1.0", "gmsAvailable": false, "hmsAvailable": false, "backend": "ios", "packagedProviders": ["ios"], "backendFallbackReason": NSNull(), "gmsStatus": NSNull(), "hmsStatus": NSNull(), "hmsCoreOutdated": NSNull(), "locationAvailableHint": NSNull(), "cpuCores": ProcessInfo.processInfo.processorCount, "supportedAbis": []]))
+                    callback(.success(["platform": "ios", "manufacturer": "Apple", "model": UIDevice.current.model, "brand": "Apple", "osVersion": UIDevice.current.systemVersion, "sdkInt": 0, "pluginVersion": PluginInfo.version, "gmsAvailable": false, "hmsAvailable": false, "backend": PluginInfo.backend, "packagedProviders": [PluginInfo.backend], "backendFallbackReason": NSNull(), "gmsStatus": NSNull(), "hmsStatus": NSNull(), "hmsCoreOutdated": NSNull(), "locationAvailableHint": NSNull(), "cpuCores": ProcessInfo.processInfo.processorCount, "supportedAbis": []]))
                 }
             case "getSensors":
                 let motion = CMMotionManager()

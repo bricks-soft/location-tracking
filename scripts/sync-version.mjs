@@ -5,3 +5,5 @@ import { readFileSync, writeFileSync } from 'node:fs';
 const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
 const file = 'src/web/device.ts';
 writeFileSync(file, readFileSync(file, 'utf8').replace(/PLUGIN_VERSION = '[^']*'/, `PLUGIN_VERSION = '${version}'`));
+const swift = 'ios/Sources/LocationTrackingPlugin/Core/PluginInfo.swift';
+writeFileSync(swift, readFileSync(swift, 'utf8').replace(/static let version = "[^"]*"/, `static let version = "${version}"`));

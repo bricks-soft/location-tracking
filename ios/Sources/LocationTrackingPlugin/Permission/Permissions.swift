@@ -29,7 +29,7 @@ final class Permissions: NSObject, CLLocationManagerDelegate {
         let status = manager.authorizationStatus
         let authorized = status == .authorizedAlways || status == .authorizedWhenInUse
         let enabled = LocationServices.shared.enabled
-        return ["enabled": enabled, "gps": enabled, "network": enabled, "permission": status == .authorizedAlways ? "always" : authorized ? "when_in_use" : "denied", "accuracy": authorized ? (manager.accuracyAuthorization == .fullAccuracy ? "precise" : "approximate") : "none", "backend": "ios"]
+        return ["enabled": enabled, "gps": enabled, "network": enabled, "permission": status == .authorizedAlways ? "always" : authorized ? "when_in_use" : "denied", "accuracy": authorized ? (manager.accuracyAuthorization == .fullAccuracy ? "precise" : "approximate") : "none", "backend": PluginInfo.backend]
     }
     func status(_ completion: @escaping (TrackingJSON) -> Void) {
         let location: String

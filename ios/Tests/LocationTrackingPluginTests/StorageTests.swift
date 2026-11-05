@@ -51,6 +51,19 @@ final class StorageTests: XCTestCase {
         XCTAssertTrue(try store.delete("same"))
         XCTAssertFalse(try store.delete("same"))
     }
+    func testQueueOrderFollowsRecordedAtThenInsertion() throws {
+        let store = try TrackingStore(url: path())
+        try store.insert(["uuid": "late", "event": "location", "recorded_at": "2026-11-05T10:00:02.000Z"])
+        try store.insert(["uuid": "early", "event": "heartbeat", "recorded_at": "2026-11-05T10:00:01.000Z"])
+        try store.insert(["uuid": "same", "event": "location", "recorded_at": "2026-11-05T10:00:01.000Z"])
+        XCTAssertEqual(try store.locations().map { $0.text("uuid") }, ["early", "same", "late"])
+        XCTAssertEqual(try store.locations(limit: 1).map { $0.text("uuid") }, ["early"])
+        XCTAssertEqual(try store.locations(events: ["heartbeat"]).map { $0.text("uuid") }, ["early"])
+        XCTAssertTrue(try store.contains(events: ["heartbeat", "tracking_start"]))
+        XCTAssertFalse(try store.contains(events: ["tracking_stop"]))
+        try store.prune(days: -1, maximum: 2)
+        XCTAssertEqual(try store.locations().map { $0.text("uuid") }, ["same", "late"])
+    }
     func testCountAndRetention() throws {
         let store = try TrackingStore(url: path())
         for n in 0..<5 { try store.insert(["uuid": "\(n)", "recorded_at": iso()]) }

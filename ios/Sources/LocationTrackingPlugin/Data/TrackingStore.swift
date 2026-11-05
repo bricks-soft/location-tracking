@@ -21,6 +21,7 @@ final class TrackingStore {
             try execute("PRAGMA synchronous=FULL")
             try execute("CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
             try execute("CREATE TABLE IF NOT EXISTS records (id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT UNIQUE NOT NULL, value TEXT NOT NULL)")
+            try execute("CREATE INDEX IF NOT EXISTS records_recorded_at ON records(json_extract(value,'$.recorded_at'), id)")
             try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: url.path)
         } catch { sqlite3_close(db); db = nil; throw error }
     }
@@ -82,7 +83,26 @@ final class TrackingStore {
     }
 
     func locations(limit: Int = 0) throws -> [TrackingJSON] {
-        let query = try statement("SELECT value FROM records ORDER BY id ASC" + (limit > 0 ? " LIMIT \(limit)" : ""))
+        try records("SELECT value FROM records ORDER BY json_extract(value,'$.recorded_at') ASC, id ASC" + (limit > 0 ? " LIMIT \(limit)" : ""), [])
+    }
+
+    func locations(events: Set<String>) throws -> [TrackingJSON] {
+        let names = events.sorted()
+        guard !names.isEmpty else { return [] }
+        return try records("SELECT value FROM records WHERE json_extract(value,'$.event') IN (" + names.map { _ in "?" }.joined(separator: ",") + ") ORDER BY json_extract(value,'$.recorded_at') ASC, id ASC", names)
+    }
+
+    func contains(events: Set<String>) throws -> Bool {
+        let names = events.sorted()
+        guard !names.isEmpty else { return false }
+        let query = try statement("SELECT EXISTS(SELECT 1 FROM records WHERE json_extract(value,'$.event') IN (" + names.map { _ in "?" }.joined(separator: ",") + "))", names)
+        defer { sqlite3_finalize(query) }
+        guard sqlite3_step(query) == SQLITE_ROW else { throw TrackingError("IO_ERROR", "Cannot read queued records") }
+        return sqlite3_column_int64(query, 0) != 0
+    }
+
+    private func records(_ sql: String, _ values: [String]) throws -> [TrackingJSON] {
+        let query = try statement(sql, values)
         defer { sqlite3_finalize(query) }
         var result: [TrackingJSON] = []
         while true {
@@ -129,7 +149,7 @@ final class TrackingStore {
                 try write("DELETE FROM records WHERE json_extract(value,'$.recorded_at') < ?", [cutoff])
             }
             if maximum > 0 {
-                try execute("DELETE FROM records WHERE id NOT IN (SELECT id FROM records ORDER BY id DESC LIMIT \(maximum))")
+                try execute("DELETE FROM records WHERE id NOT IN (SELECT id FROM records ORDER BY json_extract(value,'$.recorded_at') DESC, id DESC LIMIT \(maximum))")
             }
     }
 }

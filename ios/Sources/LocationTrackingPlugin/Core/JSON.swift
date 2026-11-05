@@ -24,11 +24,15 @@ func jsonObject(_ data: Data) throws -> TrackingJSON {
     return result
 }
 
-func iso(_ date: Date = Date()) -> String {
+private let isoFormatter: ISO8601DateFormatter = {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    return formatter.string(from: date)
-}
+    return formatter
+}()
+
+func iso(_ date: Date = Date()) -> String { isoFormatter.string(from: date) }
+
+func isoDate(_ text: String) -> Date? { isoFormatter.date(from: text) }
 
 extension Dictionary where Key == String, Value == Any {
     func object(_ key: String) -> TrackingJSON { self[key] as? TrackingJSON ?? [:] }

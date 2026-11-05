@@ -210,7 +210,7 @@ final class TrackingEngine {
         guard running, session == nil || session == sessionID else { return }
         registrationFailures += 1
         let delay = min(300000, 10000 * pow(2, Double(min(10, registrationFailures - 1))))
-        core.emit("locationerror", ["code": error.code, "message": error.message, "backend": "ios", "retryInMs": delay])
+        core.emit("locationerror", ["code": error.code, "message": error.message, "backend": PluginInfo.backend, "retryInMs": delay])
         timers.schedule("request_retry", after: delay) { [weak self] in guard let self, self.running else { return }; self.applyProfile(force: true) }
     }
     private func execute(_ actions: [MotionAction]) {
@@ -312,8 +312,7 @@ final class TrackingEngine {
     }
     private func timestamp(_ value: Any?) -> Double? {
         guard let text = value as? String else { return nil }
-        let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.date(from: text).map { $0.timeIntervalSince1970 * 1000 }
+        return isoDate(text).map { $0.timeIntervalSince1970 * 1000 }
     }
     func geofenceDemandChanged(_ needs: Bool) {
         guard geofenceDemand != needs else { return }
@@ -331,11 +330,11 @@ final class TrackingEngine {
     func geofenceFailures(_ failures: [MonitorFailure]) {
         for failure in failures {
             core.log.write("error", failure.message + " (" + failure.code + ")")
-            core.emit("locationerror", ["code": failure.code, "message": failure.message, "backend": "ios", "retryInMs": NSNull()])
+            core.emit("locationerror", ["code": failure.code, "message": failure.message, "backend": PluginInfo.backend, "retryInMs": NSNull()])
         }
     }
     func geofencesBlocked() {
-        core.emit("locationerror", ["code": "PERMISSION_DENIED", "message": "Geofences need precise location; stored geofences stay inactive while location accuracy is approximate", "backend": "ios", "retryInMs": NSNull()])
+        core.emit("locationerror", ["code": "PERMISSION_DENIED", "message": "Geofences need precise location; stored geofences stay inactive while location accuracy is approximate", "backend": PluginInfo.backend, "retryInMs": NSNull()])
     }
     private func submit(_ event: String, _ location: TrackedLocation?, reason: String? = nil) {
         var wire = core.makeRecord(event: event, fix: location)

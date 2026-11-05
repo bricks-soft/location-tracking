@@ -70,5 +70,5 @@ struct ConfigSchema {
         return result
     }
     private static func invalid(_ path: String) -> TrackingError { TrackingError("INVALID_ARGUMENT", "Invalid config.\(path)") }
-    private static func mask(_ text: String) -> String { text.count > 8 ? "***" + text.suffix(4) : "***" }
+    static func mask(_ text: String) -> String { text.count > 8 ? "***" + text.suffix(4) : "***" }
 }

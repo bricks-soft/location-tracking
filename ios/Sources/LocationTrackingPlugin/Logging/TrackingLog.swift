@@ -38,11 +38,10 @@ final class TrackingLog {
         return values.prefix(max(0, Int(query.number("limit", 2000)))).map { $0.text("text") }.joined(separator: "\n")
     }
     func clear() throws { try store.save("logs", ["entries": []]); entries = [] }
+    private static let redactions: [NSRegularExpression] = [#"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"#, #"(?i)\b(?:https?|wss?)://[^\s"'<>]+"#, #"\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*"#, #"(?i)("?\b(?:access[_-]?token|refresh[_-]?token|id[_-]?token|token|password|passwd|secret|client[_-]?secret|api[_-]?key|authorization)\b"?\s*[:=]\s*)("(?:[^"\\]|\\.)*"|[^\s,;&}]+)"#].compactMap { try? NSRegularExpression(pattern: $0) }
     static func redact(_ text: String) -> String {
         var result = text
-        for pattern in [#"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"#, #"(?i)\b(?:https?|wss?)://[^\s"'<>]+"#, #"\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*"#, #"(?i)("?\b(?:access[_-]?token|refresh[_-]?token|id[_-]?token|token|password|passwd|secret|client[_-]?secret|api[_-]?key|authorization)\b"?\s*[:=]\s*)("(?:[^"\\]|\\.)*"|[^\s,;&}]+)"#] {
-            if let regex = try? NSRegularExpression(pattern: pattern) { result = regex.stringByReplacingMatches(in: result, range: NSRange(result.startIndex..., in: result), withTemplate: "[redacted]") }
-        }
+        for regex in Self.redactions { result = regex.stringByReplacingMatches(in: result, range: NSRange(result.startIndex..., in: result), withTemplate: "[redacted]") }
         return result
     }
 }

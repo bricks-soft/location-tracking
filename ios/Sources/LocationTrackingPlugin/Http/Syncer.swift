@@ -7,6 +7,8 @@ final class Syncer {
     private let config: TrackingConfig
     private let emit: (String, TrackingJSON) -> Void
     private var callbacks: [(Result<[TrackingJSON], Error>) -> Void] = []
+    private var followUp: [(Result<[TrackingJSON], Error>) -> Void] = []
+    private var connectivityWaiters: [() -> Void] = []
     private var uploaded: [TrackingJSON] = []
     private var reducedBatch: Int?
     private var busy = false
@@ -44,6 +46,8 @@ final class Syncer {
         retryTimer?.cancel()
         cancel()
         transport.close()
+        let waiters = connectivityWaiters; connectivityWaiters = []
+        waiters.forEach { $0() }
     }
     func cancel() {
         generation += 1
@@ -62,36 +66,41 @@ final class Syncer {
             failures = 0
             retryTimer?.cancel()
         }
+        let waiters = connectivityWaiters; connectivityWaiters = []
+        waiters.forEach { $0() }
         automatic()
+    }
+    func whenConnectivityKnown(_ body: @escaping () -> Void) {
+        if connectivityKnown || closed { body() } else { connectivityWaiters.append(body) }
     }
     func automatic(completion: ((Result<[TrackingJSON], Error>) -> Void)? = nil) {
         guard !closed else { completion?(.failure(TrackingError("NETWORK_ERROR", "Syncer is closed"))); return }
         if busy {
             pendingAutomatic = true
-            if let completion { callbacks.append(completion) }
+            if let completion { followUp.append(completion) }
             return
         }
         guard connectivityKnown && connected else { completion?(.success([])); return }
         if let until = changedUntil, until > Date() { schedule(until.timeIntervalSince1970 * 1000); completion?(.success([])); return }
         changedUntil = nil
-        let records: [TrackingJSON]
-        do { records = try store.locations() }
-        catch { completion?(.failure(error)); return }
-        guard !records.isEmpty else { completion?(.success([])); return }
+        let total: Int, hasPriority: Bool
+        do {
+            total = try store.count
+            hasPriority = try total > 0 && store.contains(events: priority)
+        } catch { completion?(.failure(error)); return }
+        guard total > 0 else { completion?(.success([])); return }
         let http = config.value.object("http")
         guard !http.text("url").isEmpty else { completion?(.success([])); return }
-        let hasPriority = records.contains { priority.contains($0.text("event")) }
         if hasPriority { run(priorityOnly: cellular && http.flag("disableAutoSyncOnCellular"), completion: completion ?? { _ in }); return }
         guard http.flag("autoSync", true), !(cellular && http.flag("disableAutoSyncOnCellular")) else { completion?(.success([])); return }
         if let wait = try? store.load("uploadWait"), wait.number("at") > Date().timeIntervalSince1970 * 1000,
            wait.text("reason") != "authorization" || wait.text("authKey") == UploadBackoff.authKey(http) { schedule(wait.number("at")); completion?(.success([])); return }
         let interval = tracking ? http.number("syncInterval") : 0
         let threshold = http.number("autoSyncThreshold")
-        if interval > 0, let oldest = records.first {
-            let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            let age = Date().timeIntervalSince(formatter.date(from: oldest.text("recorded_at")) ?? .distantPast)
-            if age >= 0 && age < interval && !(threshold > 0 && Double(records.count) >= threshold) { schedule(Date().timeIntervalSince1970 * 1000 + (interval - age) * 1000); completion?(.success([])); return }
-        } else if Double(records.count) < max(1, threshold) { completion?(.success([])); return }
+        if interval > 0, let oldest = try? store.locations(limit: 1).first {
+            let age = Date().timeIntervalSince(isoDate(oldest.text("recorded_at")) ?? .distantPast)
+            if age >= 0 && age < interval && !(threshold > 0 && Double(total) >= threshold) { schedule(Date().timeIntervalSince1970 * 1000 + (interval - age) * 1000); completion?(.success([])); return }
+        } else if Double(total) < max(1, threshold) { completion?(.success([])); return }
         run(completion: completion ?? { _ in })
     }
     func run(priorityOnly: Bool = false, completion: @escaping (Result<[TrackingJSON], Error>) -> Void) {
@@ -108,7 +117,7 @@ final class Syncer {
             let http = config.value.object("http")
             let limit = http.flag("batchSync") ? max(1, Int(http.number("maxBatchSize", 100))) : 1
             let size = reducedBatch.map { min(limit, $0) } ?? limit
-            let chunk = priorityOnly ? Array(try store.locations().filter { priority.contains($0.text("event")) && !rejectedPriority.contains($0.text("uuid")) }.prefix(size)) : try store.locations(limit: size)
+            let chunk = priorityOnly ? Array(try store.locations(events: priority).filter { !rejectedPriority.contains($0.text("uuid")) }.prefix(size)) : try store.locations(limit: size)
             if chunk.isEmpty {
                 if let failure = passFailure { fail(failure.0, http: failure.1, status: failure.2, retryAfter: failure.3, authorizationFailure: false) }
                 else {
@@ -290,7 +299,15 @@ final class Syncer {
         }
         let requested = pendingAutomatic
         pendingAutomatic = false
-        if requested { queue.async { [weak self] in self?.automatic() } }
-        else if case .success = result { queue.async { [weak self] in self?.automatic() } }
+        let later = followUp; followUp = []
+        if requested {
+            let completion: ((Result<[TrackingJSON], Error>) -> Void)? = later.isEmpty ? nil : { value in later.forEach { $0(value) } }
+            queue.async { [weak self] in
+                if let self { self.automatic(completion: completion) } else { completion?(.failure(TrackingError("NETWORK_ERROR", "Syncer is closed"))) }
+            }
+        } else {
+            later.forEach { $0(result) }
+            if case .success = result { queue.async { [weak self] in self?.automatic() } }
+        }
     }
 }

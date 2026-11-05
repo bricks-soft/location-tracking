@@ -82,12 +82,12 @@ final class TrackingConfig {
         var http = result.object("http")
         if var auth = http["authorization"] as? TrackingJSON {
             for key in ["accessToken", "refreshToken"] {
-                if let text = auth[key] as? String { auth[key] = Self.mask(text) }
+                if let text = auth[key] as? String { auth[key] = ConfigSchema.mask(text) }
             }
             for key in ["refreshPayload", "refreshHeaders"] {
                 var map = auth.object(key)
                 for (name, value) in map {
-                    if let text = value as? String, !text.contains("{refreshToken}") { map[name] = Self.mask(text) }
+                    if let text = value as? String, !text.contains("{refreshToken}") { map[name] = ConfigSchema.mask(text) }
                 }
                 auth[key] = map
             }
@@ -101,5 +101,4 @@ final class TrackingConfig {
             if let number = value as? NSNumber, !number.doubleValue.isFinite || abs(number.doubleValue) >= Double(Int64.max) / 2 { throw TrackingError("INVALID_ARGUMENT", "Configuration number is out of range") }
         }
     }
-    private static func mask(_ text: String) -> String { text.count > 8 ? "***" + text.suffix(4) : "***" }
 }

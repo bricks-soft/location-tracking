@@ -21,7 +21,7 @@ final class ExecutionTests: XCTestCase {
     func testKeepAwakeTimeLimitEndsAssertion() {
         let expired = expectation(description: "Assertion released at configured limit")
         let assertion = ExecutionAssertion(begin: { _ in 42 }, end: { XCTAssertEqual($0, 42); expired.fulfill() })
-        assertion.start(seconds: 0.02, queue: .main)
+        assertion.start(seconds: 0.02, queue: DispatchQueue(label: "ExecutionTests.timeLimit"))
         wait(for: [expired], timeout: 2)
         assertion.finish()
     }

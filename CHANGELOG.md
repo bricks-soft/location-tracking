@@ -9,6 +9,8 @@ gives that section the version and the date.
 
 ## [Unreleased]
 
+## [8.2.0] - 2026-11-06
+
 Native iOS implementation: [docs/ios-location-tracking.md](docs/ios-location-tracking.md).
 
 ### Breaking changes

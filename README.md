@@ -74,7 +74,7 @@ whether the user really kept tracking on.
 | Platform | Status |
 |---|---|
 | Android (API 24+, Kotlin) | ✔ Supported |
-| iOS | Planned for a later phase. Until then every call rejects with "not implemented on ios". |
+| iOS 15+ | Native route tracking, heartbeat, restore, positions and HTTP sync. Geofencing on iOS 17+, up to 20 geofences. |
 | Web | Stub for development only: positions through `navigator.geolocation`, an in-memory config, permissions and device info. Nothing is stored or uploaded, and tracking can't be started. Everything else rejects with `UNIMPLEMENTED`. See [Web stub](#web-stub). |
 
 ## Installation
@@ -914,7 +914,7 @@ How to measure the cost on a real phone: procedure M-04 in the
 
 ## Geofencing
 
-- Up to **100** geofences (`TOO_MANY_GEOFENCES` beyond that). An identifier is 1–100 characters; adding a geofence
+- Up to **100** geofences on Android and **20** on iOS (`TOO_MANY_GEOFENCES` beyond that). An identifier is 1–100 characters; adding a geofence
   with an existing identifier replaces it. `loiteringDelay` must be ≥ 0. The identifier `__lt_stationary__` is
   reserved for the plugin's stationary region: `addGeofence` rejects it with `INVALID_ARGUMENT`.
 - The stationary region (see [Battery](#battery)) does not count against the 100. GMS accepts at most 100 geofences
@@ -1150,7 +1150,7 @@ Every rejected promise has a `code` (see the `ErrorCode` type) and a `message`.
 | `NO_URL` | `sync()` was called without a valid `http.url`. |
 | `HTTP_ERROR` | `sync()` got a non-2xx response. |
 | `NETWORK_ERROR` | `sync()` failed with a network or I/O error. |
-| `TOO_MANY_GEOFENCES` | Adding the geofences would exceed 100 (or the OS geofence limit reported by GMS/HMS). |
+| `TOO_MANY_GEOFENCES` | Adding the geofences would exceed 100 on Android, 20 on iOS (or the OS geofence limit reported by GMS/HMS). |
 | `NO_ACTIVITY` | `emailLog()` was called while no Activity is attached. (The `open*Settings` methods work without one.) |
 | `IO_ERROR` | Storage or file error (database, log files). |
 | `UNIMPLEMENTED` | Not available on this platform (web stub, iOS). |
@@ -1363,7 +1363,9 @@ field-force suite on API 34, and the long scenarios (with the `include-long` inp
 `.github/workflows/typescript.yml` runs on every push: it type-checks the kit and runs its unit tests, type-checks and
 dry-runs both suites, and runs the field-force Node tests. `.github/workflows/android.yml`, also started by hand only,
 runs the Android unit tests, builds the example apps and checks that the Google Play build of the field-force app
-supports 16 KB memory pages (`.github/scripts/check-16kb.py`).
+supports 16 KB memory pages (`.github/scripts/check-16kb.py`). `.github/workflows/ios.yml`, started by hand only, runs
+XCTest, the UI tests and the shared scenarios P-S01 to P-S07 on iOS simulators; on a Mac the same steps run with
+`.github/scripts/ios/check.sh all` ([docs/e2e-runbook.md](docs/e2e-runbook.md), 6.11).
 
 The field-force suite, together with the field-force app and the kit, is written so that it can move into the Bricks
 app as its integration test. The contract behind the tests (scenario ids, debug commands, mock back office) is
@@ -1397,13 +1399,15 @@ Each later release, with `scripts/release.sh` (bash; run it from the repository 
 1. While you work, write the changes under `## [Unreleased]` in `CHANGELOG.md`.
 2. `scripts/release.sh check <version>` runs every check and changes nothing: `master` is clean and equal to
    `origin/master`; the version is new and greater than the one on npm, and its major version is Capacitor's; the
-   versions in `package.json`, `package-lock.json` and `src/web/device.ts` agree; `[Unreleased]` is not empty; git
+   versions in `package.json`, `package-lock.json`, `src/web/device.ts` and
+   `ios/Sources/LocationTrackingPlugin/Core/PluginInfo.swift` agree; `[Unreleased]` is not empty; git
    can sign; `npm run docgen` leaves the README unchanged; the changes since the last tag contain none of the
    private-name patterns (a file outside the repository, see the script); the steps of `typescript.yml` and
-   `android.yml` pass on this computer; and `npm pack` contains only the files listed in `package.json`.
+   `android.yml` pass on this computer, and on macOS those of `ios.yml` (elsewhere it warns that the iOS checks were
+   skipped); and `npm pack` contains only the files listed in `package.json`.
 3. `scripts/release.sh run <version>` runs the checks, renames `[Unreleased]` to `[<version>] - <date>`, runs
-   `npm version <version> --no-git-tag-version` (it sets `package.json`, `package-lock.json` and `PLUGIN_VERSION` in
-   `src/web/device.ts`; `android/build.gradle` reads `package.json` itself), and makes a signed commit and a signed tag
+   `npm version <version> --no-git-tag-version` (it sets `package.json`, `package-lock.json`, `PLUGIN_VERSION` in
+   `src/web/device.ts` and `PluginInfo.version` in Swift; `android/build.gradle` reads `package.json` itself), and makes a signed commit and a signed tag
    `v<version>`. After you type `yes`, it pushes both and creates the GitHub release with the CHANGELOG section as
    notes. The release starts the workflow (it can also be started by hand from the Actions tab), which builds, runs
    `npm test` and runs `npm stage publish`; the script waits for it.
@@ -2490,12 +2494,13 @@ Posted when Android refuses to restore tracking from the background (after a reb
 restart), typically on Android 14+ without "Allow all the time". A tap resumes the session
 (`tracking_start` reason `resume_notification`). Uses the tracking notification's small icon and color.
 
-| Prop              | Type                 | Default                                                    |
-| ----------------- | -------------------- | ---------------------------------------------------------- |
-| **`enabled`**     | <code>boolean</code> | <code>false</code>                                         |
-| **`title`**       | <code>string</code>  | <code>app label</code>                                     |
-| **`text`**        | <code>string</code>  | <code>'Location tracking is paused. Tap to resume.'</code> |
-| **`channelName`** | <code>string</code>  | <code>'Paused location tracking'</code>                    |
+| Prop              | Type                 | Description                                                                                                                                                    | Default                                                    |
+| ----------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| **`delay`**       | <code>number</code>  | iOS only (Android warns about an unknown key): seconds from the last activity to the check-in notification; raised to `heartbeat.maxInterval + 60` when lower. | <code>600</code>                                           |
+| **`enabled`**     | <code>boolean</code> |                                                                                                                                                                | <code>false</code>                                         |
+| **`title`**       | <code>string</code>  |                                                                                                                                                                | <code>app label</code>                                     |
+| **`text`**        | <code>string</code>  |                                                                                                                                                                | <code>'Location tracking is paused. Tap to resume.'</code> |
+| **`channelName`** | <code>string</code>  |                                                                                                                                                                | <code>'Paused location tracking'</code>                    |
 
 
 #### GeofenceConfig
@@ -2590,14 +2595,14 @@ restart), typically on Android 14+ without "Allow all the time". A tap resumes t
 
 Scheduling metadata of a `heartbeat` record (snake_case = wire format).
 
-| Prop                 | Type                                                           | Description                                                            |
-| -------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| **`strategy`**       | <code>'exact' \| 'listener_with_backup' \| 'idle_paced'</code> |                                                                        |
-| **`min_interval`**   | <code>number</code>                                            | heartbeat.minInterval (s) when the heartbeat was created               |
-| **`max_interval`**   | <code>number</code>                                            | heartbeat.maxInterval (s) when the heartbeat was created               |
-| **`next_at`**        | <code>string \| null</code>                                    | when the next heartbeat is expected (ISO-8601 UTC ms); null if unknown |
-| **`battery_exempt`** | <code>boolean</code>                                           | the app is exempt from battery optimization                            |
-| **`device_idle`**    | <code>boolean</code>                                           | the device was in deep Doze                                            |
+| Prop                 | Type                                                                      | Description                                                            |
+| -------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| **`strategy`**       | <code>'exact' \| 'listener_with_backup' \| 'idle_paced' \| 'timer'</code> |                                                                        |
+| **`min_interval`**   | <code>number</code>                                                       | heartbeat.minInterval (s) when the heartbeat was created               |
+| **`max_interval`**   | <code>number</code>                                                       | heartbeat.maxInterval (s) when the heartbeat was created               |
+| **`next_at`**        | <code>string \| null</code>                                               | when the next heartbeat is expected (ISO-8601 UTC ms); null if unknown |
+| **`battery_exempt`** | <code>boolean</code>                                                      | the app is exempt from battery optimization                            |
+| **`device_idle`**    | <code>boolean</code>                                                      | the device was in deep Doze                                            |
 
 
 #### DeviceReadings
@@ -2713,7 +2718,7 @@ the computed enclosing circle.
 
 | Prop                        | Type                                                        | Description                                                                                                     |
 | --------------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| **`platform`**              | <code>'android' \| 'web'</code>                             |                                                                                                                 |
+| **`platform`**              | <code>'android' \| 'web' \| 'ios'</code>                    |                                                                                                                 |
 | **`manufacturer`**          | <code>string</code>                                         |                                                                                                                 |
 | **`model`**                 | <code>string</code>                                         |                                                                                                                 |
 | **`brand`**                 | <code>string</code>                                         |                                                                                                                 |
@@ -2898,7 +2903,7 @@ A record could not be stored because the device storage is full.
 
 #### LocationBackend
 
-<code>'gms' | 'hms' | 'android' | 'web'</code>
+<code>'gms' | 'hms' | 'android' | 'web' | 'ios'</code>
 
 
 #### DesiredAccuracy
@@ -2986,7 +2991,7 @@ Make all properties in T optional
 
 #### HeartbeatStrategy
 
-<code>'exact' | 'listener_with_backup' | 'idle_paced' | 'disabled'</code>
+<code>'exact' | 'listener_with_backup' | 'idle_paced' | 'timer' | 'disabled'</code>
 
 
 #### PermissionState
@@ -3010,3 +3015,75 @@ Make all properties in T optional
 ## License
 
 MIT, © 2026 Bricks Soft. See [LICENSE](LICENSE).
+
+## iOS setup
+
+The iOS implementation supports native route tracking, motion detection, heartbeat audit records, restore, check-in
+notifications, configuration, SQLite queueing, HTTP sync, permissions, current positions and watches. Geofencing needs
+iOS 17; below it, `startGeofences` and the geofence methods reject with `UNAVAILABLE`.
+
+The deployment target is iOS 15. Install `@capacitor/ios` 8 and run `npx cap sync ios`. Both SPM and CocoaPods are supported.
+In the host app's Info.plist, add:
+
+```xml
+<key>UIBackgroundModes</key><array><string>location</string><string>fetch</string></array>
+<key>BGTaskSchedulerPermittedIdentifiers</key><array><string>com.brickssoft.locationtracking.refresh</string></array>
+<key>NSLocationWhenInUseUsageDescription</key><string>Explain your foreground tracking purpose.</string>
+<key>NSLocationAlwaysAndWhenInUseUsageDescription</key><string>Explain your optional background tracking purpose.</string>
+<key>NSMotionUsageDescription</key><string>Explain how motion selects the tracking profile.</string>
+```
+
+Call the native bootstrap before `application(_:didFinishLaunchingWithOptions:)` returns, so the background refresh
+handler is registered during launch:
+
+```swift
+import LocationTrackingPlugin
+
+LocationTrackingNative.bootstrap()
+```
+
+For apps that track only while they are in use, request `{ permissions: ['location'] }`. Always is optional, and the
+Always purpose string is still required because the library references that API. When the user grants approximate
+location, `ProviderState.accuracy` is `'approximate'` and a `providerchange` event follows; stored geofences stay inactive
+and a `PERMISSION_DENIED` `locationerror` says why. Explain it in the app and call `openAppSettings()` so the user can
+turn on Precise Location, which stays on.
+
+Queued records and configuration use Application Support with backup exclusion and protection until first unlock.
+Authorization is held in Keychain with the same unlock requirement. HTTP uses an ephemeral session, refuses redirects,
+and treats every 2xx as success; keep your upload endpoint on HTTPS. A refresh task is best effort and does not keep
+the app continuously running. `stop()` leaves position watches active; clear each watch explicitly.
+
+While moving, the route uses the configured accuracy. While stationary, it keeps continuous 100 m updates so that
+movement can resume tracking without Motion permission. Core Motion confidence is 33, 66 or 100; the default confidence
+threshold accepts only high-confidence samples. Location update intervals are controlled by iOS.
+
+Heartbeats use an in-process timer and are not backfilled after a suspension or kill. When In Use tracking must start
+in the foreground; enabled intent restores when the app next becomes active. Always authorization adds significant-change
+monitoring as a relaunch trigger. iOS does not relaunch a force-quit app for location events. If Location Services are
+switched off for the whole device, enabled tracking keeps its intent and original deadline and resumes when they are
+switched back on; a revoked app permission still stops it with `permission_denied`.
+
+Enable `notification.resume` and request `notifications` permission for a pending check-in after tracking goes quiet.
+Its iOS `delay` defaults to 600 seconds and is raised to `heartbeat.maxInterval + 60` when lower. Fixes and records move
+one pending notification, at most once a minute. Stop and session expiry cancel it. A tap opens the app and restores the
+original session deadline. The plugin leaves Capacitor's notification-center delegate in place.
+
+Geofences use one [`CLMonitor`](https://developer.apple.com/documentation/corelocation/clmonitor), opened again under the
+same name at every launch, and are registered while tracking runs. A polygon registers its enclosing circle and is
+hit-tested against fixes while the device is inside that circle. DWELL is synthesized from the time inside, so it fires
+only while the app runs. With Always authorization on iOS 18 and later, the plugin holds a
+[`CLServiceSession`](https://developer.apple.com/documentation/corelocation/clservicesession) so events also arrive when
+the app is not in use; with When In Use they arrive only while it runs. While location accuracy is approximate, stored
+geofences stay inactive and a `locationerror` with `PERMISSION_DENIED` says so.
+
+`stopOnTerminate` handles the best-effort termination callback. An OS kill without that callback preserves enabled intent,
+even when `stopOnTerminate` is true. `startOnBoot` is ignored. Deadlines use the continuous elapsed clock within the process.
+On restore, matching saved wall/elapsed checkpoints preserve elapsed timing; a detected reboot or clock discontinuity uses
+the original wall-clock start. A wall-clock change while the process is absent cannot be distinguished reliably from a
+reboot on current iOS, which [no longer exposes a boot-session identifier](https://developer.apple.com/documentation/ios-ipados-release-notes/ios-ipados-18-release-notes).
+Fixes are ordered by the elapsed clock at delivery, so a wall-clock correction does not make new fixes look stale.
+
+`example/ios` is the example host. Run `npm run copy-vendor` and `npx cap sync ios` from `example/` before building.
+The iOS workflow installs the npm tarball into a fresh app through each package manager and archives both unsigned and ad-hoc signed Release
+IPAs. The ad-hoc identity is `-`, with no provisioning profile; it does not provide Apple device authorization. Installing it on an iPhone still requires an Apple signing certificate/private key, a matching provisioning profile
+and entitlements for its bundle identifier, or a device-cloud service that re-signs uploaded apps.

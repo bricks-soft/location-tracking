@@ -75,6 +75,27 @@ test('requirements are described and checked', () => {
   assert.match(unmetRequirement({ gms: false }, device) ?? '', /without Google Play/);
 });
 
+test('platform tags: Android by default, iOS versions only on iOS', () => {
+  const android: DeviceProfile = { api: 34, root: true, gms: true, emulator: true, model: 'sdk', abi: 'x86_64', platform: 'android', osMajor: 14 };
+  const ios16: DeviceProfile = { api: 0, root: false, gms: false, emulator: true, model: 'iOS Simulator 16.4', abi: '', platform: 'ios', osMajor: 16 };
+  const ios26: DeviceProfile = { ...ios16, osMajor: 26 };
+  assert.equal(describeRequirements({ platforms: ['android', 'ios'] }), 'android+ios');
+  assert.equal(describeRequirements({ platforms: ['ios'], ios: 17 }), 'ios, ios>=17');
+  assert.equal(describeRequirements({ platforms: ['ios'], ios: { max: 16 } }), 'ios, ios<=16');
+  assert.equal(unmetRequirement(undefined, android), undefined);
+  assert.match(unmetRequirement(undefined, ios26) ?? '', /runs on android, not ios/);
+  assert.match(unmetRequirement({ root: true }, ios26) ?? '', /runs on android, not ios/);
+  assert.equal(unmetRequirement({ platforms: ['android', 'ios'], root: true }, android), undefined);
+  assert.equal(unmetRequirement({ platforms: ['android', 'ios'], root: true }, ios26), undefined);
+  assert.match(unmetRequirement({ platforms: ['ios'] }, android) ?? '', /runs on ios, not android/);
+  assert.equal(unmetRequirement({ platforms: ['ios'], ios: 17 }, ios26), undefined);
+  assert.match(unmetRequirement({ platforms: ['ios'], ios: 17 }, ios16) ?? '', /iOS >= 17/);
+  assert.match(unmetRequirement({ platforms: ['ios'], ios: { max: 16 } }, ios26) ?? '', /iOS <= 16/);
+  assert.equal(readEnv({}).platform, 'android');
+  assert.equal(readEnv({ E2E_PLATFORM: 'ios', E2E_SIMULATOR: 'ABC' }).simulator, 'ABC');
+  assert.throws(() => readEnv({ E2E_PLATFORM: 'windows' }), /E2E_PLATFORM/);
+});
+
 test('a device run: requirement skips, shared back office, artifacts on failure, run log, clean exit', () => {
   const fake = new FakeAdb([
     { match: '^shell getprop sys\\.boot_completed', stdout: '1\n1\n' },

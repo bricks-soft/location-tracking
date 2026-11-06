@@ -10,11 +10,13 @@
 #   scripts/release.sh verify <version>  after the staged version is approved on npmjs.com: npm serves it as
 #                                        latest, with a provenance statement
 #
-# Checks: tools (Node of npm-publish.yml, gh login, JDK, Android SDK); git (master, clean, equal to origin/master,
-# tag and release free); versions (new, greater than npm latest, major = Capacitor's, package.json =
-# package-lock.json = src/web/device.ts); CHANGELOG ([Unreleased] first and not empty); git can sign; private names;
-# the steps of .github/workflows/typescript.yml and android.yml on this computer (about 10 minutes, mostly Gradle); README = npm run docgen;
-# npm pack contents; no tracked file changed by the builds.
+# Checks: tools (Node of npm-publish.yml, gh login, JDK, Android SDK; on macOS Xcode, CocoaPods and the xcodeproj gem);
+# git (master, clean, equal to origin/master, tag and release free); versions (new, greater than npm latest, major =
+# Capacitor's, package.json = package-lock.json = src/web/device.ts = ios/.../PluginInfo.swift); CHANGELOG
+# ([Unreleased] first and not empty); git can sign; private names; the steps of .github/workflows/typescript.yml and
+# android.yml on this computer (about 10 minutes, mostly Gradle); on macOS also the steps of ios.yml
+# (.github/scripts/ios/check.sh all, about an hour), elsewhere a warning that the iOS checks were skipped;
+# README = npm run docgen; npm pack contents; no tracked file changed by the builds.
 #
 # Private names: the changes and commit messages since the last tag must match none of the extended regular
 # expressions (case-insensitive, one per line, # for comments) in $LT_PRIVATE_PATTERNS, default
@@ -33,6 +35,8 @@ json() { node -p "require('./$1')$2"; }
 # The body of the CHANGELOG section whose heading starts with "## [$1]".
 section() { awk -v h="## [$1]" 'index($0, h) == 1 { f = 1; next } f && /^## \[/ { exit } f' CHANGELOG.md; }
 web_version() { sed -n "s/^export const PLUGIN_VERSION = '\(.*\)';$/\1/p" src/web/device.ts; }
+IOS_VERSION_FILE=ios/Sources/LocationTrackingPlugin/Core/PluginInfo.swift
+ios_version() { sed -n 's/^ *static let version = "\(.*\)"$/\1/p' "$IOS_VERSION_FILE"; }
 gradle_in() { (cd "$1" && ./gradlew -q --console=plain "${@:2}"); }
 
 check_tools() {
@@ -45,6 +49,11 @@ check_tools() {
   [ -n "${JAVA_HOME:-}" ] || command -v java >/dev/null || fail "no JDK for Gradle: set JAVA_HOME"
   [ -n "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}" ] || fail "no Android SDK: set ANDROID_HOME"
   command -v python3 >/dev/null || fail "python3 is needed for the 16 KB page-size check"
+  if [ "$(uname -s)" = Darwin ]; then
+    command -v xcodebuild >/dev/null || fail "the iOS checks need Xcode (xcodebuild)"
+    command -v pod >/dev/null || fail "the iOS checks need CocoaPods (pod)"
+    ruby -e "require 'xcodeproj'" 2>/dev/null || fail "the iOS checks need the xcodeproj gem (gem install xcodeproj)"
+  fi
   echo "node $(node -v), JDK ${JAVA_HOME:-$(command -v java)}, SDK ${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
 }
 
@@ -63,13 +72,14 @@ check_git() {
 check_version() {
   step "version"
   [[ $V =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "the version must be X.Y.Z, got '$V'"
-  local cur lock lock_root web latest cap
+  local cur lock lock_root web ios latest cap
   cur=$(json package.json .version)
   lock=$(json package-lock.json .version)
   lock_root=$(json package-lock.json ".packages['']?.version")
   web=$(web_version)
-  [ "$lock" = "$cur" ] && [ "$lock_root" = "$cur" ] && [ "$web" = "$cur" ] ||
-    fail "versions differ: package.json $cur, package-lock.json $lock and $lock_root, src/web/device.ts '$web'"
+  ios=$(ios_version)
+  [ "$lock" = "$cur" ] && [ "$lock_root" = "$cur" ] && [ "$web" = "$cur" ] && [ "$ios" = "$cur" ] ||
+    fail "versions differ: package.json $cur, package-lock.json $lock and $lock_root, src/web/device.ts '$web', $IOS_VERSION_FILE '$ios'"
   latest=$(npm view "$PKG" dist-tags.latest)
   newer "$V" "$cur" || fail "$V is not greater than package.json ($cur)"
   newer "$V" "$latest" || fail "$V is not greater than npm latest ($latest)"
@@ -124,6 +134,17 @@ run_tests() {
     examples/field-force/android/app/build/outputs/apk/release/app-release-unsigned.apk
 }
 
+run_ios_tests() {
+  step "iOS (the steps of .github/workflows/ios.yml)"
+  if [ "$(uname -s)" != Darwin ]; then
+    echo "WARNING: iOS checks skipped: they need macOS with Xcode. Run .github/scripts/ios/check.sh all on a Mac," >&2
+    echo "WARNING: or start ios.yml on GitHub (gh workflow run ios.yml --ref master), before the release is published." >&2
+    return 0
+  fi
+  bash .github/scripts/ios/check.sh all
+  echo "iOS 15 and 16 run with Xcode 16 only: .github/scripts/ios/check.sh legacy there, or the legacy job of ios.yml"
+}
+
 check_docs() {
   step "API docs"
   npm run -s docgen >/dev/null
@@ -165,6 +186,7 @@ check_all() {
   check_signing
   check_private
   run_tests
+  run_ios_tests
   check_docs
   check_package
   check_clean
@@ -178,11 +200,13 @@ release() {
     const s = fs.readFileSync("CHANGELOG.md", "utf8");
     fs.writeFileSync("CHANGELOG.md", s.replace("## [Unreleased]\n", `## [Unreleased]\n\n## [${v}] - ${date}\n`));
   ' "$V" "$(date +%F)"
-  # Sets package.json and package-lock.json; the "version" script copies the version to src/web/device.ts.
+  # Sets package.json and package-lock.json; the "version" script copies the version to src/web/device.ts and
+  # PluginInfo.swift.
   npm version "$V" --no-git-tag-version >/dev/null
   [ "$(web_version)" = "$V" ] || fail "src/web/device.ts has '$(web_version)', not $V"
+  [ "$(ios_version)" = "$V" ] || fail "$IOS_VERSION_FILE has '$(ios_version)', not $V"
   npm test
-  git add CHANGELOG.md package.json package-lock.json src/web/device.ts
+  git add CHANGELOG.md package.json package-lock.json src/web/device.ts "$IOS_VERSION_FILE"
   [ -z "$(git status --porcelain | grep -v '^M  ' || true)" ] || { git status --short; fail "unexpected changes (above)"; }
   git commit -q -S -m "$V"
   git tag -s "v$V" -m "$V"

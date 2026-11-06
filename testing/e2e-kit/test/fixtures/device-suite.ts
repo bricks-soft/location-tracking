@@ -24,7 +24,7 @@ scenario(
 
 scenario('P-L02', 'passes with the shared back office and testConfig', async (ctx) => {
   assert.equal(ctx.appId, 'com.brickssoft.locationtracking.example');
-  assert.deepEqual(ctx.device, { api: 34, root: false, gms: true, emulator: true, model: 'sdk_gphone64_x86_64', abi: 'x86_64' });
+  assert.deepEqual(ctx.device, { api: 34, root: false, gms: true, emulator: true, model: 'sdk_gphone64_x86_64', abi: 'x86_64', platform: 'android', osMajor: 0 });
   const office = await ctx.backOffice();
   const config = (await ctx.testConfig({ patch: { persistence: { extras: { worker: 7 } } } })) as Record<string, any>;
   assert.deepEqual(config['persistence'].extras, { scenario: 'P-L02', worker: 7 });

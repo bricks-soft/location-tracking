@@ -1,0 +1,180 @@
+# iOS checks on GitHub-hosted macOS runners. Every step calls .github/scripts/ios/check.sh, which also runs the same
+# steps on a Mac without Actions (`check.sh all`; scripts/release.sh calls it on macOS).
+#
+#   swift     XCTest, the permission and check-in UI tests and the shared e2e scenarios (e2e/plugin, P-S01 to P-S06)
+#             on the newest iOS simulator.
+#   package   a fresh tarball consumer with SPM and with CocoaPods: unsigned and ad-hoc Release builds, and the WebView
+#             bridge smoke (P-S07) on the simulator.
+#   legacy    the swift job's steps on an iOS 15 or 16 simulator (Xcode 16 on macos-15).
+#
+# Started by hand only (Actions tab -> iOS -> Run workflow, or `gh workflow run ios.yml --ref <branch>`): macOS runners
+# cost the most Actions minutes (docs/DECISIONS.md, "CI workflows"). Never add push, pull_request or schedule triggers.
+name: iOS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  swift:
+    runs-on: macos-26
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          check-latest: true
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            testing/e2e-kit/package-lock.json
+            e2e/plugin/package-lock.json
+      - name: Build the plugin and the XCTest host
+        run: bash .github/scripts/ios/check.sh build
+      - name: XCTest
+        run: bash .github/scripts/ios/check.sh xctest
+      - name: Build and install the UI test applications
+        if: ${{ !cancelled() }}
+        run: bash .github/scripts/ios/check.sh ui-build
+      - name: Permission UI tests
+        if: ${{ !cancelled() }}
+        run: bash .github/scripts/ios/check.sh ui-permissions
+      - name: Erase the simulator and install the precise-default host
+        if: ${{ !cancelled() }}
+        run: bash .github/scripts/ios/check.sh precise-host
+      - name: Check-in notification UI test
+        if: ${{ !cancelled() }}
+        run: bash .github/scripts/ios/check.sh ui-checkin
+      - name: Shared e2e scenarios on the simulator
+        if: ${{ !cancelled() }}
+        run: bash .github/scripts/ios/check.sh e2e
+      - name: Export UI attachments
+        if: ${{ !cancelled() }}
+        run: |
+          for bundle in permissions checkin; do
+            if [ -d "$RUNNER_TEMP/ios-$bundle.xcresult" ]; then
+              xcrun xcresulttool export attachments --path "$RUNNER_TEMP/ios-$bundle.xcresult" --output-path "$RUNNER_TEMP/ui-attachments/$bundle"
+            fi
+          done
+      - name: Diagnostics
+        if: failure()
+        run: |
+          xcrun xcresulttool export diagnostics --path "$RUNNER_TEMP/ios-tests.xcresult" --output-path "$RUNNER_TEMP/native-diagnostics" || true
+          for bundle in permissions checkin; do
+            if [ -d "$RUNNER_TEMP/ios-$bundle.xcresult" ]; then
+              xcrun xcresulttool export diagnostics --path "$RUNNER_TEMP/ios-$bundle.xcresult" --output-path "$RUNNER_TEMP/ui-diagnostics/$bundle" || true
+            fi
+          done
+          xcrun simctl spawn "$IOS_SIMULATOR" log show --last 10m --style compact --predicate 'process == "App" OR process == "SpringBoard" OR process == "runningboardd"' > "$RUNNER_TEMP/native-launch.log" 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: ios-tests
+          path: |
+            ${{ runner.temp }}/ios-tests.xcresult
+            ${{ runner.temp }}/ios-permissions.xcresult
+            ${{ runner.temp }}/ios-checkin.xcresult
+            ${{ runner.temp }}/*-runner-bootstrap*.xcresult
+            ${{ runner.temp }}/ios-precise-host-launch-*.log
+            ${{ runner.temp }}/backoffice.log
+            ${{ runner.temp }}/native-launch.log
+            ${{ runner.temp }}/native-diagnostics
+            ${{ runner.temp }}/ui-diagnostics
+            ${{ runner.temp }}/ui-attachments
+            ${{ runner.temp }}/ui-samples
+            ${{ runner.temp }}/e2e-artifacts
+
+  package:
+    runs-on: macos-26
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        manager: [SPM, CocoaPods]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          check-latest: true
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            testing/e2e-kit/package-lock.json
+            e2e/plugin/package-lock.json
+      - name: Release builds and the WebView bridge smoke (${{ matrix.manager }})
+        run: bash .github/scripts/ios/check.sh package ${{ matrix.manager }}
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: ios-package-${{ matrix.manager }}
+          path: |
+            ${{ runner.temp }}/location-tracking-example-unsigned.ipa
+            ${{ runner.temp }}/location-tracking-example-adhoc.ipa
+            ${{ runner.temp }}/ios-release-adhoc-codesign.txt
+            ${{ runner.temp }}/release-entitlements.plist
+            ${{ runner.temp }}/e2e-artifacts-${{ matrix.manager }}
+
+  legacy:
+    name: iOS 15 or 16
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          check-latest: true
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            testing/e2e-kit/package-lock.json
+            e2e/plugin/package-lock.json
+      - name: Obtain and boot iOS 15 or 16
+        run: python3 .github/scripts/ios/legacy_runtime.py
+      - name: Build the plugin and the XCTest host
+        run: bash .github/scripts/ios/check.sh build
+      - name: XCTest
+        run: bash .github/scripts/ios/check.sh xctest
+      - name: Build and install the UI test applications
+        if: ${{ !cancelled() }}
+        run: bash .github/scripts/ios/check.sh ui-build
+      - name: Permission UI tests
+        if: ${{ !cancelled() }}
+        run: bash .github/scripts/ios/check.sh ui-permissions
+      - name: Erase the simulator and install the precise-default host
+        if: ${{ !cancelled() }}
+        run: bash .github/scripts/ios/check.sh precise-host
+      - name: Check-in notification UI test
+        if: ${{ !cancelled() }}
+        run: bash .github/scripts/ios/check.sh ui-checkin
+      - name: Shared e2e scenarios on the simulator
+        if: ${{ !cancelled() }}
+        run: bash .github/scripts/ios/check.sh e2e
+      - name: Diagnostics
+        if: failure()
+        run: |
+          xcrun xcresulttool export diagnostics --path "$RUNNER_TEMP/ios-tests.xcresult" --output-path "$RUNNER_TEMP/native-diagnostics" || true
+          xcrun simctl spawn "$IOS_SIMULATOR" log show --last 10m --style compact --predicate 'process == "App" OR process == "SpringBoard" OR process == "installd" OR process == "runningboardd"' > "$RUNNER_TEMP/native-launch.log" 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: ios-legacy
+          path: |
+            ${{ runner.temp }}/ios-legacy-runtime.txt
+            ${{ runner.temp }}/ios-tests.xcresult
+            ${{ runner.temp }}/ios-permissions.xcresult
+            ${{ runner.temp }}/ios-checkin.xcresult
+            ${{ runner.temp }}/*-runner-bootstrap*.xcresult
+            ${{ runner.temp }}/ios-precise-host-launch-*.log
+            ${{ runner.temp }}/native-diagnostics
+            ${{ runner.temp }}/native-launch.log
+            ${{ runner.temp }}/ui-samples
+            ${{ runner.temp }}/e2e-artifacts

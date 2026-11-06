@@ -6,6 +6,7 @@ export type CatalogueSuite =
   | 'plugin-heartbeat'
   | 'plugin-permissions'
   | 'plugin-round3'
+  | 'plugin-shared'
   | 'field-force'
   | 'manual';
 
@@ -74,6 +75,15 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['P-R11', 'token races: new tokens during an upload stop it and a new upload follows 10 s later; a late refresh does not overwrite them'],
     ['P-R12', 'storage full: a record that cannot be stored gives a storagefull event'],
     ['P-R13', 'every uploaded record carries device.device_id, the app ANDROID_ID'],
+  ]),
+  ...entries('plugin-shared', [
+    ['P-S01', 'route: start, moving, background, stationary and a background heartbeat; iOS check-in notification'],
+    ['P-S02', 'offline: records made while the server is unreachable upload later with their UUIDs'],
+    ['P-S03', 'SIGKILL while tracking, relaunch: tracking restored with the original session; iOS willTerminate honours stopOnTerminate'],
+    ['P-S04', 'device restart while tracking: tracking restored (Android at boot, iOS at the next launch)'],
+    ['P-S05', 'iOS 17+ geofences: limit 20, circle and polygon ENTER/EXIT, DWELL, initialTriggerEntry false, crossings while the app was gone'],
+    ['P-S06', 'iOS 15 and 16: geofence methods reject UNAVAILABLE'],
+    ['P-S07', 'iOS WebView smoke: the JS API through the Capacitor bridge of the example app'],
   ]),
   ...entries('field-force', [
     ['F-01', 'app launch auto-starts tracking: tracking_start + motionchange, device details in params, battery'],

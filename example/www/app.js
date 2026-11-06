@@ -399,6 +399,7 @@
     if (state.trackingMode) setChip('mode', 'mode: ' + state.trackingMode);
     if (typeof state.isMoving === 'boolean') setChip('moving', 'moving: ' + state.isMoving, state.isMoving ? 'on' : '');
     if (state.backend) setChip('backend', 'backend: ' + state.backend);
+    setFieldValue('tracking', fieldTracking());
   }
 
   /** Applies a partial update from an event (the next State from the plugin replaces it). */
@@ -420,6 +421,7 @@
       geolocation: {
         desiredAccuracy: byId('cfg-accuracy').value,
         distanceFilter: num('cfg-distance', 10),
+        stopAfterElapsedMinutes: num('cfg-stop-after', 0),
       },
       heartbeat: {
         enabled: checked('cfg-hb-enabled'),
@@ -835,7 +837,10 @@
 
   function onPluginEvent(name, payload) {
     try {
-      if (isPlainObject(payload)) applyEvent(name, payload);
+      if (isPlainObject(payload)) {
+        applyEvent(name, payload);
+        applyFieldEvent(name, payload);
+      }
     } catch (e) {
       /* keep logging even if a payload has an unexpected shape */
     }
@@ -857,6 +862,205 @@
       setListenerStatus('subscribed to ' + EVENT_NAMES.length + ' events.');
       return { subscribed: EVENT_NAMES };
     });
+  }
+
+  var FIELD_KEY = 'lt-example:field:v1';
+  var FIELD_MIRRORS = { 'field-url': 'cfg-url', 'field-stop-after': 'cfg-stop-after', 'field-stop-on-terminate': 'cfg-stop-on-terminate' };
+  var FIELD_REFRESH_MS = 5000;
+  var MAX_FIELD_GEOFENCE_EVENTS = 20;
+  var field = { fix: null, uploaded: 0, http: null, error: null, geofences: [], configApplied: false };
+  var fieldProvider = null;
+  var fieldPermissions = null;
+  var fieldQueued = null;
+  var fieldDevice = null;
+
+  function fieldRestore() {
+    try {
+      var saved = JSON.parse(localStorage.getItem(FIELD_KEY) || '{}');
+      if (isPlainObject(saved)) field = Object.assign(field, saved);
+    } catch (e) {
+      field.geofences = [];
+    }
+    if (!Array.isArray(field.geofences)) field.geofences = [];
+    if (typeof field.uploaded !== 'number') field.uploaded = 0;
+  }
+
+  function fieldSave() {
+    try {
+      localStorage.setItem(FIELD_KEY, JSON.stringify(field));
+    } catch (e) {
+      return;
+    }
+  }
+
+  function mirrorToConfig(id) {
+    var source = byId(id);
+    var target = byId(FIELD_MIRRORS[id]);
+    if (source.type === 'checkbox') target.checked = source.checked;
+    else target.value = source.value;
+    saveForm();
+  }
+
+  function mirrorFromConfig() {
+    Object.keys(FIELD_MIRRORS).forEach(function (id) {
+      var source = byId(FIELD_MIRRORS[id]);
+      var target = byId(id);
+      if (target.type === 'checkbox') target.checked = source.checked;
+      else target.value = source.value;
+    });
+  }
+
+  function loadFieldConfig() {
+    if (typeof fetch !== 'function') return Promise.resolve();
+    return fetch('field-config.json', { cache: 'no-store' })
+      .then(function (response) {
+        return response.ok ? response.json() : null;
+      })
+      .catch(function () {
+        return null;
+      })
+      .then(function (config) {
+        if (!isPlainObject(config) || field.configApplied) return;
+        if (typeof config.url === 'string') byId('cfg-url').value = config.url;
+        if (typeof config.stopAfterElapsedMinutes === 'number') byId('cfg-stop-after').value = String(config.stopAfterElapsedMinutes);
+        if (typeof config.stopOnTerminate === 'boolean') byId('cfg-stop-on-terminate').checked = config.stopOnTerminate;
+        field.configApplied = true;
+        fieldSave();
+        saveForm();
+      })
+      .then(mirrorFromConfig);
+  }
+
+  function rememberFix(location) {
+    if (!isPlainObject(location) || !location.coords || typeof location.coords.latitude !== 'number') return;
+    field.fix = { at: location.timestamp || location.recorded_at, event: location.event, coords: location.coords };
+  }
+
+  function applyFieldEvent(name, p) {
+    switch (name) {
+      case 'location':
+        rememberFix(p);
+        break;
+      case 'motionchange':
+      case 'heartbeat':
+        rememberFix(p.location);
+        break;
+      case 'geofence':
+        rememberFix(p.location);
+        field.geofences.unshift({ at: Date.now(), id: p.identifier, action: p.action, coords: p.location && p.location.coords ? p.location.coords : null });
+        field.geofences = field.geofences.slice(0, MAX_FIELD_GEOFENCE_EVENTS);
+        break;
+      case 'http':
+        var count = Array.isArray(p.uuids) ? p.uuids.length : 0;
+        field.http = { at: Date.now(), success: p.success, status: p.status, count: count };
+        if (p.success) field.uploaded += count;
+        if (isReady) {
+          plugin.getCount().then(function (value) {
+            fieldQueued = value.count;
+            renderField();
+          }, ignore);
+        }
+        break;
+      case 'locationerror':
+        field.error = { at: Date.now(), code: p.code, message: p.message };
+        break;
+      case 'providerchange':
+        fieldProvider = p;
+        break;
+      default:
+        return;
+    }
+    fieldSave();
+    renderField();
+  }
+
+  function ignore() {
+    return null;
+  }
+
+  function setFieldValue(name, value) {
+    var dd = document.querySelector('[data-field="' + name + '"]');
+    if (dd) dd.textContent = value;
+  }
+
+  function fieldTracking() {
+    if (!lastState || typeof lastState.enabled !== 'boolean') return '–';
+    if (lastState.enabled) return 'on, ' + lastState.trackingMode + (lastState.isMoving ? ', moving' : ', stationary');
+    return lastState.lastStopReason ? 'off (last stop: ' + lastState.lastStopReason + ' at ' + fmtClock(lastState.lastStopAt) + ')' : 'off';
+  }
+
+  function renderField() {
+    setFieldValue('tracking', fieldTracking());
+    setFieldValue('fix', field.fix ? fmtTimeWithAge(field.fix.at) + ', ' + show(field.fix.event) : '–');
+    setFieldValue('coords', field.fix ? fmtCoords(field.fix.coords) : '–');
+    var undecided = fieldPermissions && fieldPermissions.location === 'prompt';
+    setFieldValue('permission', fieldProvider ? (undecided ? 'not asked yet' : fieldProvider.permission) + (fieldProvider.enabled ? '' : ' (Location Services off)') : '–');
+    setFieldValue('accuracy', fieldProvider ? (fieldProvider.accuracy === 'precise' ? 'full (precise)' : fieldProvider.accuracy) : '–');
+    setFieldValue(
+      'others',
+      fieldPermissions
+        ? 'Always ' + fieldPermissions.backgroundLocation + ', Motion ' + fieldPermissions.activityRecognition + ', notifications ' + fieldPermissions.notifications
+        : '–',
+    );
+    setFieldValue('queued', fieldQueued === null ? '–' : String(fieldQueued));
+    setFieldValue('uploaded', field.uploaded + ' since install');
+    setFieldValue(
+      'http',
+      field.http ? fmtClock(field.http.at) + ', ' + (field.http.success ? 'ok ' : 'failed ') + field.http.status + ', ' + field.http.count + ' record(s)' : '–',
+    );
+    setFieldValue('error', field.error ? fmtClock(field.error.at) + ', ' + field.error.code + ': ' + field.error.message : '–');
+    setFieldValue(
+      'device',
+      fieldDevice ? fieldDevice.manufacturer + ' ' + fieldDevice.model + ', ' + fieldDevice.platform + ' ' + fieldDevice.osVersion + ', plugin ' + fieldDevice.pluginVersion : '–',
+    );
+    var list = byId('field-geofence-events');
+    list.textContent = '';
+    field.geofences.forEach(function (entry) {
+      list.append(el('li', { text: fmtClock(entry.at) + '  ' + entry.id + '  ' + entry.action + (entry.coords ? '  at ' + fmtCoords(entry.coords) : '') }));
+    });
+  }
+
+  function refreshField() {
+    var reads = [
+      plugin.getProviderState().then(function (value) {
+        fieldProvider = value;
+      }, ignore),
+      plugin.checkPermissions().then(function (value) {
+        fieldPermissions = value;
+      }, ignore),
+    ];
+    if (isReady) {
+      reads.push(plugin.getState().then(renderState, ignore));
+      reads.push(
+        plugin.getCount().then(function (value) {
+          fieldQueued = value.count;
+        }, ignore),
+      );
+    }
+    if (!fieldDevice) {
+      reads.push(
+        plugin.getDeviceInfo().then(function (value) {
+          fieldDevice = value;
+        }, ignore),
+      );
+    }
+    return Promise.all(reads).then(renderField);
+  }
+
+  function fieldPermission(label, permissions) {
+    return run('Field test: request ' + label, function () {
+      return plugin.requestPermissions({ permissions: permissions });
+    }).then(refreshField);
+  }
+
+  function fieldCircleCenter() {
+    var lat = text('field-geo-lat');
+    var lng = text('field-geo-lng');
+    if (lat !== '' && lng !== '' && Number.isFinite(Number(lat)) && Number.isFinite(Number(lng))) {
+      return { latitude: Number(lat), longitude: Number(lng) };
+    }
+    if (lat === '' && lng === '' && field.fix) return { latitude: field.fix.coords.latitude, longitude: field.fix.coords.longitude };
+    throw clientError('INVALID_INPUT', 'Enter both latitude and longitude, or leave both empty after a first fix.');
   }
 
   /* ------------------------------------------------------------------ actions */
@@ -887,6 +1091,75 @@
           },
         );
       });
+    },
+    fieldWhenInUse: function () {
+      return fieldPermission('When In Use', ['location']);
+    },
+    fieldAlways: function () {
+      return fieldPermission('Always', ['backgroundLocation']);
+    },
+    fieldMotion: function () {
+      return fieldPermission('Motion', ['activityRecognition']);
+    },
+    fieldNotifications: function () {
+      return fieldPermission('notifications', ['notifications']);
+    },
+    fieldStart: function () {
+      return run('Field test: start', function () {
+        var config = buildConfig();
+        var prepared = isReady
+          ? plugin.setConfig({ config: config })
+          : plugin.ready({ config: config, reset: checked('cfg-reset') }).then(function (state) {
+              setReady(true);
+              return state;
+            });
+        return prepared.then(function () {
+          return plugin.start();
+        });
+      }).then(refreshField);
+    },
+    fieldStop: function () {
+      return run('Field test: stop', function () {
+        return plugin.stop();
+      }).then(refreshField);
+    },
+    fieldSync: function () {
+      return run('Field test: sync', function () {
+        return plugin.sync();
+      }, function (result) {
+        return { uploaded: result && Array.isArray(result.locations) ? result.locations.length : 0 };
+      }).then(refreshField);
+    },
+    fieldRefresh: function () {
+      return run('Field test: refresh', function () {
+        return refreshField().then(function () {
+          return { provider: fieldProvider, permissions: fieldPermissions, queued: fieldQueued, state: lastState };
+        });
+      });
+    },
+    fieldAddCircle: function () {
+      return run('Field test: add circle', function () {
+        var geofence = circleGeofence(text('field-geo-id') || 'field-circle', fieldCircleCenter(), num('field-geo-radius', 200));
+        geofence.notifyOnDwell = false;
+        return plugin.addGeofence({ geofence: geofence }).then(function () {
+          return { added: geofence };
+        });
+      });
+    },
+    fieldRemoveCircle: function () {
+      return run('Field test: remove circle', function () {
+        return plugin.removeGeofence({ identifier: text('field-geo-id') || 'field-circle' });
+      });
+    },
+    fieldClearHistory: function () {
+      field.fix = null;
+      field.uploaded = 0;
+      field.http = null;
+      field.error = null;
+      field.geofences = [];
+      fieldSave();
+      renderField();
+      return Promise.resolve();
     },
     setConfig: function () {
       return run('setConfig', function () {
@@ -1316,6 +1589,7 @@
 
   function tick() {
     if (hbStatus) renderHeartbeat(hbStatus);
+    if (field.fix) setFieldValue('fix', fmtTimeWithAge(field.fix.at) + ', ' + show(field.fix.event));
     if (lastState && lastState.lastRecordAt) setStateField('lastRecordAt', fmtTimeWithAge(lastState.lastRecordAt));
   }
 
@@ -1344,6 +1618,15 @@
     }
 
     restoreForm();
+    fieldRestore();
+    mirrorFromConfig();
+    var fieldConfigLoaded = loadFieldConfig();
+    Object.keys(FIELD_MIRRORS).forEach(function (id) {
+      byId(id).addEventListener('change', function () {
+        mirrorToConfig(id);
+      });
+    });
+    renderField();
     EVENT_NAMES.concat([WATCH_EVENT]).forEach(function (name) {
       byId('event-filter').append(el('option', { value: name, text: name }));
     });
@@ -1351,6 +1634,7 @@
     document.addEventListener('click', onClick);
     document.addEventListener('change', function (e) {
       if (e.target.matches('[data-persist]')) saveForm();
+      if (['cfg-url', 'cfg-stop-after', 'cfg-stop-on-terminate'].indexOf(e.target.id) !== -1) mirrorFromConfig();
       if (e.target.id === 'event-filter') applyEventFilter();
     });
     document.addEventListener('visibilitychange', onVisibilityChange);
@@ -1361,6 +1645,9 @@
     setInterval(function () {
       if (checked('hb-auto') && document.visibilityState === 'visible') refreshHeartbeatQuietly();
     }, HEARTBEAT_REFRESH_MS);
+    setInterval(function () {
+      if (!e2e.on && document.visibilityState === 'visible') refreshField();
+    }, FIELD_REFRESH_MS);
 
     subscribeAll().catch(function (e) {
       var err = errorInfo(e);
@@ -1368,13 +1655,15 @@
     });
 
     // Auto-ready waits for the test-mode file: in e2e mode the page never calls ready() on its own.
-    e2eDetection.then(function () {
+    Promise.all([e2eDetection, fieldConfigLoaded]).then(function () {
       if (e2e.on) showE2eBanner();
       if (checked('cfg-autoready') && !e2e.on) {
-        actions.ready();
+        actions.ready().then(refreshField);
       } else {
         plugin.getState().then(renderState, function () {
           /* getState is allowed before ready(); ignore failures on platforms without it */
+        }).then(function () {
+          if (!e2e.on) refreshField();
         });
       }
     });

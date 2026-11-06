@@ -15,3 +15,7 @@ export * from './device.ts';
 export * from './app.ts';
 export * from './fixtures.ts';
 export * from './scenario.ts';
+export * from './driver.ts';
+export * from './simctl.ts';
+export * from './android-driver.ts';
+export * from './ios-driver.ts';

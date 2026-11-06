@@ -4,6 +4,7 @@ import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
 import { basename } from 'node:path';
 import { after, test, type TestContext } from 'node:test';
 import { Adb } from './adb.ts';
+import { AndroidDriver } from './android-driver.ts';
 import { AppUnderTest } from './app.ts';
 import { Artifacts } from './artifacts.ts';
 import { MockBackOffice } from './backoffice.ts';
@@ -11,8 +12,11 @@ import { catalogueEntry } from './catalogue.ts';
 import type { E2eCommands } from './commands.ts';
 import { CrashScanner } from './crash.ts';
 import { detectDevice, type DeviceProfile } from './device.ts';
+import type { Platform } from './driver.ts';
 import { appIdFor, readEnv, type E2eEnv } from './env.ts';
 import { deepMerge, pluginTestConfig, type PluginTestConfigOptions } from './fixtures.ts';
+import { IosDriver } from './ios-driver.ts';
+import { Simctl } from './simctl.ts';
 
 export interface ScenarioRequirements {
   /** needs `adb root` (userdebug image): kill -9, setting the clock */
@@ -23,6 +27,8 @@ export interface ScenarioRequirements {
   gms?: boolean;
   /** takes long (deep-Doze spacing, 02:00 waits): runs only with E2E_INCLUDE_LONG=1 */
   long?: boolean;
+  platforms?: readonly Platform[];
+  ios?: number | { min?: number; max?: number };
 }
 
 export interface ScenarioOptions {
@@ -40,6 +46,8 @@ export interface ScenarioContext {
   readonly env: E2eEnv;
   /** app under test: E2E_APP_ID, else P-* = plugin example, F-* = field-force */
   readonly appId: string;
+  readonly platform: Platform;
+  readonly driver: AndroidDriver | IosDriver;
   readonly adb: Adb;
   readonly app: AppUnderTest;
   /** = app.commands */
@@ -92,7 +100,7 @@ export class ScenarioTimeoutError extends Error {
   }
 }
 
-const ID_PATTERN = /^(P-[LHPR]\d{2}|F-\d{2})$/;
+const ID_PATTERN = /^(P-[LHPRS]\d{2}|F-\d{2})$/;
 const registered: RegisteredScenario[] = [];
 
 /** Scenarios registered in this process, in registration order. */
@@ -104,6 +112,13 @@ export function registeredScenarios(): readonly RegisteredScenario[] {
 export function describeRequirements(requires: ScenarioRequirements | undefined): string {
   if (!requires) return '-';
   const parts: string[] = [];
+  const platforms = requires.platforms ?? ['android'];
+  if (platforms.length !== 1 || platforms[0] !== 'android') parts.push(platforms.join('+'));
+  if (typeof requires.ios === 'number') parts.push(`ios>=${requires.ios}`);
+  else if (requires.ios) {
+    if (requires.ios.min !== undefined) parts.push(`ios>=${requires.ios.min}`);
+    if (requires.ios.max !== undefined) parts.push(`ios<=${requires.ios.max}`);
+  }
   if (requires.root) parts.push('root');
   if (typeof requires.api === 'number') parts.push(`api>=${requires.api}`);
   else if (requires.api) {
@@ -118,7 +133,18 @@ export function describeRequirements(requires: ScenarioRequirements | undefined)
 
 /** Why [device] cannot run a scenario with [requires], or undefined when it can. `long` is checked separately. */
 export function unmetRequirement(requires: ScenarioRequirements | undefined, device: DeviceProfile): string | undefined {
+  const platform = device.platform ?? 'android';
+  const platforms = requires?.platforms ?? ['android'];
+  if (!platforms.includes(platform)) return `runs on ${platforms.join(' and ')}, not ${platform}`;
   if (!requires) return undefined;
+  if (platform === 'ios') {
+    const iosMin = typeof requires.ios === 'number' ? requires.ios : requires.ios?.min;
+    const iosMax = typeof requires.ios === 'number' ? undefined : requires.ios?.max;
+    const major = device.osMajor ?? 0;
+    if (iosMin !== undefined && major < iosMin) return `needs iOS >= ${iosMin} (simulator: ${major})`;
+    if (iosMax !== undefined && major > iosMax) return `needs iOS <= ${iosMax} (simulator: ${major})`;
+    return undefined;
+  }
   if (requires.root && !device.root) return 'needs adb root (a userdebug/"Google APIs" emulator image)';
   const min = typeof requires.api === 'number' ? requires.api : requires.api?.min;
   const max = typeof requires.api === 'number' ? undefined : requires.api?.max;
@@ -171,16 +197,38 @@ function adbFor(env: E2eEnv): Adb {
   return sharedAdb;
 }
 
-function deviceFor(adb: Adb): Promise<DeviceProfile> {
+function deviceFor(env: E2eEnv): Promise<DeviceProfile> {
   if (!sharedDevice) {
     deviceAttempts += 1;
-    const attempt = detectDevice(adb);
+    const attempt = env.platform === 'ios' ? detectSimulator(simctlFor(env)) : detectDevice(adbFor(env));
     sharedDevice = attempt;
     attempt.catch(() => {
       if (deviceAttempts < MAX_DEVICE_ATTEMPTS && sharedDevice === attempt) sharedDevice = undefined;
     });
   }
   return sharedDevice;
+}
+
+let sharedSimctl: Simctl | undefined;
+
+function simctlFor(env: E2eEnv): Simctl {
+  sharedSimctl ??= new Simctl({ device: env.simulator });
+  return sharedSimctl;
+}
+
+async function detectSimulator(simctl: Simctl): Promise<DeviceProfile> {
+  await simctl.boot();
+  const runtime = await simctl.runtime();
+  return { api: 0, root: false, gms: false, emulator: true, model: `iOS Simulator ${runtime.version}`, abi: '', platform: 'ios', osMajor: runtime.major };
+}
+
+function androidOnly<T extends object>(name: string): T {
+  return new Proxy({} as T, {
+    get(_target, key) {
+      if (key === 'then') return undefined;
+      throw new Error(`ctx.${name}.${String(key)} is Android only; use ctx.driver`);
+    },
+  });
 }
 
 function backOfficeFor(env: E2eEnv): Promise<MockBackOffice> {
@@ -259,8 +307,12 @@ async function runScenario(
     t.skip('long scenario: set E2E_INCLUDE_LONG=1');
     return;
   }
-  const adb = adbFor(env);
-  const device = await deviceFor(adb);
+  const platforms = requires?.platforms ?? ['android'];
+  if (!platforms.includes(env.platform)) {
+    t.skip(`runs on ${platforms.join(' and ')}, not ${env.platform}`);
+    return;
+  }
+  const device = await deviceFor(env);
   const unmet = unmetRequirement(requires, device);
   if (unmet) {
     t.skip(unmet);
@@ -268,18 +320,30 @@ async function runScenario(
   }
 
   const appId = appIdFor(id, env);
-  const app = new AppUnderTest(adb, appId, env);
-  const crashes = new CrashScanner(adb, appId);
-  const artifacts = new Artifacts({
-    dir: `${env.artifactsDir}/${id}`,
-    adb,
-    appId,
-    backOffice: () => sharedOffice,
-    bugreport: env.bugreport,
-  });
+  const dir = `${env.artifactsDir}/${id}`;
+  let adb: Adb;
+  let app: AppUnderTest;
+  let crashes: CrashScanner;
+  let artifacts: Artifacts;
+  let driver: AndroidDriver | IosDriver;
+  if (env.platform === 'ios') {
+    const ios = new IosDriver({ simctl: simctlFor(env), appId, logDir: dir });
+    driver = ios;
+    adb = androidOnly<Adb>('adb');
+    app = androidOnly<AppUnderTest>('app');
+    crashes = androidOnly<CrashScanner>('crashes');
+    artifacts = new Artifacts({ dir, appId, backOffice: () => sharedOffice, device: (a) => ios.collect(dir, (name, text) => a.writeText(name, text)) });
+    ios.markCrashes();
+  } else {
+    adb = adbFor(env);
+    app = new AppUnderTest(adb, appId, env);
+    crashes = new CrashScanner(adb, appId);
+    artifacts = new Artifacts({ dir, adb, appId, backOffice: () => sharedOffice, bugreport: env.bugreport });
+    driver = new AndroidDriver(app);
+  }
   if (sharedOffice) sharedOffice.reset();
   currentScenarioId = id;
-  await crashes.mark();
+  if (driver.platform === 'android') await crashes.mark();
 
   const started = Date.now();
   const timeoutController = new AbortController();
@@ -289,9 +353,11 @@ async function runScenario(
     title,
     env,
     appId,
+    platform: env.platform,
+    driver,
     adb,
     app,
-    commands: app.commands,
+    commands: env.platform === 'ios' ? androidOnly<E2eCommands>('commands') : app.commands,
     device,
     crashes,
     artifacts,
@@ -302,7 +368,7 @@ async function runScenario(
     },
     backOffice: () => backOfficeFor(env),
     testConfig: async (config) => {
-      const url = config?.url ?? (await backOfficeFor(env)).url('/locations');
+      const url = config?.url ?? (await backOfficeFor(env)).url('/locations', driver.hostAddress);
       const merged = pluginTestConfig({ ...config, url });
       // persistence.extras.scenario = id, unless the patch sets that key itself.
       const persistence = (merged['persistence'] ?? {}) as Record<string, unknown>;
@@ -328,7 +394,10 @@ async function runScenario(
     });
     await Promise.race([body, timeout]);
     clearTimeout(timer);
-    if (!options.allowCrash) await crashes.assertNoCrash();
+    if (!options.allowCrash) {
+      if (driver.platform === 'ios') await driver.assertNoCrash();
+      else await crashes.assertNoCrash();
+    }
   } catch (error) {
     clearTimeout(timer);
     failure = error;
@@ -353,6 +422,6 @@ async function runScenario(
     }
   }
   // An open WebView connection would keep the test process alive after the last scenario.
-  await app.dispose();
+  await driver.dispose();
   if (failed) throw failure;
 }

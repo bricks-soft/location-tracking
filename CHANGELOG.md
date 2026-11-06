@@ -9,6 +9,23 @@ gives that section the version and the date.
 
 ## [Unreleased]
 
+Native iOS implementation: [docs/ios-location-tracking.md](docs/ios-location-tracking.md).
+
+### Breaking changes
+
+- **TypeScript: wider unions.** Code with an exhaustive `switch` over these types stops compiling until it handles the
+  new value:
+  - `LocationBackend` has `'ios'` (`State.backend`, `ProviderState.backend`, `DeviceInfo.backend`, `Location.backend`).
+  - `HeartbeatStrategy` and `HeartbeatMeta.strategy` have `'timer'`.
+  - `DeviceInfo.platform` has `'ios'`.
+- **Records the server receives:** records from iOS have `backend: "ios"`, heartbeat strategy `timer` and `boot_count`
+  -1. A server with a fixed list of backends or strategies must accept them.
+
+### Added
+
+- iOS (15 and later; geofences on 17 and later), packaged for SPM and CocoaPods. Setup: README, "iOS setup".
+- `notification.resume.delay` (iOS only): when the check-in notification fires, default 600 s.
+
 ## [8.1.0] - 2026-10-22
 
 Round 3: the changes the owner accepted from the comparison report. Decisions:

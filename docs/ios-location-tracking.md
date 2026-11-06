@@ -8,7 +8,8 @@ App and server policy is out of scope.
 ## Decisions
 
 - **When In Use is recommended**; optional Always enables geofence events and relaunch while the app is not running.
-- **Same public API as Android**, plus `requestTemporaryFullAccuracy`. No session API or listener wrapper; use the README logout sequence.
+- **Same public API as Android.** No session API or listener wrapper; use the README logout sequence. Approximate accuracy
+  shows in `ProviderState.accuracy`; the app sends the user to Settings for Precise Location.
 - **iOS 15.0 deployment target** (Capacitor 8's floor). Route tracking uses `CLLocationManager` on every version.
   Geofencing uses `CLMonitor` behind one `if #available(iOS 17, *)` check; below iOS 17, `startGeofences` and the
   geofence methods reject with `UNAVAILABLE`.
@@ -98,14 +99,13 @@ launches can write while locked. Tokens go in the Keychain. **Native API:** Swif
 SPM and CocoaPods package it; `ios/Tests/` and the `example/ios` host cover native and WebView paths.
 `PrivacyInfo.xcprivacy` declares UserDefaults access. Disk-space telemetry is omitted; `storagefull` remains, with `diskFreeBytes: null`.
 
-TypeScript: `src/definitions.ts` adds `requestTemporaryFullAccuracy({ purposeKey }): Promise<ProviderState>` and widens
-`LocationBackend` (`'corelocation'`), `DeviceInfo.platform` (`'ios'`) and `HeartbeatStrategy`/`HeartbeatMeta.strategy`
-(`'timer'`), and adds `notification.resume.delay`. `src/web.ts` and the Android plugin reject the new method with
-`UNIMPLEMENTED`. `testing/e2e-kit/src/types.ts` follows. The README gains an iOS setup section.
+TypeScript: `src/definitions.ts` widens `LocationBackend` (`'ios'`), `DeviceInfo.platform` (`'ios'`) and
+`HeartbeatStrategy`/`HeartbeatMeta.strategy` (`'timer'`), and adds `notification.resume.delay`.
+`testing/e2e-kit/src/types.ts` follows. The README gains an iOS setup section.
 
 Host setup: `UIBackgroundModes` `location` and `fetch`, `BGTaskSchedulerPermittedIdentifiers` with
 `com.brickssoft.locationtracking.refresh`, the When In Use, Always (see Authorization) and Motion usage strings,
-`NSLocationTemporaryUsageDescriptionDictionary` if the precision method is used, and the `bootstrap()` call.
+and the `bootstrap()` call.
 
 ## Android parity
 
@@ -122,11 +122,10 @@ Everything not listed behaves as on Android.
 | Heartbeat strategy | `exact`, `listener_with_backup`, `idle_paced` | `timer` |
 | Geofences | 100, all versions | 20, iOS 17+ |
 | Records | `boot_count`, Android readings | `boot_count` -1; IDFV omitted while nil, never substituted; model, OS version, RAM, thermal state |
-| `ProviderState` | Per-provider flags | `gps` and `network` mirror the Location Services switch; `backend` `corelocation` |
+| `ProviderState` | Per-provider flags | `gps` and `network` mirror the Location Services switch; `backend` `ios` |
 | Power methods | Battery Saver, optimization, OEM managers | Low Power Mode; `openBatteryOptimizationSettings` and `openPowerManagerSettings` resolve `{ opened: false }` |
 | `openAppSettings`, `openLocationSettings` | Own screens | Both open the app's Settings page (`openSettingsURLString`), `{ opened: true }` |
 | `requestPermissions` | Android permissions | When In Use, Always, Motion, notifications (see Authorization); settles when the app is active again even if the Always prompt changed nothing |
-| `requestTemporaryFullAccuracy` | `UNIMPLEMENTED` | Prompts with the host's purpose key, resolves with the actual accuracy |
 
 ## iOS limitations
 

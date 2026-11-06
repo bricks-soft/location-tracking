@@ -1,5 +1,6 @@
 // Device profile detection of the e2e kit (Unit 7).
 import type { Adb } from './adb.ts';
+import type { Platform } from './driver.ts';
 
 /** What the scenario wrapper needs to know about the device to honor `requires`. */
 export interface DeviceProfile {
@@ -15,6 +16,8 @@ export interface DeviceProfile {
   model: string;
   /** ro.product.cpu.abi */
   abi: string;
+  platform?: Platform;
+  osMajor?: number;
 }
 
 /** Parses `adb shell getprop` output (`[name]: [value]` lines) into a map. */
@@ -59,5 +62,7 @@ async function detect(adb: Adb): Promise<DeviceProfile> {
     emulator: props.get('ro.kernel.qemu') === '1' || props.get('ro.boot.qemu') === '1',
     model: props.get('ro.product.model') ?? '',
     abi: props.get('ro.product.cpu.abi') ?? '',
+    platform: 'android',
+    osMajor: Number.parseInt(props.get('ro.build.version.release') ?? '', 10) || 0,
   };
 }

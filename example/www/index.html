@@ -30,6 +30,7 @@
         <span class="chip" data-chip="backend">backend: ?</span>
       </div>
       <nav class="section-nav" aria-label="Sections">
+        <a href="#field">Field test</a>
         <a href="#state">State</a>
         <a href="#setup">Config</a>
         <a href="#tracking">Tracking</a>
@@ -48,6 +49,73 @@
     <div id="fatal" class="banner error" hidden></div>
 
     <main>
+      <section id="field" class="card">
+        <h2>Field test</h2>
+        <p class="hint">
+          A short path for a pass on a real phone. The three settings below are the same as in Config, so the
+          <code>ready</code> at launch keeps them. A build may preset them in <code>field-config.json</code>.
+        </p>
+        <div class="form-grid">
+          <label class="wide">http.url
+            <input id="field-url" type="url" inputmode="url" autocomplete="off" placeholder="https://your-server.example/locations" />
+          </label>
+          <label>stopAfterElapsedMinutes (0 = off)
+            <input id="field-stop-after" type="number" min="0" step="1" inputmode="numeric" />
+          </label>
+        </div>
+        <div class="checks">
+          <label><input id="field-stop-on-terminate" type="checkbox" /> app.stopOnTerminate</label>
+        </div>
+        <h3>Permissions</h3>
+        <div class="actions">
+          <button data-action="fieldWhenInUse" data-method="requestPermissions" class="primary">When In Use</button>
+          <button data-action="fieldAlways" data-method="requestPermissions">Always</button>
+          <button data-action="fieldMotion" data-method="requestPermissions">Motion</button>
+          <button data-action="fieldNotifications" data-method="requestPermissions">Notifications</button>
+        </div>
+        <h3>Tracking</h3>
+        <div class="actions">
+          <button data-action="fieldStart" data-method="start" class="primary">Start</button>
+          <button data-action="fieldStop" data-method="stop" class="danger">Stop</button>
+          <button data-action="fieldSync" data-method="sync">Sync now</button>
+          <button data-action="fieldRefresh" class="secondary">Refresh</button>
+        </div>
+        <dl id="field-status" class="kv">
+          <div><dt>tracking</dt><dd data-field="tracking">–</dd></div>
+          <div><dt>last fix</dt><dd data-field="fix">–</dd></div>
+          <div class="wide"><dt>fix position</dt><dd data-field="coords">–</dd></div>
+          <div><dt>location permission</dt><dd data-field="permission">–</dd></div>
+          <div><dt>accuracy</dt><dd data-field="accuracy">–</dd></div>
+          <div class="wide"><dt>Always, Motion, notifications</dt><dd data-field="others">–</dd></div>
+          <div><dt>records queued</dt><dd data-field="queued">–</dd></div>
+          <div><dt>records uploaded</dt><dd data-field="uploaded">–</dd></div>
+          <div class="wide"><dt>last http</dt><dd data-field="http">–</dd></div>
+          <div class="wide"><dt>last location error</dt><dd data-field="error">–</dd></div>
+          <div class="wide"><dt>device</dt><dd data-field="device">–</dd></div>
+        </dl>
+        <h3>Circle geofence</h3>
+        <div class="form-grid">
+          <label>identifier
+            <input id="field-geo-id" type="text" value="field-circle" autocomplete="off" data-persist />
+          </label>
+          <label>radius (m)
+            <input id="field-geo-radius" type="number" min="100" step="1" value="200" inputmode="numeric" data-persist />
+          </label>
+          <label>latitude
+            <input id="field-geo-lat" type="number" step="any" inputmode="decimal" placeholder="last fix" data-persist />
+          </label>
+          <label>longitude
+            <input id="field-geo-lng" type="number" step="any" inputmode="decimal" placeholder="last fix" data-persist />
+          </label>
+        </div>
+        <div class="actions">
+          <button data-action="fieldAddCircle" data-method="addGeofence" class="primary">Add circle</button>
+          <button data-action="fieldRemoveCircle" data-method="removeGeofence" class="danger">Remove circle</button>
+          <button data-action="fieldClearHistory" class="secondary">Clear history</button>
+        </div>
+        <ol id="field-geofence-events" class="list"></ol>
+      </section>
+
       <!-- ============================== STATE ============================== -->
       <section id="state" class="card">
         <h2>State</h2>
@@ -113,6 +181,9 @@
           </label>
           <label>geolocation.distanceFilter (m)
             <input id="cfg-distance" type="number" min="0" step="1" value="10" inputmode="numeric" data-persist />
+          </label>
+          <label>geolocation.stopAfterElapsedMinutes (0 = off)
+            <input id="cfg-stop-after" type="number" min="0" step="1" value="0" inputmode="numeric" data-persist />
           </label>
           <label>logger.logLevel
             <select id="cfg-loglevel" data-persist>

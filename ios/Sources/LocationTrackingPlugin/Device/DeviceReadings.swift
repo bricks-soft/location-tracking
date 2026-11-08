@@ -22,6 +22,8 @@ final class DeviceReadings {
     }
     private func refresh() {
         let device = UIDevice.current
+        // The switch is app-wide and other code may turn it off; while off, reads return -1 and .unknown.
+        device.isBatteryMonitoringEnabled = true
         let identifier = device.identifierForVendor?.uuidString, model = device.model, version = device.systemVersion
         let level = device.batteryLevel, state = device.batteryState
         lock.lock(); defer { lock.unlock() }
@@ -29,6 +31,8 @@ final class DeviceReadings {
         self.level = level; charging = state == .charging || state == .full
     }
     func snapshot(event: String) -> (device: TrackingJSON, battery: TrackingJSON) {
+        // No battery notifications arrive while someone else has monitoring off; re-read for the next record. Callers run off main.
+        DispatchQueue.main.async { [weak self] in self?.refresh() }
         lock.lock(); defer { lock.unlock() }
         var device: TrackingJSON = [:]
         if let identifier { device["device_id"] = identifier }

@@ -9,6 +9,13 @@ gives that section the version and the date.
 
 ## [Unreleased]
 
+### Fixed
+
+- **iOS: `battery.level` -1 after other code in the app read the battery.** iOS has one battery-monitoring switch for
+  the whole app. When other code turned it off, records reported `battery.level` -1 and `is_charging` false until the
+  app next became active. The plugin now turns monitoring on before each reading and refreshes the reading as it
+  makes records.
+
 ## [8.2.0] - 2026-11-06
 
 Native iOS implementation: [docs/ios-location-tracking.md](docs/ios-location-tracking.md).

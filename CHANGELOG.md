@@ -9,6 +9,8 @@ gives that section the version and the date.
 
 ## [Unreleased]
 
+## [8.2.1] - 2026-11-09
+
 ### Fixed
 
 - **iOS: `battery.level` -1 after other code in the app read the battery.** iOS has one battery-monitoring switch for
